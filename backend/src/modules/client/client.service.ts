@@ -186,7 +186,7 @@ const SYSTEM_CONFIG_KEYS = [
   "landing_ready_to_connect_eyebrow", "landing_ready_to_connect_title", "landing_ready_to_connect_desc",
   "landing_show_features", "landing_show_benefits", "landing_show_devices", "landing_show_faq", "landing_show_how_it_works", "landing_show_cta",
   // Прокси
-  "proxy_enabled", "proxy_url", "proxy_telegram", "proxy_payments",
+  "proxy_enabled", "proxy_url", "proxy_telegram", "proxy_payments", "proxy_ai",
   // Мой Налог (самозанятые)
   "nalog_enabled", "nalog_inn", "nalog_password", "nalog_device_id", "nalog_service_name",
   // Карта нод (Geo Map)
@@ -195,6 +195,9 @@ const SYSTEM_CONFIG_KEYS = [
   "gift_subscriptions_enabled", "gift_code_expiry_hours", "max_additional_subscriptions",
   "gift_code_format_length", "gift_rate_limit_per_minute",
   "gift_expiry_notification_days", "gift_referral_enabled", "gift_message_max_length",
+  // Поведение бота
+  "bot_auto_delete_unknown_messages",
+  "bot_info_block",
 ];
 
 /** Продукт «Доп. трафик»: объём в ГБ, цена, валюта */
@@ -701,6 +704,7 @@ export async function getSystemConfig() {
     proxyUrl: (map.proxy_url ?? "").trim() || null,
     proxyTelegram: map.proxy_telegram === "true" || map.proxy_telegram === "1",
     proxyPayments: map.proxy_payments === "true" || map.proxy_payments === "1",
+    proxyAi: map.proxy_ai === "true" || map.proxy_ai === "1",
     nalogEnabled: map.nalog_enabled === "true" || map.nalog_enabled === "1",
     nalogInn: (map.nalog_inn ?? "").trim() || null,
     nalogPassword: (map.nalog_password ?? "").trim() || null,
@@ -717,6 +721,8 @@ export async function getSystemConfig() {
     giftExpiryNotificationDays: parseInt(map.gift_expiry_notification_days || "3", 10) || 3,
     giftReferralEnabled: map.gift_referral_enabled !== "false" && map.gift_referral_enabled !== "0",
     giftMessageMaxLength: parseInt(map.gift_message_max_length || "200", 10) || 200,
+    botAutoDeleteUnknownMessages: map.bot_auto_delete_unknown_messages === "true" || map.bot_auto_delete_unknown_messages === "1",
+    botInfoBlock: (map.bot_info_block ?? "").trim() || null,
   };
 }
 
@@ -1366,6 +1372,9 @@ export async function getPublicConfig() {
     proxyUrl: full.proxyUrl ?? null,
     proxyTelegram: full.proxyTelegram ?? false,
     proxyPayments: full.proxyPayments ?? false,
+    proxyAi: full.proxyAi ?? false,
+    botAutoDeleteUnknownMessages: full.botAutoDeleteUnknownMessages ?? false,
+    botInfoBlock: full.botInfoBlock ?? null,
     translations: await loadAllLanguagePacks(full.activeLanguages),
   };
 }

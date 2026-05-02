@@ -371,7 +371,10 @@ export async function activateTariffForClient(
       if (!existingUuid && createRes.error) {
         console.error("[tariff-activation] Remna createUser failed:", createRes.error, createRes.status);
       }
-    } else if (shouldResetTraffic) {
+    } else if (shouldResetTraffic || currentExpireAt !== null) {
+      // Симметрично основной ветке (см. выше hadActiveSub):
+      // если у юзера в Remna была активная/истёкшая подписка — сбрасываем накопленный трафик,
+      // иначе клиент после покупки нового тарифа упирается в лимит сразу.
       await remnaResetUserTraffic(existingUuid);
     }
     if (!existingUuid) return { ok: false, error: "Ошибка создания пользователя VPN", status: 502 };
@@ -398,13 +401,20 @@ export async function activateTariffForClient(
     })
     .catch(() => {});
 
-  // Если у клиента включён autoRenew на этот тариф — обновим autoRenewPriceOptionId.
-  // Причина отдельного апдейта: связь priceOption требует существующую запись в БД (не просто id).
-  if (tariff.id && selectedOption && (selectedOption as { id?: string }).id) {
+  // Синхронизируем autoRenewTariffId с купленным тарифом + сохраняем priceOption.
+  // Без autoRenewTariffId плашка «следующее списание» не покажется на /subscription
+  // (там guard на autoRenewTariff relation), и крон спишет за старый тариф если был.
+  // Связь priceOption требует существующую запись в БД (не просто id) — отдельный апдейт.
+  if (tariff.id) {
     await prisma.client
       .update({
         where: { id: client.id },
-        data: { autoRenewPriceOptionId: (selectedOption as { id?: string }).id ?? null },
+        data: {
+          autoRenewTariffId: tariff.id,
+          ...(selectedOption && (selectedOption as { id?: string }).id
+            ? { autoRenewPriceOptionId: (selectedOption as { id?: string }).id ?? null }
+            : {}),
+        },
       })
       .catch(() => {});
   }

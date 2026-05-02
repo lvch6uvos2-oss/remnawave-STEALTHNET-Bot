@@ -106,6 +106,73 @@ async function broadcastToClients(
   return { sent, errors, skipped };
 }
 
+/** Парсит CSV вида "24,1" в массив часов; пустые/невалидные значения отбрасываются. */
+function parseDeadlineHours(csv: string | null | undefined): number[] {
+  if (!csv?.trim()) return [];
+  return csv
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+function readDeadlineSent(json: string | null | undefined): Record<string, string> {
+  if (!json?.trim()) return {};
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, string>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function shouldSendInterval(
+  lastSent: Date | null,
+  intervalHours: number,
+  now: Date
+): boolean {
+  if (intervalHours <= 0) return false;
+  if (!lastSent) return true;
+  const elapsedMs = now.getTime() - lastSent.getTime();
+  return elapsedMs >= intervalHours * 60 * 60 * 1000;
+}
+
+/**
+ * Возвращает первое подходящее значение часов из `deadlineHours`, для которого
+ * сейчас «окно отправки» (endAt близок) и которое ещё не отправлено.
+ * Окно: now ∈ [endAt − N*ч, endAt − N*ч + INTERVAL_TOLERANCE_MS].
+ * INTERVAL_TOLERANCE_MS = 1 час (планировщик гоняется каждый час) — допуск на промахи.
+ */
+function pickPendingDeadlineHour(
+  deadlineHours: number[],
+  endAt: Date,
+  alreadySent: Record<string, string>,
+  now: Date
+): number | null {
+  const TOLERANCE_MS = 60 * 60 * 1000;
+  for (const h of deadlineHours) {
+    if (alreadySent[String(h)]) continue;
+    const triggerAt = endAt.getTime() - h * 60 * 60 * 1000;
+    if (now.getTime() >= triggerAt && now.getTime() < triggerAt + TOLERANCE_MS) {
+      return h;
+    }
+  }
+  return null;
+}
+
+function buildDeadlineMessage(contest: { name: string; endAt: Date; dailyMessage: string | null }, hoursBefore: number): string {
+  const lead = hoursBefore >= 24
+    ? `<b>⏰ Конкурс «${contest.name}» завершается через ${Math.round(hoursBefore / 24)} дн.!</b>`
+    : `<b>⚡ Конкурс «${contest.name}» завершается через ${hoursBefore} ч.!</b>`;
+  const lines = [lead];
+  if (contest.dailyMessage?.trim()) {
+    lines.push("", contest.dailyMessage.trim());
+  }
+  lines.push("", "Успейте принять участие 🏆");
+  return lines.join("\n");
+}
+
 export async function runContestDailyReminder(): Promise<{ sent: number; errors: number }> {
   const now = new Date();
   const config = await getSystemConfig();
@@ -124,9 +191,7 @@ export async function runContestDailyReminder(): Promise<{ sent: number; errors:
   let totalSent = 0;
   let totalErrors = 0;
 
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-  const contestsForDaily = await prisma.contest.findMany({
+  const contestsForReminders = await prisma.contest.findMany({
     where: {
       startAt: { lte: now },
       endAt: { gte: now },
@@ -136,8 +201,33 @@ export async function runContestDailyReminder(): Promise<{ sent: number; errors:
     orderBy: { startAt: "desc" },
   });
 
-  for (const contest of contestsForDaily) {
-    if (contest.lastDailyReminderAt && contest.lastDailyReminderAt >= today) {
+  for (const contest of contestsForReminders) {
+    if (!contest.reminderEnabled) continue;
+
+    // 1. Deadline-напоминания (за N часов до endAt) — приоритетнее periodic, отправляются раз каждое.
+    const deadlineHours = parseDeadlineHours(contest.reminderDeadlineHoursBefore);
+    const sentMap = readDeadlineSent(contest.reminderDeadlineSentJson);
+    const pendingHour = deadlineHours.length
+      ? pickPendingDeadlineHour(deadlineHours, contest.endAt, sentMap, now)
+      : null;
+
+    if (pendingHour != null) {
+      const text = buildDeadlineMessage(contest, pendingHour);
+      const markup = buildReplyMarkup(contest.buttonText, contest.buttonUrl);
+      const result = await broadcastToClients(botToken, clients, text, markup);
+      sentMap[String(pendingHour)] = now.toISOString();
+      await prisma.contest.update({
+        where: { id: contest.id },
+        data: { reminderDeadlineSentJson: JSON.stringify(sentMap) },
+      });
+      totalSent += result.sent;
+      totalErrors += result.errors;
+      console.log(`[contest-daily-reminder] Contest "${contest.name}" deadline-${pendingHour}h: sent=${result.sent}, errors=${result.errors}, skipped=${result.skipped}`);
+      continue; // в этом тике уже отправили deadline — не дублируем periodic
+    }
+
+    // 2. Periodic-напоминание (interval hours).
+    if (!shouldSendInterval(contest.lastDailyReminderAt, contest.reminderIntervalHours, now)) {
       continue;
     }
 
@@ -155,7 +245,7 @@ export async function runContestDailyReminder(): Promise<{ sent: number; errors:
     totalSent += result.sent;
     totalErrors += result.errors;
     if (result.sent > 0 || result.errors > 0) {
-      console.log(`[contest-daily-reminder] Contest "${contest.name}" daily: sent=${result.sent}, errors=${result.errors}, skipped=${result.skipped}`);
+      console.log(`[contest-daily-reminder] Contest "${contest.name}" interval-${contest.reminderIntervalHours}h: sent=${result.sent}, errors=${result.errors}, skipped=${result.skipped}`);
     }
   }
 

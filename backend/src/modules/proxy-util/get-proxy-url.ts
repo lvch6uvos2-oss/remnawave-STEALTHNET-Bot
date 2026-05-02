@@ -1,6 +1,6 @@
 import { getSystemConfig } from "../client/client.service.js";
 
-export type ProxyTarget = "telegram" | "payments";
+export type ProxyTarget = "telegram" | "payments" | "ai";
 
 /**
  * Возвращает proxy URL для указанного целевого сервиса, если прокси включен
@@ -23,6 +23,11 @@ export async function getProxyUrl(target: ProxyTarget): Promise<string | null> {
   if (target === "payments") {
     const payEnabled = (config as any).proxyPayments === true || (config as any).proxyPayments === "true";
     return payEnabled ? proxyUrl : null;
+  }
+
+  if (target === "ai") {
+    const aiEnabled = (config as any).proxyAi === true || (config as any).proxyAi === "true";
+    return aiEnabled ? proxyUrl : null;
   }
 
   return null;

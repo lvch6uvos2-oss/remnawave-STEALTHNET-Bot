@@ -115,7 +115,9 @@ export function ClientTariffsPage() {
   const [promoResult, setPromoResult] = useState<{ type: string; discountPercent?: number | null; discountFixed?: number | null; name: string } | null>(null);
   const [promoError, setPromoError] = useState<string | null>(null);
 
-  const showTrial = trialConfig.trialEnabled && !client?.trialUsed;
+  // Триал предлагаем только если у юзера ещё нет активной подписки и триал не использован.
+  // Без проверки hasActive плашка висит даже после покупки тарифа.
+  const showTrial = trialConfig.trialEnabled && !client?.trialUsed && !activeSubInfo.hasActive;
 
   const isMobileOrMiniapp = useCabinetMiniapp();
   const useCategoryCardLayout = isMobileOrMiniapp;

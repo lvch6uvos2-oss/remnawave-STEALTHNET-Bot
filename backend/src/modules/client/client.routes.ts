@@ -4352,12 +4352,16 @@ clientRouter.post("/ai/chat", async (req, res) => {
     let lastErrorDetails = "";
     let lastStatus = 500;
 
+    const { proxyFetch } = await import("../proxy-util/proxy-fetch.js");
+    const { getProxyUrl } = await import("../proxy-util/get-proxy-url.js");
+    const aiProxy = await getProxyUrl("ai");
+
     for (const model of modelsToTry) {
       try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-        const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        const groqRes = await proxyFetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -4370,7 +4374,7 @@ clientRouter.post("/ai/chat", async (req, res) => {
             max_tokens: 1024,
           }),
           signal: controller.signal,
-        });
+        }, aiProxy);
         
         clearTimeout(timeoutId);
 

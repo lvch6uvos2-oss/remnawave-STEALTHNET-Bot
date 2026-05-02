@@ -122,6 +122,9 @@ const emptyForm: ContestFormPayload = {
   dailyMessage: null,
   buttonText: null,
   buttonUrl: null,
+  reminderEnabled: true,
+  reminderIntervalHours: 24,
+  reminderDeadlineHoursBefore: "",
 };
 
 const inputCls = "rounded-xl bg-foreground/[0.03] dark:bg-white/[0.02] border-white/10 focus-visible:ring-primary/50";
@@ -204,6 +207,9 @@ export function ContestsPage() {
       dailyMessage: c.dailyMessage,
       buttonText: c.buttonText ?? null,
       buttonUrl: c.buttonUrl ?? null,
+      reminderEnabled: c.reminderEnabled ?? true,
+      reminderIntervalHours: c.reminderIntervalHours ?? 24,
+      reminderDeadlineHoursBefore: c.reminderDeadlineHoursBefore ?? "",
     });
     const cond = parseConditions(c.conditionsJson);
     setMinTariffDays(cond.minTariffDays != null ? String(cond.minTariffDays) : "");
@@ -533,6 +539,53 @@ export function ContestsPage() {
                 />
               )}
             </div>
+
+            {/* Расписание напоминаний (issue #35) */}
+            <div className="grid gap-3 rounded-xl border border-white/10 bg-foreground/[0.02] p-4">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">Напоминания об активном конкурсе</Label>
+                <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.reminderEnabled !== false}
+                    onChange={(e) => setForm((f) => ({ ...f, reminderEnabled: e.target.checked }))}
+                  />
+                  Включены
+                </label>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-1.5">
+                  <Label className="text-xs text-muted-foreground">Интервал (часы) — 0 чтобы выключить периодические</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={720}
+                    step={1}
+                    value={form.reminderIntervalHours ?? 24}
+                    onChange={(e) => setForm((f) => ({ ...f, reminderIntervalHours: Math.max(0, parseInt(e.target.value || "0", 10) || 0) }))}
+                    placeholder="24"
+                    disabled={form.reminderEnabled === false}
+                    className={inputCls}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label className="text-xs text-muted-foreground">За сколько часов до конца (CSV)</Label>
+                  <Input
+                    value={form.reminderDeadlineHoursBefore ?? ""}
+                    onChange={(e) => setForm((f) => ({ ...f, reminderDeadlineHoursBefore: e.target.value }))}
+                    placeholder="24,1"
+                    disabled={form.reminderEnabled === false}
+                    className={inputCls}
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Пример: интервал <code className="font-mono">24</code> + deadline <code className="font-mono">24,1</code> →
+                раз в сутки + дополнительные напоминания за 24ч и 1ч до окончания. Поставьте интервал <code className="font-mono">0</code>,
+                если хотите только deadline-напоминания (или анонс при старте).
+              </p>
+            </div>
+
             <DialogFooter className="pt-2">
               <Button type="button" variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">
                 Отмена

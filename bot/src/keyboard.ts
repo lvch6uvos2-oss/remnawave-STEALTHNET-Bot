@@ -320,7 +320,7 @@ export function tariffCategoryButtons(
 
 /** Кнопки тарифов одной категории. Только эмодзи категории (ordinary/premium), без общего эмодзи «Тарифы». */
 export function tariffsOfCategoryButtons(
-  category: { name: string; emoji?: string; tariffs: { id: string; name: string; price: number; currency: string; hasOptions?: boolean }[] },
+  category: { name: string; emoji?: string; tariffs: { id: string; name: string; price: number; currency: string; hasOptions?: boolean; priceOptions?: { price: number; durationDays: number }[] }[] },
   backLabel?: string | null,
   innerStyles?: InnerButtonStyles,
   backData: string = "menu:tariffs",
@@ -334,8 +334,13 @@ export function tariffsOfCategoryButtons(
   const prefix = (category.emoji && category.emoji.trim()) ? `${category.emoji} ` : "";
   const tariffId = emojiIds?.tariff;
   for (const t of category.tariffs) {
-    const fromPrefix = t.hasOptions ? "от " : "";
-    const label = `${prefix}${t.name} — ${fromPrefix}${t.price} ${currencySymbol(t.currency)}`.slice(0, 64);
+    const opts = t.priceOptions;
+    const minPrice = t.hasOptions && opts?.length
+      ? opts.reduce((m, o) => (o.price < m ? o.price : m), opts[0]!.price)
+      : t.price;
+    const label = t.hasOptions
+      ? `${prefix}${t.name} от ${minPrice} ${currencySymbol(t.currency)}`.slice(0, 64)
+      : `${prefix}${t.name} — ${minPrice} ${currencySymbol(t.currency)}`.slice(0, 64);
     rows.push([btn(label, `pay_tariff:${t.id}`, tariffPay, tariffId)]);
   }
   rows.push([btn(back, backData, backSty, emojiIds?.back)]);

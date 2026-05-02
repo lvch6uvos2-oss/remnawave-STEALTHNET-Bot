@@ -172,7 +172,13 @@ export async function notifyTariffActivated(clientId: string, paymentId: string)
 
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
-    select: { amount: true, currency: true, provider: true, tariff: { select: { name: true, durationDays: true, price: true } } },
+    select: {
+      amount: true,
+      currency: true,
+      provider: true,
+      tariff: { select: { name: true, durationDays: true, price: true } },
+      tariffPriceOption: { select: { durationDays: true } },
+    },
   });
   const tariffName = payment?.tariff?.name?.trim() || "Тариф";
   if (client.telegramId) {
@@ -188,7 +194,9 @@ export async function notifyTariffActivated(clientId: string, paymentId: string)
   ];
   if (client.telegramId) lines.push(`🆔 TG ID: <code>${escapeHtml(client.telegramId)}</code>`);
   lines.push(`📋 Тариф: <b>${escapeHtml(tariffName)}</b>`);
-  if (payment?.tariff?.durationDays) lines.push(`📅 Срок: ${payment.tariff.durationDays} дн.`);
+  // Срок берём из выбранной опции длительности (если есть), иначе fallback на базовый срок тарифа.
+  const durationDays = payment?.tariffPriceOption?.durationDays ?? payment?.tariff?.durationDays;
+  if (durationDays) lines.push(`📅 Срок: ${durationDays} дн.`);
   if (payment?.amount != null) lines.push(`💵 Сумма: <b>${formatMoney(payment.amount, payment.currency ?? "RUB")}</b>`);
   if (payment?.provider) lines.push(`🏦 Провайдер: ${escapeHtml(payment.provider)}`);
   lines.push(`🕐 ${formatDate(new Date())}`);

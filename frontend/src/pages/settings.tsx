@@ -10,12 +10,13 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { RefreshCw, Download, Upload, Link2, Settings2, Gift, Users, ArrowLeftRight, Mail, MessageCircle, CreditCard, ChevronDown, ChevronUp, Copy, Check, Bot, FileJson, Palette, Wallet, Package, Plus, Trash2, KeyRound, Loader2, Sparkles, Layers, Globe, BarChart3, RotateCw, Shield, Terminal, FileText, MapPin, GripVertical } from "lucide-react";
+import { RefreshCw, Download, Upload, Link2, Settings2, Gift, Users, ArrowLeftRight, Mail, MessageCircle, CreditCard, ChevronDown, ChevronUp, Copy, Check, Bot, FileJson, Palette, Wallet, Package, Plus, Trash2, KeyRound, Loader2, Sparkles, Layers, Globe, BarChart3, RotateCw, Shield, Terminal, FileText, MapPin, GripVertical, Smile, Sliders, MessageSquare, Eye, Megaphone, Trash, Bell, Send, Building, Languages as LanguagesIcon, Network } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ACCENT_PALETTES } from "@/contexts/theme";
 import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { MarketplaceSettingsCard } from "@/pages/marketplace/marketplace-settings-card";
 
 const FALLBACK_LANGS = ["ru", "en"];
 const LANG_NAMES: Record<string, string> = {
@@ -172,6 +173,81 @@ const BOT_MENU_TEXT_LABELS: Record<string, string> = {
   chooseAction: "Призыв к действию",
 };
 
+/** Человеко-читаемые описания emoji-ключей для админки (вместо технических HEADER, BALANCE и т.п.). */
+const BOT_EMOJI_LABELS: Record<string, string> = {
+  HEADER: "Заголовок главного меню",
+  MAIN_MENU: "Иконка «Главное меню»",
+  STATUS: "Статус подписки",
+  BALANCE: "Баланс",
+  TARIFFS: "Раздел «Тарифы»",
+  PACKAGE: "Пакет / Тариф",
+  PROFILE: "Профиль",
+  CARD: "Оплата / Карта",
+  TRIAL: "Триал / Подарок",
+  LINK: "Ссылка / Реферал",
+  SERVERS: "VPN / Серверы",
+  BACK: "Кнопка «Назад»",
+  PUZZLE: "Меню профиля",
+  DATE: "Дата окончания",
+  TIME: "Осталось дней",
+  TRAFFIC: "Трафик",
+  ACTIVE_GREEN: "Активно (зелёный)",
+  ACTIVE_YELLOW: "Ограничено (жёлтый)",
+  INACTIVE: "Неактивно (серый)",
+  CONNECT: "Подключение",
+  NOTE: "Поддержка / Заметка",
+  STAR: "Промокод / Звезда",
+  CROWN: "Премиум / Корона",
+  DURATION: "Длительность",
+  DEVICES: "Устройства",
+  LOCATION: "Локация",
+  CUSTOM_1: "Свой эмодзи №1",
+  CUSTOM_2: "Свой эмодзи №2",
+  CUSTOM_3: "Свой эмодзи №3",
+  CUSTOM_4: "Свой эмодзи №4",
+  CUSTOM_5: "Свой эмодзи №5",
+};
+
+/** Опции стилей кнопок с цветовыми превью. Внутренние ID-стили примерно одинаковы в TG. */
+const BOT_STYLE_OPTIONS: { value: string; label: string; swatch: string }[] = [
+  { value: "", label: "По умолчанию", swatch: "bg-muted" },
+  { value: "primary", label: "Синий", swatch: "bg-blue-500" },
+  { value: "success", label: "Зелёный", swatch: "bg-emerald-500" },
+  { value: "danger", label: "Красный", swatch: "bg-red-500" },
+];
+
+/** Человеко-читаемые имена кнопок главного меню по их id (для подсказок справа от ввода). */
+const BOT_BUTTON_HUMAN_NAMES: Record<string, string> = {
+  tariffs: "Список тарифов VPN",
+  proxy: "Прокси-тарифы",
+  my_proxy: "Мои прокси-доступы",
+  singbox: "Singbox-доступы",
+  my_singbox: "Мои singbox-доступы",
+  profile: "Профиль клиента",
+  devices: "Управление устройствами",
+  topup: "Пополнение баланса",
+  referral: "Реферальная программа",
+  trial: "Бесплатный триал",
+  vpn: "Подключение к VPN",
+  cabinet: "Открыть веб-кабинет",
+  tickets: "Тикеты поддержки",
+  support: "Связь с поддержкой",
+  promocode: "Ввод промокода",
+  gift: "Подарочные коды",
+  extra_options: "Доп. опции (трафик, устройства)",
+};
+
+/** Подсказки к текстам экранов бота: где это используется и какие переменные доступны. */
+const BOT_INNER_STYLE_LABELS: Record<string, { label: string; desc: string }> = {
+  tariffPay: { label: "Кнопка оплаты тарифа", desc: "Цвет кнопки выбора тарифа в списке" },
+  topup: { label: "Кнопка пополнения", desc: "Цвет на экране пополнения баланса" },
+  back: { label: "Кнопка «Назад»", desc: "Возврат в предыдущее меню" },
+  profile: { label: "Кнопка профиля", desc: "Кнопки внутри экрана профиля" },
+  trialConfirm: { label: "Подтверждение триала", desc: "Подтверждение активации триала" },
+  lang: { label: "Выбор языка", desc: "Кнопки выбора языка интерфейса" },
+  currency: { label: "Выбор валюты", desc: "Кнопки выбора валюты" },
+};
+
 export function SettingsPage() {
   const { t } = useTranslation();
   const { state, updateAdmin } = useAuth();
@@ -193,6 +269,7 @@ export function SettingsPage() {
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [squads, setSquads] = useState<{ uuid: string; name?: string }[]>([]);
   const [activeTab, setActiveTab] = useState("general");
+  const [botSubTab, setBotSubTab] = useState<"menu" | "texts" | "emoji" | "behavior" | "links">("menu");
   const [installedLangCodes, setInstalledLangCodes] = useState<string[]>(FALLBACK_LANGS);
   const [plategaCallbackCopied, setPlategaCallbackCopied] = useState(false);
   const [yoomoneyWebhookCopied, setYoomoneyWebhookCopied] = useState(false);
@@ -624,6 +701,8 @@ export function SettingsPage() {
         forceSubscribeChannelId: settings.forceSubscribeChannelId ?? null,
         forceSubscribeMessage: settings.forceSubscribeMessage ?? null,
         blacklistEnabled: settings.blacklistEnabled ?? false,
+        botAutoDeleteUnknownMessages: settings.botAutoDeleteUnknownMessages ?? false,
+        botInfoBlock: settings.botInfoBlock ?? null,
         allowUserThemeChange: (settings as any).allowUserThemeChange ?? true,
         sellOptionsEnabled: settings.sellOptionsEnabled ?? false,
         sellOptionsTrafficEnabled: settings.sellOptionsTrafficEnabled ?? false,
@@ -761,6 +840,7 @@ export function SettingsPage() {
         proxyUrl: settings.proxyUrl ?? null,
         proxyTelegram: settings.proxyTelegram ?? false,
         proxyPayments: settings.proxyPayments ?? false,
+        proxyAi: settings.proxyAi ?? false,
         nalogEnabled: settings.nalogEnabled ?? false,
         nalogInn: settings.nalogInn ?? null,
         nalogPassword: settings.nalogPassword ?? null,
@@ -790,221 +870,230 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">{t("admin.settings.title")}</h1>
-        <p className="text-muted-foreground">{t("admin.settings.subtitle")}</p>
+      {/* ═══ HERO ═══ */}
+      <div className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-gradient-to-br from-sky-500/10 via-indigo-500/10 to-fuchsia-500/10 backdrop-blur-3xl shadow-2xl">
+        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-fuchsia-500/10 pointer-events-none" />
+        <div className="absolute -top-20 -right-20 w-64 h-64 rounded-full bg-gradient-to-br from-sky-500/20 to-fuchsia-500/20 blur-3xl pointer-events-none" />
+        <div className="relative px-6 py-7 sm:px-8 sm:py-8 flex items-start gap-5">
+          <div className="h-16 w-16 rounded-3xl bg-gradient-to-br from-sky-500/30 via-indigo-500/20 to-fuchsia-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+            <Settings2 className="h-8 w-8 text-foreground" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-sky-500 via-indigo-500 to-fuchsia-500">
+              {t("admin.settings.title")}
+            </h1>
+            <p className="text-sm sm:text-base text-muted-foreground mt-2 leading-relaxed max-w-2xl">
+              {t("admin.settings.subtitle")}
+            </p>
+          </div>
+        </div>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="w-full grid grid-cols-2 sm:grid-cols-10 gap-2 p-2 h-auto bg-muted/50 rounded-2xl border shadow-sm">
-          <TabsTrigger value="general" className="gap-2 py-3 px-4 rounded-xl">
-            <Settings2 className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_general")}
+        <TabsList className="w-full grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-10 gap-1.5 p-1.5 h-auto bg-muted/40 rounded-2xl border border-white/10 shadow-sm backdrop-blur-md">
+          <TabsTrigger value="general" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-slate-500 data-[state=active]:to-zinc-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Settings2 className="h-4 w-4 shrink-0" />{t("admin.settings.tab_general")}
           </TabsTrigger>
-          <TabsTrigger value="trial" className="gap-2 py-3 px-4 rounded-xl">
-            <Gift className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_trial")}
+          <TabsTrigger value="trial" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500 data-[state=active]:to-teal-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Gift className="h-4 w-4 shrink-0" />{t("admin.settings.tab_trial")}
           </TabsTrigger>
-          <TabsTrigger value="referral" className="gap-2 py-3 px-4 rounded-xl">
-            <Users className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_referral")}
+          <TabsTrigger value="referral" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-500 data-[state=active]:to-purple-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Users className="h-4 w-4 shrink-0" />{t("admin.settings.tab_referral")}
           </TabsTrigger>
-          <TabsTrigger value="payments" className="gap-2 py-3 px-4 rounded-xl">
-            <CreditCard className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_payments")}
+          <TabsTrigger value="payments" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500 data-[state=active]:to-orange-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <CreditCard className="h-4 w-4 shrink-0" />{t("admin.settings.tab_payments")}
           </TabsTrigger>
-          <TabsTrigger value="bot" className="gap-2 py-3 px-4 rounded-xl">
-            <Bot className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_bot")}
+          <TabsTrigger value="bot" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-sky-500 data-[state=active]:to-blue-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Bot className="h-4 w-4 shrink-0" />{t("admin.settings.tab_bot")}
           </TabsTrigger>
-          <TabsTrigger value="ai" className="gap-2 py-3 px-4 rounded-xl">
-            <Sparkles className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_ai")}
+          <TabsTrigger value="ai" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-fuchsia-500 data-[state=active]:to-pink-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Sparkles className="h-4 w-4 shrink-0" />{t("admin.settings.tab_ai")}
           </TabsTrigger>
-          <TabsTrigger value="mail-telegram" className="gap-2 py-3 px-4 rounded-xl">
-            <Mail className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_mail_telegram")}
+          <TabsTrigger value="mail-telegram" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-cyan-500 data-[state=active]:to-teal-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Mail className="h-4 w-4 shrink-0" />{t("admin.settings.tab_mail_telegram")}
           </TabsTrigger>
-          <TabsTrigger value="subpage" className="gap-2 py-3 px-4 rounded-xl">
-            <FileJson className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_subpage")}
+          <TabsTrigger value="subpage" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-rose-500 data-[state=active]:to-pink-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <FileJson className="h-4 w-4 shrink-0" />{t("admin.settings.tab_subpage")}
           </TabsTrigger>
-          <TabsTrigger value="theme" className="gap-2 py-3 px-4 rounded-xl">
-            <Palette className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_theme")}
+          <TabsTrigger value="theme" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-pink-500 data-[state=active]:to-rose-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Palette className="h-4 w-4 shrink-0" />{t("admin.settings.tab_theme")}
           </TabsTrigger>
-          <TabsTrigger value="options" className="gap-2 py-3 px-4 rounded-xl">
-            <Package className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_options")}
+          <TabsTrigger value="options" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-yellow-500 data-[state=active]:to-amber-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Package className="h-4 w-4 shrink-0" />{t("admin.settings.tab_options")}
           </TabsTrigger>
-          <TabsTrigger value="custom-build" className="gap-2 py-3 px-4 rounded-xl">
-            <Layers className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_custom_build")}
+          <TabsTrigger value="custom-build" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-violet-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Layers className="h-4 w-4 shrink-0" />{t("admin.settings.tab_custom_build")}
           </TabsTrigger>
-          <TabsTrigger value="oauth" className="gap-2 py-3 px-4 rounded-xl">
-            <KeyRound className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_oauth")}
+          <TabsTrigger value="oauth" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-zinc-500 data-[state=active]:to-slate-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <KeyRound className="h-4 w-4 shrink-0" />{t("admin.settings.tab_oauth")}
           </TabsTrigger>
-          <TabsTrigger value="landing" className="gap-2 py-3 px-4 rounded-xl">
-            <Globe className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_landing")}
+          <TabsTrigger value="landing" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-green-500 data-[state=active]:to-emerald-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Globe className="h-4 w-4 shrink-0" />{t("admin.settings.tab_landing")}
           </TabsTrigger>
-          <TabsTrigger value="server-ssh" className="gap-2 py-3 px-4 rounded-xl">
-            <Terminal className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_ssh")}
+          <TabsTrigger value="server-ssh" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-stone-500 data-[state=active]:to-zinc-600 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Terminal className="h-4 w-4 shrink-0" />{t("admin.settings.tab_ssh")}
           </TabsTrigger>
-          <TabsTrigger value="proxy-settings" className="gap-2 py-3 px-4 rounded-xl">
-            <Shield className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_proxy")}
+          <TabsTrigger value="proxy-settings" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-orange-500 data-[state=active]:to-red-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Shield className="h-4 w-4 shrink-0" />{t("admin.settings.tab_proxy")}
           </TabsTrigger>
-          <TabsTrigger value="nalog-settings" className="gap-2 py-3 px-4 rounded-xl">
-            <FileText className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_nalog")}
+          <TabsTrigger value="nalog-settings" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-yellow-600 data-[state=active]:to-amber-600 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <FileText className="h-4 w-4 shrink-0" />{t("admin.settings.tab_nalog")}
           </TabsTrigger>
-          <TabsTrigger value="geo-map" className="gap-2 py-3 px-4 rounded-xl">
-            <MapPin className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_map")}
+          <TabsTrigger value="geo-map" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-teal-500 data-[state=active]:to-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <MapPin className="h-4 w-4 shrink-0" />{t("admin.settings.tab_map")}
           </TabsTrigger>
-          <TabsTrigger value="gifts" className="gap-2 py-3 px-4 rounded-xl">
-            <Gift className="h-4 w-4 shrink-0" />
-            Подарки
+          <TabsTrigger value="gifts" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-pink-500 data-[state=active]:to-fuchsia-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <Gift className="h-4 w-4 shrink-0" />Подарки
           </TabsTrigger>
-          <TabsTrigger value="sync" className="gap-2 py-3 px-4 rounded-xl">
-            <ArrowLeftRight className="h-4 w-4 shrink-0" />
-            {t("admin.settings.tab_sync")}
+          <TabsTrigger value="sync" className="gap-1.5 py-2.5 px-3 rounded-xl text-xs sm:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-500 data-[state=active]:to-indigo-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <ArrowLeftRight className="h-4 w-4 shrink-0" />{t("admin.settings.tab_sync")}
           </TabsTrigger>
         </TabsList>
 
         <form onSubmit={handleSubmit}>
           <TabsContent value="general">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("admin.settings.general_title")}</CardTitle>
-                <p className="text-sm text-muted-foreground">{t("admin.settings.general_subtitle")}</p>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-3">
-                    <Switch
-                      id="tickets-enabled-general"
-                      checked={!!settings.ticketsEnabled}
-                      onCheckedChange={(checked: boolean) =>
-                        setSettings((s) => (s ? { ...s, ticketsEnabled: checked === true } : s))
-                      }
-                    />
-                    <div>
-                      <Label htmlFor="tickets-enabled-general" className="text-base font-medium cursor-pointer">{t("admin.settings.ticket_system")}</Label>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {t("admin.settings.ticket_hint")}
-                      </p>
-                    </div>
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-slate-500/10 via-zinc-500/10 to-stone-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-slate-500/5 via-transparent to-zinc-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-slate-500/30 via-zinc-500/20 to-stone-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <Settings2 className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-slate-500 via-zinc-500 to-stone-500">
+                      {t("admin.settings.general_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.general_subtitle")}</p>
                   </div>
                 </div>
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-3">
-                    <Switch
-                      id="admin-front-notifications"
-                      checked={settings.adminFrontNotificationsEnabled ?? true}
-                      onCheckedChange={(checked: boolean) =>
-                        setSettings((s) =>
-                          s ? { ...s, adminFrontNotificationsEnabled: checked === true } : s
-                        )
-                      }
-                    />
-                    <div>
-                      <Label htmlFor="admin-front-notifications" className="text-base font-medium cursor-pointer">
-                        {t("admin.settings.popup_notifications")}
-                      </Label>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {t("admin.settings.popup_hint")}
-                      </p>
-                    </div>
+              </div>
+              <CardContent className="space-y-5 p-4 sm:p-6">
+                {/* === Функции сервиса === */}
+                <div className="rounded-2xl border border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-blue-500/5 to-indigo-500/5 p-5 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-sky-500/20 flex items-center justify-center"><Sparkles className="h-4 w-4 text-sky-500" /></div>
+                    <h3 className="text-base font-semibold">Функции сервиса</h3>
                   </div>
-                </div>
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-3">
-                    <Switch
-                      id="ai-chat-enabled"
-                      checked={settings.aiChatEnabled !== false}
-                      onCheckedChange={(checked: boolean) =>
-                        setSettings((s) => (s ? { ...s, aiChatEnabled: checked === true } : s))
-                      }
-                    />
-                    <div>
-                      <Label htmlFor="ai-chat-enabled" className="text-base font-medium cursor-pointer">{t("admin.settings.ai_chat_label")}</Label>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {t("admin.settings.ai_chat_hint")}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-                <div className="space-y-4 rounded-lg border p-4 bg-muted/20">
+                  <p className="text-xs text-muted-foreground">Включай/выключай ключевые модули клиентского кабинета и админки.</p>
                   <div className="space-y-2">
-                    <Label>{t("admin.settings.notification_group")}</Label>
+                    <label className="flex items-start gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 hover:border-white/10 transition-colors cursor-pointer">
+                      <div className="h-9 w-9 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0"><MessageSquare className="h-4 w-4 text-sky-500" /></div>
+                      <div className="flex-1 min-w-0">
+                        <Label htmlFor="tickets-enabled-general" className="text-sm font-medium cursor-pointer">{t("admin.settings.ticket_system")}</Label>
+                        <p className="text-xs text-muted-foreground mt-0.5">{t("admin.settings.ticket_hint")}</p>
+                      </div>
+                      <Switch
+                        id="tickets-enabled-general"
+                        checked={!!settings.ticketsEnabled}
+                        onCheckedChange={(checked: boolean) => setSettings((s) => (s ? { ...s, ticketsEnabled: checked === true } : s))}
+                      />
+                    </label>
+                    <label className="flex items-start gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 hover:border-white/10 transition-colors cursor-pointer">
+                      <div className="h-9 w-9 rounded-xl bg-blue-500/10 flex items-center justify-center shrink-0"><Bell className="h-4 w-4 text-blue-500" /></div>
+                      <div className="flex-1 min-w-0">
+                        <Label htmlFor="admin-front-notifications" className="text-sm font-medium cursor-pointer">{t("admin.settings.popup_notifications")}</Label>
+                        <p className="text-xs text-muted-foreground mt-0.5">{t("admin.settings.popup_hint")}</p>
+                      </div>
+                      <Switch
+                        id="admin-front-notifications"
+                        checked={settings.adminFrontNotificationsEnabled ?? true}
+                        onCheckedChange={(checked: boolean) => setSettings((s) => s ? { ...s, adminFrontNotificationsEnabled: checked === true } : s)}
+                      />
+                    </label>
+                    <label className="flex items-start gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 hover:border-white/10 transition-colors cursor-pointer">
+                      <div className="h-9 w-9 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0"><Sparkles className="h-4 w-4 text-indigo-500" /></div>
+                      <div className="flex-1 min-w-0">
+                        <Label htmlFor="ai-chat-enabled" className="text-sm font-medium cursor-pointer">{t("admin.settings.ai_chat_label")}</Label>
+                        <p className="text-xs text-muted-foreground mt-0.5">{t("admin.settings.ai_chat_hint")}</p>
+                      </div>
+                      <Switch
+                        id="ai-chat-enabled"
+                        checked={settings.aiChatEnabled !== false}
+                        onCheckedChange={(checked: boolean) => setSettings((s) => (s ? { ...s, aiChatEnabled: checked === true } : s))}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {/* === Уведомления в Telegram === */}
+                <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 via-teal-500/5 to-sky-500/5 p-5 space-y-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-cyan-500/20 flex items-center justify-center"><Send className="h-4 w-4 text-cyan-500" /></div>
+                    <h3 className="text-base font-semibold">Уведомления в Telegram-группу</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Бот шлёт системные уведомления (новые клиенты, оплаты, тикеты, бэкапы) в указанную группу. Если группа без тем — всё в общий чат, иначе можно разрулить по топикам ниже.</p>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs uppercase tracking-wider text-muted-foreground">ID группы</Label>
                     <Input
                       value={settings.notificationTelegramGroupId ?? ""}
                       onChange={(e) => setSettings((s) => (s ? { ...s, notificationTelegramGroupId: e.target.value.trim() || null } : s))}
                       placeholder="-1001234567890"
                     />
-                    <p className="text-xs text-muted-foreground">
-                      {t("admin.settings.notification_group_hint")}
-                    </p>
+                    <p className="text-[11px] text-muted-foreground">{t("admin.settings.notification_group_hint")}</p>
                   </div>
                   {settings.notificationTelegramGroupId?.trim() && (
-                    <div className="space-y-3 pl-4 border-l-2 border-primary/30">
-                      <p className="text-sm font-medium text-muted-foreground">{t("admin.settings.topics")}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("admin.settings.topics_hint")}
-                      </p>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-white/10 bg-card/40 p-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <div className="h-1 w-6 rounded-full bg-gradient-to-r from-cyan-500 to-teal-500" />
+                        <p className="text-sm font-medium">{t("admin.settings.topics")}</p>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">{t("admin.settings.topics_hint")}</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                         <div className="space-y-1">
-                          <Label className="text-xs">{t("admin.settings.topic_new_clients")}</Label>
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_new_clients")}</Label>
                           <Input
                             value={settings.notificationTopicNewClients ?? ""}
                             onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicNewClients: e.target.value.trim() || null } : s))}
                             placeholder={t("admin.settings.topic_id_placeholder")}
-                            className="h-8 text-sm"
+                            className="h-9 text-sm"
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-xs">{t("admin.settings.topic_payments")}</Label>
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_payments")}</Label>
                           <Input
                             value={settings.notificationTopicPayments ?? ""}
                             onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicPayments: e.target.value.trim() || null } : s))}
                             placeholder={t("admin.settings.topic_id_placeholder")}
-                            className="h-8 text-sm"
+                            className="h-9 text-sm"
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-xs">{t("admin.settings.topic_tickets")}</Label>
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_tickets")}</Label>
                           <Input
                             value={settings.notificationTopicTickets ?? ""}
                             onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicTickets: e.target.value.trim() || null } : s))}
                             placeholder={t("admin.settings.topic_id_placeholder")}
-                            className="h-8 text-sm"
+                            className="h-9 text-sm"
                           />
                         </div>
                         <div className="space-y-1">
-                          <Label className="text-xs">{t("admin.settings.topic_backups")}</Label>
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_backups")}</Label>
                           <Input
                             value={settings.notificationTopicBackups ?? ""}
                             onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicBackups: e.target.value.trim() || null } : s))}
                             placeholder={t("admin.settings.topic_id_placeholder")}
-                            className="h-8 text-sm"
+                            className="h-9 text-sm"
                           />
                         </div>
                       </div>
                     </div>
                   )}
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.service_name")}</Label>
-                  <Input
-                    value={settings.serviceName}
-                    onChange={(e) => setSettings((s) => (s ? { ...s, serviceName: e.target.value } : s))}
-                  />
-                  <p className="text-xs text-muted-foreground">{t("admin.settings.service_name_hint")}</p>
-                </div>
+                {/* === Брендинг === */}
+                <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-br from-purple-500/5 via-violet-500/5 to-fuchsia-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-purple-500/20 flex items-center justify-center"><Building className="h-4 w-4 text-purple-500" /></div>
+                    <h3 className="text-base font-semibold">Брендинг</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Имя сервиса, логотипы, фавикон, публичный URL — всё что видит клиент в кабинете и боте.</p>
+                  <div className="space-y-2">
+                    <Label className="text-xs uppercase tracking-wider text-muted-foreground">{t("admin.settings.service_name")}</Label>
+                    <Input
+                      value={settings.serviceName}
+                      onChange={(e) => setSettings((s) => (s ? { ...s, serviceName: e.target.value } : s))}
+                    />
+                    <p className="text-[11px] text-muted-foreground">{t("admin.settings.service_name_hint")}</p>
+                  </div>
                 <div className="space-y-2">
                   <Label>{t("admin.settings.logo")}</Label>
                   {settings.logo ? (
@@ -1157,8 +1246,16 @@ export function SettingsPage() {
                     {t("admin.settings.app_url_hint")}
                   </p>
                 </div>
+                </div>
+                {/* === Локализация === */}
+                <div className="rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-orange-500/5 to-yellow-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-amber-500/20 flex items-center justify-center"><LanguagesIcon className="h-4 w-4 text-amber-500" /></div>
+                    <h3 className="text-base font-semibold">Локализация</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Языки и валюты, доступные клиенту. Звёздочка ★ — язык/валюта по умолчанию для новых пользователей.</p>
                 <div className="space-y-2">
-                  <Label>{t("admin.settings.languages")}</Label>
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">{t("admin.settings.languages")}</Label>
                   <div className="flex flex-wrap gap-2">
                     {(() => {
                       const preset = installedLangCodes.length ? installedLangCodes : FALLBACK_LANGS;
@@ -1257,12 +1354,14 @@ export function SettingsPage() {
                     </select>
                   </div>
                 </div>
-                <div className="space-y-2 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-2 mb-2">
-                    <KeyRound className="h-4 w-4 text-primary shrink-0" />
-                    <Label className="text-base font-medium">{t("admin.settings.security")}</Label>
+                </div>
+                {/* === Безопасность === */}
+                <div className="rounded-2xl border border-rose-500/20 bg-gradient-to-br from-rose-500/5 via-red-500/5 to-pink-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-rose-500/20 flex items-center justify-center"><Shield className="h-4 w-4 text-rose-500" /></div>
+                    <h3 className="text-base font-semibold">{t("admin.settings.security")}</h3>
                   </div>
-                  <p className="text-xs text-muted-foreground mb-3">{t("admin.settings.2fa_hint")}</p>
+                  <p className="text-xs text-muted-foreground">{t("admin.settings.2fa_hint")}</p>
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 rounded-xl bg-muted/40 border">
                     <div className="flex items-center gap-4 min-w-0">
                       <div className="flex h-10 w-10 items-center justify-center shrink-0 rounded-xl bg-primary/10 text-primary">
@@ -1292,536 +1391,608 @@ export function SettingsPage() {
                 </Button>
               </CardContent>
             </Card>
+            <MarketplaceSettingsCard />
           </TabsContent>
 
           <TabsContent value="bot">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("admin.settings.bot_title")}</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("admin.settings.bot_subtitle")}
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.bot_back_button")}</Label>
-                  <Input
-                    value={settings.botBackLabel ?? "◀️ В меню"}
-                    onChange={(e) => setSettings((s) => (s ? { ...s, botBackLabel: e.target.value || "◀️ В меню" } : s))}
-                    placeholder="◀️ В меню"
-                  />
-                  <p className="text-xs text-muted-foreground">{t("admin.settings.bot_back_hint")}</p>
-                </div>
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-2">
-                    <MessageCircle className="h-4 w-4 text-primary" />
-                    <Label className="text-base font-medium">{t("admin.settings.bot_support")}</Label>
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-sky-500/10 via-indigo-500/10 to-fuchsia-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-sky-500/5 via-transparent to-fuchsia-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-sky-500/30 via-indigo-500/20 to-fuchsia-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <Bot className="h-7 w-7 text-foreground" />
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("admin.settings.bot_support_hint")}
-                  </p>
-                  <div className="grid gap-3 sm:grid-cols-1">
-                    <div className="space-y-1">
-                      <Label className="text-xs">{t("admin.settings.bot_tech_support")}</Label>
-                      <Input
-                        value={settings.supportLink ?? ""}
-                        onChange={(e) => setSettings((s) => (s ? { ...s, supportLink: e.target.value || undefined } : s))}
-                        placeholder={t("admin.settings.bot_support_placeholder")}
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">{t("admin.settings.bot_agreements")}</Label>
-                      <Input
-                        value={settings.agreementLink ?? ""}
-                        onChange={(e) => setSettings((s) => (s ? { ...s, agreementLink: e.target.value || undefined } : s))}
-                        placeholder="https://telegra.ph/..."
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">{t("admin.settings.bot_offer")}</Label>
-                      <Input
-                        value={settings.offerLink ?? ""}
-                        onChange={(e) => setSettings((s) => (s ? { ...s, offerLink: e.target.value || undefined } : s))}
-                        placeholder="https://telegra.ph/..."
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">{t("admin.settings.bot_instructions")}</Label>
-                      <Input
-                        value={settings.instructionsLink ?? ""}
-                        onChange={(e) => setSettings((s) => (s ? { ...s, instructionsLink: e.target.value || undefined } : s))}
-                        placeholder="https://telegra.ph/..."
-                      />
-                    </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-sky-500 via-indigo-500 to-fuchsia-500">
+                      Настройки Telegram-бота
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+                      Главное меню, тексты экранов, эмодзи, поведение и ссылки. Изменения подхватываются ботом автоматически после сохранения.
+                    </p>
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.bot_emojis")}</Label>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {t("admin.settings.bot_emojis_hint")}
-                  </p>
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mb-2 rounded-md bg-amber-50 dark:bg-amber-950/40 p-2 border border-amber-200 dark:border-amber-800">
-                    {t("admin.settings.bot_emojis_premium_warn")}
-                  </p>
-                  <div className="rounded-lg border overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-muted/50 border-b">
-                          <th className="text-left py-2 px-3 font-medium">{t("admin.settings.bot_col_key")}</th>
-                          <th className="text-left py-2 px-3 font-medium w-24">Unicode</th>
-                          <th className="text-left py-2 px-3 font-medium">{t("admin.settings.bot_col_tg_id")}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {BOT_EMOJI_KEYS.map((key) => {
-                          const raw = (settings.botEmojis ?? {})[key];
-                          const entry = typeof raw === "object" && raw !== null ? raw : { unicode: typeof raw === "string" ? raw : undefined, tgEmojiId: undefined };
-                          return (
-                            <tr key={key} className="border-b border-border/50 hover:bg-muted/20">
-                              <td className="py-1.5 px-3 font-medium">{key}</td>
-                              <td className="py-1.5 px-2">
-                                <Input
-                                  className="h-8 w-20 p-1 text-center text-base"
-                                  value={entry.unicode ?? ""}
-                                  onChange={(e) =>
-                                    setSettings((s) => {
-                                      if (!s) return s;
-                                      const prev = (s.botEmojis ?? {})[key];
-                                      const prevObj = typeof prev === "object" && prev !== null ? prev : { unicode: typeof prev === "string" ? prev : undefined, tgEmojiId: undefined };
-                                      return {
-                                        ...s,
-                                        botEmojis: {
-                                          ...(s.botEmojis ?? {}),
-                                          [key]: { ...prevObj, unicode: e.target.value || undefined },
-                                        },
-                                      };
-                                    })
-                                  }
-                                  placeholder="📦"
-                                />
-                              </td>
-                              <td className="py-1.5 px-2">
-                                <Input
-                                  className="h-8 min-w-0 text-xs"
-                                  value={entry.tgEmojiId ?? ""}
-                                  onChange={(e) =>
-                                    setSettings((s) => {
-                                      if (!s) return s;
-                                      const prev = (s.botEmojis ?? {})[key];
-                                      const prevObj = typeof prev === "object" && prev !== null ? prev : { unicode: typeof prev === "string" ? prev : undefined, tgEmojiId: undefined };
-                                      return {
-                                        ...s,
-                                        botEmojis: {
-                                          ...(s.botEmojis ?? {}),
-                                          [key]: { ...prevObj, tgEmojiId: e.target.value || undefined },
-                                        },
-                                      };
-                                    })
-                                  }
-                                  placeholder="5289722755871162900"
-                                />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.bot_menu_buttons")}</Label>
-                  <p className="text-xs text-muted-foreground mb-3">
-                    {t("admin.settings.bot_menu_hint")}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-4 mb-4">
-                    <div className="flex items-center gap-2">
-                      <Label htmlFor="bot-buttons-per-row" className="text-sm whitespace-nowrap">{t("admin.settings.bot_buttons_per_row")}</Label>
-                      <select
-                        id="bot-buttons-per-row"
-                        className="flex h-9 w-24 rounded-md border border-input bg-background px-2 py-1 text-sm"
-                        value={settings.botButtonsPerRow ?? 1}
-                        onChange={(e) =>
-                          setSettings((s) =>
-                            s ? { ...s, botButtonsPerRow: e.target.value === "2" ? 2 : 1 } : s
-                          )
-                        }
-                      >
-                        <option value={1}>{t("admin.settings.bot_buttons_per_row_1")}</option>
-                        <option value={2}>{t("admin.settings.bot_buttons_per_row_2")}</option>
-                      </select>
+              </div>
+              <CardContent className="p-4 sm:p-6 space-y-6">
+                <Tabs value={botSubTab} onValueChange={(v) => setBotSubTab(v as typeof botSubTab)}>
+                  <TabsList className="w-full grid grid-cols-2 sm:grid-cols-5 gap-1.5 p-1.5 h-auto bg-muted/40 rounded-2xl border">
+                    <TabsTrigger value="menu" className="gap-2 py-2.5 px-3 rounded-xl data-[state=active]:bg-gradient-to-r data-[state=active]:from-sky-500 data-[state=active]:to-blue-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+                      <Layers className="h-4 w-4 shrink-0" /><span className="text-xs sm:text-sm">Меню</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="texts" className="gap-2 py-2.5 px-3 rounded-xl data-[state=active]:bg-gradient-to-r data-[state=active]:from-violet-500 data-[state=active]:to-purple-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+                      <MessageSquare className="h-4 w-4 shrink-0" /><span className="text-xs sm:text-sm">Тексты</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="emoji" className="gap-2 py-2.5 px-3 rounded-xl data-[state=active]:bg-gradient-to-r data-[state=active]:from-amber-500 data-[state=active]:to-orange-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+                      <Smile className="h-4 w-4 shrink-0" /><span className="text-xs sm:text-sm">Эмодзи</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="behavior" className="gap-2 py-2.5 px-3 rounded-xl data-[state=active]:bg-gradient-to-r data-[state=active]:from-emerald-500 data-[state=active]:to-teal-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+                      <Sliders className="h-4 w-4 shrink-0" /><span className="text-xs sm:text-sm">Поведение</span>
+                    </TabsTrigger>
+                    <TabsTrigger value="links" className="gap-2 py-2.5 px-3 rounded-xl data-[state=active]:bg-gradient-to-r data-[state=active]:from-rose-500 data-[state=active]:to-pink-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+                      <Link2 className="h-4 w-4 shrink-0" /><span className="text-xs sm:text-sm">Ссылки</span>
+                    </TabsTrigger>
+                  </TabsList>
+
+                  {/* === ВКЛАДКА: МЕНЮ === */}
+                  <TabsContent value="menu" className="space-y-5 mt-5">
+                    <div className="rounded-2xl border border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-blue-500/5 to-indigo-500/5 p-5 space-y-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-sky-500/20 flex items-center justify-center"><ArrowLeftRight className="h-4 w-4 text-sky-500" /></div>
+                        <h3 className="text-base font-semibold">Кнопка возврата</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">Текст кнопки, которая возвращает пользователя в предыдущее меню. Появляется почти на всех экранах бота.</p>
+                      <Input
+                        value={settings.botBackLabel ?? "◀️ В меню"}
+                        onChange={(e) => setSettings((s) => (s ? { ...s, botBackLabel: e.target.value || "◀️ В меню" } : s))}
+                        placeholder="◀️ В меню"
+                      />
                     </div>
-                    <span className="text-xs text-muted-foreground">{t("admin.settings.bot_buttons_per_row_default")}</span>
-                  </div>
-                  <div className="space-y-3">
-                    {[...(settings.botButtons ?? DEFAULT_BOT_BUTTONS)]
-                      .sort((a, b) => a.order - b.order)
-                      .map((btn, idx) => (
-                        <div key={btn.id} className="flex flex-wrap items-center gap-3 p-3 rounded-lg border bg-muted/30">
-                          <Switch
-                            checked={btn.visible}
-                            onCheckedChange={(checked: boolean) =>
-                              setSettings((s) => {
-                                if (!s?.botButtons) return s;
-                                return {
-                                  ...s,
-                                  botButtons: s.botButtons.map((b) =>
-                                    b.id === btn.id ? { ...b, visible: checked === true } : b
-                                  ),
-                                };
-                              })
-                            }
-                          />
-                          <Input
-                            className="w-32 flex-shrink-0"
-                            type="number"
-                            min={0}
-                            step="any"
-                            value={btn.order}
-                            onChange={(e) =>
-                              setSettings((s) => {
-                                if (!s?.botButtons) return s;
-                                const v = parseFloat(e.target.value.replace(",", "."));
-                                if (!Number.isFinite(v) || v < 0) return s;
-                                return {
-                                  ...s,
-                                  botButtons: s.botButtons.map((b) =>
-                                    b.id === btn.id ? { ...b, order: v } : b
-                                  ),
-                                };
-                              })
-                            }
-                          />
-                          <span className="text-xs text-muted-foreground w-8">{idx + 1}</span>
-                          <Input
-                            className="flex-1 min-w-[140px]"
-                            value={btn.label}
-                            onChange={(e) =>
-                              setSettings((s) => {
-                                if (!s?.botButtons) return s;
-                                return {
-                                  ...s,
-                                  botButtons: s.botButtons.map((b) =>
-                                    b.id === btn.id ? { ...b, label: e.target.value } : b
-                                  ),
-                                };
-                              })
-                            }
-                            placeholder={t("admin.settings.bot_button_placeholder")}
-                          />
-                          <select
-                            className="flex h-9 w-28 rounded-md border border-input bg-background px-2 py-1 text-sm"
-                            value={btn.emojiKey ?? ""}
-                            onChange={(e) =>
-                              setSettings((s) => {
-                                if (!s?.botButtons) return s;
-                                return {
-                                  ...s,
-                                  botButtons: s.botButtons.map((b) =>
-                                    b.id === btn.id ? { ...b, emojiKey: e.target.value } : b
-                                  ),
-                                };
-                              })
-                            }
-                          >
-                            <option value="">{t("admin.settings.bot_no_emoji")}</option>
-                            {BOT_EMOJI_KEYS.map((k) => (
-                              <option key={k} value={k}>{k}</option>
-                            ))}
-                          </select>
-                          <select
-                            className="flex h-9 w-24 rounded-md border border-input bg-background px-2 py-1 text-sm"
-                            value={btn.style ?? ""}
-                            onChange={(e) =>
-                              setSettings((s) => {
-                                if (!s?.botButtons) return s;
-                                return {
-                                  ...s,
-                                  botButtons: s.botButtons.map((b) =>
-                                    b.id === btn.id ? { ...b, style: e.target.value } : b
-                                  ),
-                                };
-                              })
-                            }
-                          >
-                            <option value="">—</option>
-                            <option value="primary">primary</option>
-                            <option value="success">success</option>
-                            <option value="danger">danger</option>
-                          </select>
-                          <div className="flex items-center gap-1.5">
-                            <Switch
-                              id={`onePerRow-${btn.id}`}
-                              checked={btn.onePerRow === true}
-                              onCheckedChange={(checked: boolean) =>
-                                setSettings((s) => {
-                                  if (!s?.botButtons) return s;
-                                  return {
-                                    ...s,
-                                    botButtons: s.botButtons.map((b) =>
-                                      b.id === btn.id ? { ...b, onePerRow: checked === true } : b
-                                    ),
-                                  };
-                                })
-                              }
-                            />
-                            <Label htmlFor={`onePerRow-${btn.id}`} className="text-xs cursor-pointer whitespace-nowrap">{t("admin.settings.bot_one_per_row")}</Label>
-                          </div>
-                          <span className="text-xs text-muted-foreground capitalize">{btn.id}</span>
-                        </div>
-                      ))}
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    {t("admin.settings.bot_one_per_row_hint")}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.bot_inner_styles")}</Label>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {t("admin.settings.bot_inner_styles_hint")}
-                  </p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {[
-                      { key: "tariffPay", label: t("admin.settings.bot_tariff_pay") },
-                      { key: "topup", label: t("admin.settings.bot_topup") },
-                      { key: "back", label: t("admin.settings.bot_back") },
-                      { key: "profile", label: t("admin.settings.bot_profile") },
-                      { key: "trialConfirm", label: t("admin.settings.bot_trial_confirm") },
-                      { key: "lang", label: t("admin.settings.bot_lang_select") },
-                      { key: "currency", label: t("admin.settings.bot_currency_select") },
-                    ].map(({ key, label }) => (
-                      <div key={key} className="flex items-center gap-2">
-                        <span className="text-sm w-48 shrink-0">{label}</span>
+                    <div className="rounded-2xl border border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-blue-500/5 to-indigo-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-blue-500/20 flex items-center justify-center"><Layers className="h-4 w-4 text-blue-500" /></div>
+                        <h3 className="text-base font-semibold">Кнопки главного меню</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">Переименуй, скрой или поменяй порядок кнопок главного меню. Каждой кнопке можно задать иконку (эмодзи), цвет и режим «во всю ширину».</p>
+                      <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-background/40 border border-white/5">
+                        <Label htmlFor="bot-buttons-per-row" className="text-sm font-medium">Кнопок в ряд:</Label>
                         <select
-                          className="flex h-9 flex-1 max-w-[120px] rounded-md border border-input bg-background px-2 py-1 text-sm"
-                          value={(settings.botInnerButtonStyles ?? {})[key] ?? ""}
+                          id="bot-buttons-per-row"
+                          className="flex h-9 rounded-lg border border-input bg-background px-3 py-1 text-sm"
+                          value={settings.botButtonsPerRow ?? 1}
                           onChange={(e) =>
-                            setSettings((s) => {
-                              if (!s) return s;
-                              const next = { ...DEFAULT_BOT_INNER_STYLES, ...(s.botInnerButtonStyles ?? {}), [key]: e.target.value };
-                              return { ...s, botInnerButtonStyles: next };
-                            })
+                            setSettings((s) => (s ? { ...s, botButtonsPerRow: e.target.value === "2" ? 2 : 1 } : s))
                           }
                         >
-                          <option value="">—</option>
-                          <option value="primary">primary</option>
-                          <option value="success">success</option>
-                          <option value="danger">danger</option>
+                          <option value={1}>1 — по одной</option>
+                          <option value={2}>2 — парами</option>
                         </select>
+                        <span className="text-xs text-muted-foreground">Глобально для всего меню (отдельные кнопки можно вытолкнуть в свою строку флагом ниже)</span>
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <Collapsible>
-                  <CollapsibleTrigger asChild>
-                    <Button type="button" variant="outline" className="w-full justify-between">
-                      {t("admin.settings.bot_welcome_texts")}
-                      <ChevronDown className="h-4 w-4" />
-                    </Button>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <div className="pt-3 space-y-3 border-t mt-3">
-                      <p className="text-xs text-muted-foreground">
-                        {t("admin.settings.bot_welcome_hint")}
+                      <div className="space-y-2">
+                        {[...(settings.botButtons ?? DEFAULT_BOT_BUTTONS)]
+                          .sort((a, b) => a.order - b.order)
+                          .map((btn, idx) => (
+                            <div key={btn.id} className={`group rounded-xl border bg-card/60 p-3 transition-all ${btn.visible ? "border-white/10" : "border-white/5 opacity-50"}`}>
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary text-[10px] font-bold">{idx + 1}</span>
+                                <span className="text-sm font-medium flex-1 truncate">{BOT_BUTTON_HUMAN_NAMES[btn.id] ?? btn.id}</span>
+                                <div className="flex items-center gap-1.5">
+                                  <Switch
+                                    checked={btn.visible}
+                                    onCheckedChange={(checked: boolean) =>
+                                      setSettings((s) => {
+                                        if (!s?.botButtons) return s;
+                                        return { ...s, botButtons: s.botButtons.map((b) => b.id === btn.id ? { ...b, visible: checked === true } : b) };
+                                      })
+                                    }
+                                  />
+                                  <Label className="text-xs text-muted-foreground cursor-pointer">{btn.visible ? "Виден" : "Скрыт"}</Label>
+                                </div>
+                              </div>
+                              <div className="grid gap-2 sm:grid-cols-[100px_1fr_140px_140px_auto]">
+                                <div className="space-y-1">
+                                  <Label className="text-[10px] uppercase text-muted-foreground tracking-wider">Порядок</Label>
+                                  <Input
+                                    className="h-9"
+                                    type="number"
+                                    min={0}
+                                    step="any"
+                                    value={btn.order}
+                                    onChange={(e) =>
+                                      setSettings((s) => {
+                                        if (!s?.botButtons) return s;
+                                        const v = parseFloat(e.target.value.replace(",", "."));
+                                        if (!Number.isFinite(v) || v < 0) return s;
+                                        return { ...s, botButtons: s.botButtons.map((b) => b.id === btn.id ? { ...b, order: v } : b) };
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-[10px] uppercase text-muted-foreground tracking-wider">Текст кнопки</Label>
+                                  <Input
+                                    className="h-9"
+                                    value={btn.label}
+                                    onChange={(e) =>
+                                      setSettings((s) => {
+                                        if (!s?.botButtons) return s;
+                                        return { ...s, botButtons: s.botButtons.map((b) => b.id === btn.id ? { ...b, label: e.target.value } : b) };
+                                      })
+                                    }
+                                    placeholder={t("admin.settings.bot_button_placeholder")}
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-[10px] uppercase text-muted-foreground tracking-wider">Иконка</Label>
+                                  <select
+                                    className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+                                    value={btn.emojiKey ?? ""}
+                                    onChange={(e) =>
+                                      setSettings((s) => {
+                                        if (!s?.botButtons) return s;
+                                        return { ...s, botButtons: s.botButtons.map((b) => b.id === btn.id ? { ...b, emojiKey: e.target.value } : b) };
+                                      })
+                                    }
+                                  >
+                                    <option value="">— нет —</option>
+                                    {BOT_EMOJI_KEYS.map((k) => (
+                                      <option key={k} value={k}>{BOT_EMOJI_LABELS[k] ?? k}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-[10px] uppercase text-muted-foreground tracking-wider">Цвет</Label>
+                                  <select
+                                    className="flex h-9 w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+                                    value={btn.style ?? ""}
+                                    onChange={(e) =>
+                                      setSettings((s) => {
+                                        if (!s?.botButtons) return s;
+                                        return { ...s, botButtons: s.botButtons.map((b) => b.id === btn.id ? { ...b, style: e.target.value } : b) };
+                                      })
+                                    }
+                                  >
+                                    {BOT_STYLE_OPTIONS.map((opt) => (
+                                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="flex items-end gap-1.5 pb-1">
+                                  <Switch
+                                    id={`onePerRow-${btn.id}`}
+                                    checked={btn.onePerRow === true}
+                                    onCheckedChange={(checked: boolean) =>
+                                      setSettings((s) => {
+                                        if (!s?.botButtons) return s;
+                                        return { ...s, botButtons: s.botButtons.map((b) => b.id === btn.id ? { ...b, onePerRow: checked === true } : b) };
+                                      })
+                                    }
+                                  />
+                                  <Label htmlFor={`onePerRow-${btn.id}`} className="text-xs cursor-pointer whitespace-nowrap">Во всю ширину</Label>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                      <p className="text-xs text-muted-foreground rounded-lg bg-background/40 border border-white/5 p-2.5">
+                        💡 «Во всю ширину» вытолкнет кнопку на отдельную строку даже если выбран режим 2 кнопки в ряд. Используй для важных целевых действий.
                       </p>
-                      <div className="space-y-2 rounded-lg border p-3 bg-background/60">
+                    </div>
+                  </TabsContent>
+
+                  {/* === ВКЛАДКА: ЭМОДЗИ === */}
+                  <TabsContent value="emoji" className="space-y-5 mt-5">
+                    <div className="rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-orange-500/5 to-rose-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-amber-500/20 flex items-center justify-center"><Smile className="h-4 w-4 text-amber-500" /></div>
+                        <h3 className="text-base font-semibold">Эмодзи и премиум-иконки</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_emojis_hint")}</p>
+                      <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+                        <Sparkles className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                        <p className="text-xs text-amber-700 dark:text-amber-300">{t("admin.settings.bot_emojis_premium_warn")}</p>
+                      </div>
+                      <div className="rounded-xl border border-white/10 overflow-hidden bg-card/40">
+                        <div className="grid grid-cols-[1fr_90px_1fr] gap-0 text-xs font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-white/10">
+                          <div className="py-2.5 px-3">Назначение</div>
+                          <div className="py-2.5 px-2 text-center">Unicode</div>
+                          <div className="py-2.5 px-3">Premium ID (Telegram)</div>
+                        </div>
+                        <div className="divide-y divide-white/5">
+                          {BOT_EMOJI_KEYS.map((key) => {
+                            const raw = (settings.botEmojis ?? {})[key];
+                            const entry = typeof raw === "object" && raw !== null ? raw : { unicode: typeof raw === "string" ? raw : undefined, tgEmojiId: undefined };
+                            return (
+                              <div key={key} className="grid grid-cols-[1fr_90px_1fr] gap-0 items-center hover:bg-muted/20 transition-colors">
+                                <div className="py-2 px-3">
+                                  <div className="text-sm font-medium">{BOT_EMOJI_LABELS[key] ?? key}</div>
+                                  <div className="text-[10px] text-muted-foreground font-mono">{key}</div>
+                                </div>
+                                <div className="py-2 px-2">
+                                  <Input
+                                    className="h-9 w-full p-1 text-center text-base"
+                                    value={entry.unicode ?? ""}
+                                    onChange={(e) =>
+                                      setSettings((s) => {
+                                        if (!s) return s;
+                                        const prev = (s.botEmojis ?? {})[key];
+                                        const prevObj = typeof prev === "object" && prev !== null ? prev : { unicode: typeof prev === "string" ? prev : undefined, tgEmojiId: undefined };
+                                        return { ...s, botEmojis: { ...(s.botEmojis ?? {}), [key]: { ...prevObj, unicode: e.target.value || undefined } } };
+                                      })
+                                    }
+                                    placeholder="📦"
+                                  />
+                                </div>
+                                <div className="py-2 px-3">
+                                  <Input
+                                    className="h-9 min-w-0 text-xs font-mono"
+                                    value={entry.tgEmojiId ?? ""}
+                                    onChange={(e) =>
+                                      setSettings((s) => {
+                                        if (!s) return s;
+                                        const prev = (s.botEmojis ?? {})[key];
+                                        const prevObj = typeof prev === "object" && prev !== null ? prev : { unicode: typeof prev === "string" ? prev : undefined, tgEmojiId: undefined };
+                                        return { ...s, botEmojis: { ...(s.botEmojis ?? {}), [key]: { ...prevObj, tgEmojiId: e.target.value || undefined } } };
+                                      })
+                                    }
+                                    placeholder="5289722755871162900"
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-orange-500/5 to-rose-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-orange-500/20 flex items-center justify-center"><Palette className="h-4 w-4 text-orange-500" /></div>
+                        <h3 className="text-base font-semibold">Цвета вторичных кнопок</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_inner_styles_hint")}</p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {Object.keys(BOT_INNER_STYLE_LABELS).map((key) => {
+                          const meta = BOT_INNER_STYLE_LABELS[key]!;
+                          const currentVal = (settings.botInnerButtonStyles ?? {})[key] ?? "";
+                          const swatch = BOT_STYLE_OPTIONS.find((o) => o.value === currentVal)?.swatch ?? "bg-muted";
+                          return (
+                            <div key={key} className="flex items-center gap-3 p-3 rounded-xl border border-white/10 bg-card/40">
+                              <div className={`h-3 w-3 rounded-full ${swatch} shrink-0 ring-2 ring-white/10`} />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium truncate">{meta.label}</div>
+                                <div className="text-[11px] text-muted-foreground truncate">{meta.desc}</div>
+                              </div>
+                              <select
+                                className="flex h-9 w-32 shrink-0 rounded-md border border-input bg-background px-2 py-1 text-sm"
+                                value={currentVal}
+                                onChange={(e) =>
+                                  setSettings((s) => {
+                                    if (!s) return s;
+                                    const next = { ...DEFAULT_BOT_INNER_STYLES, ...(s.botInnerButtonStyles ?? {}), [key]: e.target.value };
+                                    return { ...s, botInnerButtonStyles: next };
+                                  })
+                                }
+                              >
+                                {BOT_STYLE_OPTIONS.map((opt) => (
+                                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  {/* === ВКЛАДКА: ТЕКСТЫ === */}
+                  <TabsContent value="texts" className="space-y-5 mt-5">
+                    <div className="rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-purple-500/5 to-fuchsia-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-violet-500/20 flex items-center justify-center"><MessageSquare className="h-4 w-4 text-violet-500" /></div>
+                        <h3 className="text-base font-semibold">Главное меню — содержимое</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_welcome_hint")}</p>
+                      <div className="rounded-xl border border-white/10 bg-card/40 p-4 space-y-3">
                         <div className="flex items-center justify-between gap-2">
-                          <Label className="text-sm">{t("admin.settings.bot_line_visibility")}</Label>
+                          <div className="flex items-center gap-2">
+                            <Eye className="h-4 w-4 text-violet-500" />
+                            <Label className="text-sm font-medium">Какие строки показывать</Label>
+                          </div>
                           <Button
                             type="button"
                             variant="secondary"
                             size="sm"
                             onClick={() => setSettings((s) => (s ? { ...s, botMenuLineVisibility: { ...DEFAULT_BOT_MENU_LINE_VISIBILITY } } : s))}
                           >
-                            {t("admin.settings.bot_reset_visibility")}
+                            <RotateCw className="h-3.5 w-3.5 mr-1" />Сброс
                           </Button>
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2">
-                          {Object.keys(DEFAULT_BOT_MENU_LINE_VISIBILITY).map((key) => (
-                            <div key={key} className="flex items-center gap-2">
-                              <Switch
-                                checked={(settings.botMenuLineVisibility ?? DEFAULT_BOT_MENU_LINE_VISIBILITY)[key] !== false}
-                                onCheckedChange={(checked: boolean) =>
-                                  setSettings((s) =>
-                                    s
-                                      ? {
-                                          ...s,
-                                          botMenuLineVisibility: {
-                                            ...(s.botMenuLineVisibility ?? DEFAULT_BOT_MENU_LINE_VISIBILITY),
-                                            [key]: checked === true,
-                                          },
-                                        }
-                                      : s
-                                  )
-                                }
-                              />
-                              <Label className="text-xs">{BOT_MENU_LINE_LABELS[key] ?? key}</Label>
-                            </div>
-                          ))}
+                          {Object.keys(DEFAULT_BOT_MENU_LINE_VISIBILITY).map((key) => {
+                            const visible = (settings.botMenuLineVisibility ?? DEFAULT_BOT_MENU_LINE_VISIBILITY)[key] !== false;
+                            return (
+                              <label key={key} className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-muted/30 cursor-pointer transition-colors">
+                                <Switch
+                                  checked={visible}
+                                  onCheckedChange={(checked: boolean) =>
+                                    setSettings((s) =>
+                                      s ? { ...s, botMenuLineVisibility: { ...(s.botMenuLineVisibility ?? DEFAULT_BOT_MENU_LINE_VISIBILITY), [key]: checked === true } } : s
+                                    )
+                                  }
+                                />
+                                <span className="text-sm">{BOT_MENU_LINE_LABELS[key] ?? key}</span>
+                              </label>
+                            );
+                          })}
                         </div>
                       </div>
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        onClick={() => setSettings((s) => (s ? { ...s, botMenuTexts: { ...DEFAULT_BOT_MENU_TEXTS } } : s))}
-                      >
-                        {t("admin.settings.bot_reset_texts")}
-                      </Button>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {Object.keys(DEFAULT_BOT_MENU_TEXTS).map((key) => (
-                          <div key={key} className="space-y-1">
-                            <Label className="text-xs">{BOT_MENU_TEXT_LABELS[key] ?? key}</Label>
-                            <Input
-                              value={settings.botMenuTexts?.[key] ?? DEFAULT_BOT_MENU_TEXTS[key] ?? ""}
-                              onChange={(e) =>
-                                setSettings((s) =>
-                                  s
-                                    ? {
-                                        ...s,
-                                        botMenuTexts: {
-                                          ...(s.botMenuTexts ?? DEFAULT_BOT_MENU_TEXTS),
-                                          [key]: e.target.value,
-                                        },
-                                      }
-                                    : s
-                                )
-                              }
-                              placeholder={DEFAULT_BOT_MENU_TEXTS[key]}
-                            />
+                      <Collapsible>
+                        <CollapsibleTrigger asChild>
+                          <Button type="button" variant="outline" className="w-full justify-between rounded-xl">
+                            <span className="flex items-center gap-2"><FileText className="h-4 w-4" />Тексты строк меню</span>
+                            <ChevronDown className="h-4 w-4" />
+                          </Button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <div className="pt-3 space-y-3 border-t mt-3">
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => setSettings((s) => (s ? { ...s, botMenuTexts: { ...DEFAULT_BOT_MENU_TEXTS } } : s))}
+                            >
+                              <RotateCw className="h-3.5 w-3.5 mr-1" />Сбросить тексты
+                            </Button>
+                            <div className="grid gap-3 sm:grid-cols-2">
+                              {Object.keys(DEFAULT_BOT_MENU_TEXTS).map((key) => (
+                                <div key={key} className="space-y-1">
+                                  <Label className="text-xs">{BOT_MENU_TEXT_LABELS[key] ?? key}</Label>
+                                  <Input
+                                    value={settings.botMenuTexts?.[key] ?? DEFAULT_BOT_MENU_TEXTS[key] ?? ""}
+                                    onChange={(e) =>
+                                      setSettings((s) =>
+                                        s ? { ...s, botMenuTexts: { ...(s.botMenuTexts ?? DEFAULT_BOT_MENU_TEXTS), [key]: e.target.value } } : s
+                                      )
+                                    }
+                                    placeholder={DEFAULT_BOT_MENU_TEXTS[key]}
+                                  />
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        ))}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </div>
+
+                    <div className="rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-purple-500/5 to-fuchsia-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-purple-500/20 flex items-center justify-center"><Package className="h-4 w-4 text-purple-500" /></div>
+                        <h3 className="text-base font-semibold">Экран «Тарифы»</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_tariffs_hint")}</p>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">Шаблон сообщения</Label>
+                        <Textarea
+                          rows={6}
+                          value={settings.botTariffsText ?? DEFAULT_BOT_TARIFFS_TEXT}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, botTariffsText: e.target.value } : s))}
+                          placeholder={DEFAULT_BOT_TARIFFS_TEXT}
+                          className="font-mono text-xs"
+                        />
+                        <p className="text-[11px] text-muted-foreground">Доступные плейсхолдеры: <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{CATEGORY}}`}</code> — название категории, <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{TARIFFS}}`}</code> — список тарифов</p>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-card/40 p-4 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <Label className="text-sm font-medium">Поля в карточке тарифа</Label>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setSettings((s) => (s ? { ...s, botTariffsFields: { ...DEFAULT_BOT_TARIFF_FIELDS } } : s))}
+                          >
+                            <RotateCw className="h-3.5 w-3.5 mr-1" />Сброс
+                          </Button>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {Object.keys(DEFAULT_BOT_TARIFF_FIELDS).map((key) => {
+                            const enabled = (settings.botTariffsFields ?? DEFAULT_BOT_TARIFF_FIELDS)[key] !== false;
+                            return (
+                              <label key={key} className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-muted/30 cursor-pointer transition-colors">
+                                <Switch
+                                  checked={enabled}
+                                  onCheckedChange={(checked: boolean) =>
+                                    setSettings((s) =>
+                                      s ? { ...s, botTariffsFields: { ...(s.botTariffsFields ?? DEFAULT_BOT_TARIFF_FIELDS), [key]: checked === true } } : s
+                                    )
+                                  }
+                                />
+                                <span className="text-sm">{BOT_TARIFF_FIELD_LABELS[key] ?? key}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
-                  </CollapsibleContent>
-                </Collapsible>
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-2">
-                    <Package className="h-4 w-4 text-primary" />
-                    <Label className="text-base font-medium">{t("admin.settings.bot_tariffs_screen")}</Label>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("admin.settings.bot_tariffs_hint")}
-                  </p>
-                  <div className="space-y-1">
-                    <Label className="text-xs">{t("admin.settings.bot_tariffs_label")}</Label>
-                    <Textarea
-                      rows={6}
-                      value={settings.botTariffsText ?? DEFAULT_BOT_TARIFFS_TEXT}
-                      onChange={(e) => setSettings((s) => (s ? { ...s, botTariffsText: e.target.value } : s))}
-                      placeholder={DEFAULT_BOT_TARIFFS_TEXT}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <Label className="text-sm">{t("admin.settings.bot_tariff_fields")}</Label>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setSettings((s) => (s ? { ...s, botTariffsFields: { ...DEFAULT_BOT_TARIFF_FIELDS } } : s))}
-                    >
-                      {t("admin.settings.bot_reset_fields")}
-                    </Button>
-                  </div>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {Object.keys(DEFAULT_BOT_TARIFF_FIELDS).map((key) => (
-                      <div key={key} className="flex items-center gap-2">
+
+                    <div className="rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-purple-500/5 to-fuchsia-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-fuchsia-500/20 flex items-center justify-center"><CreditCard className="h-4 w-4 text-fuchsia-500" /></div>
+                        <h3 className="text-base font-semibold">Окно оплаты</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_payment_hint")}</p>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">Шаблон сообщения оплаты</Label>
+                        <Textarea
+                          rows={5}
+                          value={settings.botPaymentText ?? DEFAULT_BOT_PAYMENT_TEXT}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, botPaymentText: e.target.value } : s))}
+                          placeholder={DEFAULT_BOT_PAYMENT_TEXT}
+                          className="font-mono text-xs"
+                        />
+                        <p className="text-[11px] text-muted-foreground">Плейсхолдеры: <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{NAME}}`}</code> · <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{PRICE}}`}</code> · <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{AMOUNT}}`}</code> · <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{CURRENCY}}`}</code> · <code className="bg-muted/40 px-1 py-0.5 rounded">{`{{ACTION}}`}</code></p>
+                      </div>
+                    </div>
+                  </TabsContent>
+                  {/* === ВКЛАДКА: ПОВЕДЕНИЕ === */}
+                  <TabsContent value="behavior" className="space-y-5 mt-5">
+                    <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-emerald-500/20 flex items-center justify-center"><Megaphone className="h-4 w-4 text-emerald-500" /></div>
+                        <h3 className="text-base font-semibold">Инфо-блок (объявления)</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Произвольный текст, который показывается в главном меню бота и в кабинете клиента.
+                        Используй для объявлений тех. работ, акций, контактов поддержки. Скрывается если поле пустое.
+                      </p>
+                      <Textarea
+                        value={settings.botInfoBlock ?? ""}
+                        onChange={(e) =>
+                          setSettings((s) => (s ? { ...s, botInfoBlock: e.target.value.length ? e.target.value : null } : s))
+                        }
+                        rows={4}
+                        maxLength={2000}
+                        placeholder="📢 Тех. работы 12.05 с 03:00 до 05:00 МСК&#10;💬 Поддержка: @support_bot"
+                      />
+                      <p className="text-[11px] text-muted-foreground text-right">{(settings.botInfoBlock ?? "").length} / 2000</p>
+                    </div>
+
+                    <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 p-5 space-y-4">
+                      <div className="flex items-start gap-3">
+                        <div className="h-8 w-8 rounded-xl bg-teal-500/20 flex items-center justify-center shrink-0"><Trash className="h-4 w-4 text-teal-500" /></div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-base font-semibold mb-1">Авто-удаление нераспознанных сообщений</h3>
+                          <p className="text-xs text-muted-foreground">
+                            Бот удаляет сообщения, которые не команды и не активный ввод (стикеры, случайный текст, фото).
+                            Чат остаётся чистым. Требует право «Delete messages» у бота.
+                          </p>
+                        </div>
                         <Switch
-                          checked={(settings.botTariffsFields ?? DEFAULT_BOT_TARIFF_FIELDS)[key] !== false}
+                          checked={!!settings.botAutoDeleteUnknownMessages}
                           onCheckedChange={(checked: boolean) =>
-                            setSettings((s) =>
-                              s
-                                ? {
-                                    ...s,
-                                    botTariffsFields: {
-                                      ...(s.botTariffsFields ?? DEFAULT_BOT_TARIFF_FIELDS),
-                                      [key]: checked === true,
-                                    },
-                                  }
-                                : s
-                            )
+                            setSettings((s) => (s ? { ...s, botAutoDeleteUnknownMessages: checked === true } : s))
                           }
                         />
-                        <Label className="text-xs">{BOT_TARIFF_FIELD_LABELS[key] ?? key}</Label>
                       </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-2">
-                    <CreditCard className="h-4 w-4 text-primary" />
-                    <Label className="text-base font-medium">{t("admin.settings.bot_payment_window")}</Label>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("admin.settings.bot_payment_hint")}
-                  </p>
-                  <div className="space-y-1">
-                    <Label className="text-xs">{t("admin.settings.bot_payment_label")}</Label>
-                    <Textarea
-                      rows={5}
-                      value={settings.botPaymentText ?? DEFAULT_BOT_PAYMENT_TEXT}
-                      onChange={(e) => setSettings((s) => (s ? { ...s, botPaymentText: e.target.value } : s))}
-                      placeholder={DEFAULT_BOT_PAYMENT_TEXT}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-2">
-                    <Users className="h-4 w-4 text-primary" />
-                    <Label className="text-base font-medium">{t("admin.settings.bot_force_subscribe")}</Label>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("admin.settings.bot_force_hint")}
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <Switch
-                      checked={!!settings.forceSubscribeEnabled}
-                      onCheckedChange={(checked: boolean) =>
-                        setSettings((s) => (s ? { ...s, forceSubscribeEnabled: checked === true } : s))
-                      }
-                    />
-                    <Label className="text-sm">{t("admin.settings.bot_check_subscribe")}</Label>
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">{t("admin.settings.bot_channel_id")}</Label>
-                    <Input
-                      value={settings.forceSubscribeChannelId ?? ""}
-                      onChange={(e) => setSettings((s) => (s ? { ...s, forceSubscribeChannelId: e.target.value || null } : s))}
-                      placeholder={t("admin.settings.bot_channel_placeholder")}
-                    />
-                    <p className="text-xs text-muted-foreground">{t("admin.settings.bot_channel_hint")}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">{t("admin.settings.bot_unsubscribed_message")}</Label>
-                    <Input
-                      value={settings.forceSubscribeMessage ?? ""}
-                      onChange={(e) => setSettings((s) => (s ? { ...s, forceSubscribeMessage: e.target.value || null } : s))}
-                      placeholder={t("admin.settings.bot_unsub_placeholder")}
-                    />
-                    <p className="text-xs text-muted-foreground">{t("admin.settings.bot_unsub_hint")}</p>
-                  </div>
-                </div>
+                    </div>
 
-                <div className="space-y-3 rounded-lg border p-4 bg-muted/20">
-                  <div className="flex items-center gap-2">
-                    <Shield className="h-4 w-4 text-destructive" />
-                    <Label className="text-base font-medium">{t("admin.settings.bot_blacklist")}</Label>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {t("admin.settings.bot_blacklist_hint")}
-                  </p>
-                  <div className="flex items-center gap-3">
-                    <Switch
-                      checked={!!settings.blacklistEnabled}
-                      onCheckedChange={(checked: boolean) =>
-                        setSettings((s) => (s ? { ...s, blacklistEnabled: checked === true } : s))
-                      }
-                    />
-                    <Label className="text-sm">{t("admin.settings.bot_enable_blacklist")}</Label>
-                  </div>
-                </div>
+                    <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-cyan-500/20 flex items-center justify-center"><Bell className="h-4 w-4 text-cyan-500" /></div>
+                        <h3 className="text-base font-semibold">Обязательная подписка на канал</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_force_hint")}</p>
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-background/40 border border-white/5">
+                        <Switch
+                          checked={!!settings.forceSubscribeEnabled}
+                          onCheckedChange={(checked: boolean) =>
+                            setSettings((s) => (s ? { ...s, forceSubscribeEnabled: checked === true } : s))
+                          }
+                        />
+                        <Label className="text-sm">{t("admin.settings.bot_check_subscribe")}</Label>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">ID канала или @username</Label>
+                        <Input
+                          value={settings.forceSubscribeChannelId ?? ""}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, forceSubscribeChannelId: e.target.value || null } : s))}
+                          placeholder={t("admin.settings.bot_channel_placeholder")}
+                          disabled={!settings.forceSubscribeEnabled}
+                        />
+                        <p className="text-[11px] text-muted-foreground">{t("admin.settings.bot_channel_hint")}</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs uppercase tracking-wider text-muted-foreground">Сообщение для не подписанных</Label>
+                        <Input
+                          value={settings.forceSubscribeMessage ?? ""}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, forceSubscribeMessage: e.target.value || null } : s))}
+                          placeholder={t("admin.settings.bot_unsub_placeholder")}
+                          disabled={!settings.forceSubscribeEnabled}
+                        />
+                        <p className="text-[11px] text-muted-foreground">{t("admin.settings.bot_unsub_hint")}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-red-500/20 bg-gradient-to-br from-red-500/5 via-rose-500/5 to-pink-500/5 p-5 space-y-4">
+                      <div className="flex items-start gap-3">
+                        <div className="h-8 w-8 rounded-xl bg-red-500/20 flex items-center justify-center shrink-0"><Shield className="h-4 w-4 text-red-500" /></div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-base font-semibold mb-1">Community Blacklist</h3>
+                          <p className="text-xs text-muted-foreground">{t("admin.settings.bot_blacklist_hint")}</p>
+                        </div>
+                        <Switch
+                          checked={!!settings.blacklistEnabled}
+                          onCheckedChange={(checked: boolean) =>
+                            setSettings((s) => (s ? { ...s, blacklistEnabled: checked === true } : s))
+                          }
+                        />
+                      </div>
+                    </div>
+                  </TabsContent>
+
+                  {/* === ВКЛАДКА: ССЫЛКИ === */}
+                  <TabsContent value="links" className="space-y-5 mt-5">
+                    <div className="rounded-2xl border border-rose-500/20 bg-gradient-to-br from-rose-500/5 via-pink-500/5 to-fuchsia-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-rose-500/20 flex items-center justify-center"><Link2 className="h-4 w-4 text-rose-500" /></div>
+                        <h3 className="text-base font-semibold">Ссылки и поддержка</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{t("admin.settings.bot_support_hint")}</p>
+                      <div className="grid gap-3">
+                        <div className="space-y-1.5 p-4 rounded-xl border border-white/10 bg-card/40">
+                          <div className="flex items-center gap-2 mb-1">
+                            <MessageCircle className="h-4 w-4 text-rose-500" />
+                            <Label className="text-sm font-medium">Техническая поддержка</Label>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mb-2">Username аккаунта поддержки или t.me-ссылка. Появляется в кнопке «Поддержка» в главном меню.</p>
+                          <Input
+                            value={settings.supportLink ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, supportLink: e.target.value || undefined } : s))}
+                            placeholder={t("admin.settings.bot_support_placeholder")}
+                          />
+                        </div>
+                        <div className="space-y-1.5 p-4 rounded-xl border border-white/10 bg-card/40">
+                          <div className="flex items-center gap-2 mb-1">
+                            <FileText className="h-4 w-4 text-pink-500" />
+                            <Label className="text-sm font-medium">Пользовательское соглашение</Label>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mb-2">Telegra.ph или внешняя страница с правилами использования сервиса.</p>
+                          <Input
+                            value={settings.agreementLink ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, agreementLink: e.target.value || undefined } : s))}
+                            placeholder="https://telegra.ph/..."
+                          />
+                        </div>
+                        <div className="space-y-1.5 p-4 rounded-xl border border-white/10 bg-card/40">
+                          <div className="flex items-center gap-2 mb-1">
+                            <FileText className="h-4 w-4 text-fuchsia-500" />
+                            <Label className="text-sm font-medium">Публичная оферта</Label>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mb-2">Юридическая оферта (особенно нужна при работе через ИП/самозанятость).</p>
+                          <Input
+                            value={settings.offerLink ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, offerLink: e.target.value || undefined } : s))}
+                            placeholder="https://telegra.ph/..."
+                          />
+                        </div>
+                        <div className="space-y-1.5 p-4 rounded-xl border border-white/10 bg-card/40">
+                          <div className="flex items-center gap-2 mb-1">
+                            <FileText className="h-4 w-4 text-purple-500" />
+                            <Label className="text-sm font-medium">Инструкции по подключению</Label>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mb-2">Инструкции для клиентов как подключить VPN на разных устройствах.</p>
+                          <Input
+                            value={settings.instructionsLink ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, instructionsLink: e.target.value || undefined } : s))}
+                            placeholder="https://telegra.ph/..."
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
 
                 {message && <p className="text-sm text-muted-foreground">{message}</p>}
-                <Button type="submit" disabled={saving}>
+                <Button type="submit" disabled={saving} className="w-full sm:w-auto h-11 px-6 rounded-xl bg-gradient-to-r from-sky-500 via-indigo-500 to-fuchsia-500 hover:opacity-90 text-white font-semibold shadow-lg shadow-primary/20">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
                   {saving ? t("admin.settings.saving") : t("admin.settings.save")}
                 </Button>
               </CardContent>
@@ -1829,71 +2000,100 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="trial">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("admin.settings.trial_title")}</CardTitle>
-                <p className="text-sm text-muted-foreground">{t("admin.settings.trial_subtitle")}</p>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.trial_days")}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={settings.trialDays}
-                    onChange={(e) =>
-                      setSettings((s) => (s ? { ...s, trialDays: parseInt(e.target.value, 10) || 0 } : s))
-                    }
-                  />
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-emerald-500/10 via-teal-500/10 to-green-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 via-transparent to-green-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-emerald-500/30 via-teal-500/20 to-green-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <Gift className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-emerald-500 via-teal-500 to-green-500">
+                      {t("admin.settings.trial_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.trial_subtitle")}</p>
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.trial_squad")}</Label>
-                  <select
-                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
-                    value={settings.trialSquadUuid ?? ""}
-                    onChange={(e) => setSettings((s) => s ? { ...s, trialSquadUuid: e.target.value || null } : s)}
-                  >
-                    <option value="">{t("admin.settings.trial_squad_none")}</option>
-                    {squads.map((s) => (
-                      <option key={s.uuid} value={s.uuid}>{s.name || s.uuid}</option>
-                    ))}
-                  </select>
+              </div>
+              <CardContent className="space-y-5 p-4 sm:p-6">
+                {/* === Длительность и сервер === */}
+                <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-green-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-emerald-500/20 flex items-center justify-center"><Gift className="h-4 w-4 text-emerald-500" /></div>
+                    <h3 className="text-base font-semibold">Длительность и сервер</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Сколько дней триал длится и через какой Squad-сервер раздавать пробный доступ. Если Squad не выбран — триал не активируется.</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase tracking-wider text-muted-foreground">{t("admin.settings.trial_days")}</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={settings.trialDays}
+                        onChange={(e) => setSettings((s) => (s ? { ...s, trialDays: parseInt(e.target.value, 10) || 0 } : s))}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase tracking-wider text-muted-foreground">{t("admin.settings.trial_squad")}</Label>
+                      <select
+                        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                        value={settings.trialSquadUuid ?? ""}
+                        onChange={(e) => setSettings((s) => s ? { ...s, trialSquadUuid: e.target.value || null } : s)}
+                      >
+                        <option value="">{t("admin.settings.trial_squad_none")}</option>
+                        {squads.map((s) => (
+                          <option key={s.uuid} value={s.uuid}>{s.name || s.uuid}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.trial_device_limit")}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    value={settings.trialDeviceLimit ?? ""}
-                    onChange={(e) =>
-                      setSettings((s) => (s ? { ...s, trialDeviceLimit: e.target.value === "" ? null : parseInt(e.target.value, 10) || 0 } : s))
-                    }
-                    placeholder={t("admin.settings.trial_no_limit")}
-                  />
+
+                {/* === Лимиты === */}
+                <div className="rounded-2xl border border-teal-500/20 bg-gradient-to-br from-teal-500/5 via-cyan-500/5 to-sky-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-teal-500/20 flex items-center justify-center"><Sliders className="h-4 w-4 text-teal-500" /></div>
+                    <h3 className="text-base font-semibold">Лимиты на триале</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Ограничение устройств и трафика. Пусто = без лимита.</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase tracking-wider text-muted-foreground">{t("admin.settings.trial_device_limit")}</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={settings.trialDeviceLimit ?? ""}
+                        onChange={(e) => setSettings((s) => (s ? { ...s, trialDeviceLimit: e.target.value === "" ? null : parseInt(e.target.value, 10) || 0 } : s))}
+                        placeholder={t("admin.settings.trial_no_limit")}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs uppercase tracking-wider text-muted-foreground">{t("admin.settings.trial_traffic_limit")}</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={settings.trialTrafficLimitBytes != null ? (settings.trialTrafficLimitBytes / (1024 ** 3)).toFixed(1) : ""}
+                        onChange={(e) => {
+                          const v = e.target.value.trim();
+                          if (v === "") {
+                            setSettings((s) => (s ? { ...s, trialTrafficLimitBytes: null } : s));
+                            return;
+                          }
+                          const n = parseFloat(v);
+                          if (Number.isNaN(n)) return;
+                          setSettings((s) => (s ? { ...s, trialTrafficLimitBytes: Math.round(n * 1024 ** 3) } : s));
+                        }}
+                        placeholder={t("admin.settings.trial_no_limit")}
+                      />
+                      <p className="text-[11px] text-muted-foreground">{t("admin.settings.trial_traffic_hint")}</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.trial_traffic_limit")}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={settings.trialTrafficLimitBytes != null ? (settings.trialTrafficLimitBytes / (1024 ** 3)).toFixed(1) : ""}
-                    onChange={(e) => {
-                      const v = e.target.value.trim();
-                      if (v === "") {
-                        setSettings((s) => (s ? { ...s, trialTrafficLimitBytes: null } : s));
-                        return;
-                      }
-                      const n = parseFloat(v);
-                      if (Number.isNaN(n)) return;
-                      setSettings((s) => (s ? { ...s, trialTrafficLimitBytes: Math.round(n * 1024 ** 3) } : s));
-                    }}
-                    placeholder={t("admin.settings.trial_no_limit")}
-                  />
-                  <p className="text-xs text-muted-foreground">{t("admin.settings.trial_traffic_hint")}</p>
-                </div>
+
                 {message && <p className="text-sm text-muted-foreground">{message}</p>}
-                <Button type="submit" disabled={saving}>
+                <Button type="submit" disabled={saving} className="w-full sm:w-auto h-11 px-6 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:opacity-90 text-white font-semibold shadow-lg shadow-emerald-500/20">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
                   {saving ? t("admin.settings.saving") : t("admin.settings.save")}
                 </Button>
               </CardContent>
@@ -1901,14 +2101,22 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="subpage">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("admin.settings.subpage_title")}</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("admin.settings.subpage_editor_hint")}
-                </p>
-              </CardHeader>
-              <CardContent>
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-rose-500/10 via-pink-500/10 to-fuchsia-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-rose-500/5 via-transparent to-fuchsia-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-rose-500/30 via-pink-500/20 to-fuchsia-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <FileJson className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-rose-500 via-pink-500 to-fuchsia-500">
+                      {t("admin.settings.subpage_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.subpage_editor_hint")}</p>
+                  </div>
+                </div>
+              </div>
+              <CardContent className="p-4 sm:p-6">
                 <div className="p-4 rounded-lg border bg-muted/40 mb-4 space-y-3">
                   <div className="flex items-center gap-2">
                     <input
@@ -1976,52 +2184,88 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="referral">
-            <Card>
-              <CardHeader>
-                <CardTitle>{t("admin.settings.referral_title")}</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("admin.settings.referral_subtitle")}
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.referral_level_1")}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={settings.defaultReferralPercent ?? 30}
-                    onChange={(e) =>
-                      setSettings((s) => (s ? { ...s, defaultReferralPercent: Number(e.target.value) || 0 } : s))
-                    }
-                  />
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-violet-500/10 via-purple-500/10 to-fuchsia-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-violet-500/5 via-transparent to-fuchsia-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-violet-500/30 via-purple-500/20 to-fuchsia-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <Users className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500">
+                      {t("admin.settings.referral_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.referral_subtitle")}</p>
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.referral_level_2")}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={settings.referralPercentLevel2 ?? 10}
-                    onChange={(e) =>
-                      setSettings((s) => (s ? { ...s, referralPercentLevel2: Number(e.target.value) || 0 } : s))
-                    }
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>{t("admin.settings.referral_level_3")}</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={settings.referralPercentLevel3 ?? 10}
-                    onChange={(e) =>
-                      setSettings((s) => (s ? { ...s, referralPercentLevel3: Number(e.target.value) || 0 } : s))
-                    }
-                  />
+              </div>
+              <CardContent className="space-y-5 p-4 sm:p-6">
+                <div className="rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-purple-500/5 to-fuchsia-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-violet-500/20 flex items-center justify-center"><Network className="h-4 w-4 text-violet-500" /></div>
+                    <h3 className="text-base font-semibold">3-уровневая реферальная сеть</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Процент с каждого пополнения, который начисляется на баланс реферера. Уровень 1 — прямой реф; уровень 2 — реф вашего рефа; уровень 3 — реф второго уровня.</p>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-violet-500/30 bg-card/40 p-4 space-y-2 relative overflow-hidden">
+                      <div className="absolute -top-4 -right-4 w-16 h-16 rounded-full bg-gradient-to-br from-violet-500/20 to-violet-500/5 blur-xl" />
+                      <div className="relative flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg bg-violet-500/15 text-violet-500 text-xs font-bold">L1</span>
+                        <Label className="text-sm font-medium">{t("admin.settings.referral_level_1")}</Label>
+                      </div>
+                      <div className="relative flex items-baseline gap-2">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          className="text-2xl font-bold tabular-nums h-14"
+                          value={settings.defaultReferralPercent ?? 30}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, defaultReferralPercent: Number(e.target.value) || 0 } : s))}
+                        />
+                        <span className="text-2xl font-bold text-violet-500">%</span>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-purple-500/30 bg-card/40 p-4 space-y-2 relative overflow-hidden">
+                      <div className="absolute -top-4 -right-4 w-16 h-16 rounded-full bg-gradient-to-br from-purple-500/20 to-purple-500/5 blur-xl" />
+                      <div className="relative flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg bg-purple-500/15 text-purple-500 text-xs font-bold">L2</span>
+                        <Label className="text-sm font-medium">{t("admin.settings.referral_level_2")}</Label>
+                      </div>
+                      <div className="relative flex items-baseline gap-2">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          className="text-2xl font-bold tabular-nums h-14"
+                          value={settings.referralPercentLevel2 ?? 10}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, referralPercentLevel2: Number(e.target.value) || 0 } : s))}
+                        />
+                        <span className="text-2xl font-bold text-purple-500">%</span>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-fuchsia-500/30 bg-card/40 p-4 space-y-2 relative overflow-hidden">
+                      <div className="absolute -top-4 -right-4 w-16 h-16 rounded-full bg-gradient-to-br from-fuchsia-500/20 to-fuchsia-500/5 blur-xl" />
+                      <div className="relative flex items-center gap-2">
+                        <span className="inline-flex items-center justify-center h-7 w-7 rounded-lg bg-fuchsia-500/15 text-fuchsia-500 text-xs font-bold">L3</span>
+                        <Label className="text-sm font-medium">{t("admin.settings.referral_level_3")}</Label>
+                      </div>
+                      <div className="relative flex items-baseline gap-2">
+                        <Input
+                          type="number"
+                          min={0}
+                          max={100}
+                          className="text-2xl font-bold tabular-nums h-14"
+                          value={settings.referralPercentLevel3 ?? 10}
+                          onChange={(e) => setSettings((s) => (s ? { ...s, referralPercentLevel3: Number(e.target.value) || 0 } : s))}
+                        />
+                        <span className="text-2xl font-bold text-fuchsia-500">%</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 {message && <p className="text-sm text-muted-foreground">{message}</p>}
-                <Button type="submit" disabled={saving}>
+                <Button type="submit" disabled={saving} className="w-full sm:w-auto h-11 px-6 rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:opacity-90 text-white font-semibold shadow-lg shadow-violet-500/20">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
                   {saving ? t("admin.settings.saving") : t("admin.settings.save")}
                 </Button>
               </CardContent>
@@ -2029,14 +2273,22 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="payments" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center gap-2">
-                  <CreditCard className="h-5 w-5 text-primary" />
-                  <CardTitle>{t("admin.settings.payments_general")}</CardTitle>
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-amber-500/10 via-orange-500/10 to-yellow-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 via-transparent to-yellow-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-amber-500/30 via-orange-500/20 to-yellow-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <CreditCard className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-amber-500 via-orange-500 to-yellow-500">
+                      {t("admin.settings.payments_general")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">Платёжные провайдеры, авто-продление подписки, общие настройки оплат.</p>
+                  </div>
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
+              </div>
+              <CardContent className="space-y-4 p-4 sm:p-6">
                 <div className="flex items-center justify-between gap-4 p-4 rounded-xl border bg-card/50">
                   <div className="space-y-1">
                     <Label className="text-base font-semibold">{t("admin.settings.auto_renew")}</Label>
@@ -2897,18 +3149,22 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="ai">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Sparkles className="h-5 w-5" />
-                  {t("admin.settings.ai_title")}
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("admin.settings.ai_subtitle")}{" "}
-                  {t("admin.settings.ai_integration_hint")}
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-fuchsia-500/10 via-pink-500/10 to-purple-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-fuchsia-500/5 via-transparent to-purple-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-fuchsia-500/30 via-pink-500/20 to-purple-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <Sparkles className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-fuchsia-500 via-pink-500 to-purple-500">
+                      {t("admin.settings.ai_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.ai_subtitle")} {t("admin.settings.ai_integration_hint")}</p>
+                  </div>
+                </div>
+              </div>
+              <CardContent className="space-y-4 p-4 sm:p-6">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>{t("admin.settings.ai_groq_key")}</Label>
@@ -3026,32 +3282,41 @@ export function SettingsPage() {
           </TabsContent>
 
           <TabsContent value="mail-telegram">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mail className="h-5 w-5" />
-                  {t("admin.settings.smtp_title")}
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("admin.settings.smtp_subtitle")}
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center gap-2 p-3 rounded-lg border bg-muted/40">
+            <Card className="overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-cyan-500/10 via-teal-500/10 to-sky-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/5 via-transparent to-sky-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-cyan-500/30 via-teal-500/20 to-sky-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <Mail className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-cyan-500 via-teal-500 to-sky-500">
+                      {t("admin.settings.smtp_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.smtp_subtitle")}</p>
+                  </div>
+                </div>
+              </div>
+              <CardContent className="space-y-5 p-4 sm:p-6">
+                <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 via-teal-500/5 to-sky-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-cyan-500/20 flex items-center justify-center"><Mail className="h-4 w-4 text-cyan-500" /></div>
+                    <h3 className="text-base font-semibold">SMTP-сервер</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">Параметры почтового сервера для отправки email с письмами регистрации, восстановления пароля и системных уведомлений.</p>
+                <label className="flex items-center gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 cursor-pointer">
                   <input
                     type="checkbox"
                     id="skipEmailVerification"
                     checked={settings.skipEmailVerification ?? false}
                     onChange={(e) => setSettings((s) => (s ? { ...s, skipEmailVerification: e.target.checked } : s))}
-                    className="rounded border"
+                    className="rounded border w-4 h-4"
                   />
-                  <Label htmlFor="skipEmailVerification" className="cursor-pointer">
-                    {t("admin.settings.skip_email")}
-                  </Label>
-                  <span className="text-xs text-muted-foreground ml-2">
-                    ({t("admin.settings.smtp_no_confirm_hint")})
-                  </span>
-                </div>
+                  <div className="flex-1">
+                    <span className="text-sm font-medium">{t("admin.settings.skip_email")}</span>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{t("admin.settings.smtp_no_confirm_hint")}</p>
+                  </div>
+                </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>{t("admin.settings.smtp_host")}</Label>
@@ -3120,19 +3385,25 @@ export function SettingsPage() {
                     />
                   </div>
                 </div>
+                </div>
               </CardContent>
             </Card>
-            <Card className="mt-6">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <MessageCircle className="h-5 w-5" />
-                  {t("admin.settings.telegram_title")}
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  {t("admin.settings.telegram_bot_hint")}
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <Card className="mt-6 overflow-hidden border-white/10">
+              <div className="relative bg-gradient-to-br from-sky-500/10 via-blue-500/10 to-cyan-500/10 p-6 sm:p-8 border-b border-white/10">
+                <div className="absolute inset-0 bg-gradient-to-br from-sky-500/5 via-transparent to-cyan-500/5 pointer-events-none" />
+                <div className="relative flex items-start gap-5">
+                  <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-sky-500/30 via-blue-500/20 to-cyan-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                    <MessageCircle className="h-7 w-7 text-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-sky-500 via-blue-500 to-cyan-500">
+                      {t("admin.settings.telegram_title")}
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.telegram_bot_hint")}</p>
+                  </div>
+                </div>
+              </div>
+              <CardContent className="space-y-4 p-4 sm:p-6">
                 <div className="space-y-2">
                   <Label>{t("admin.settings.telegram_bot_token")}</Label>
                   <Input
@@ -3215,29 +3486,32 @@ export function SettingsPage() {
         </form>
 
         <TabsContent value="theme">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between rounded-xl border p-4 bg-background/50 mb-6">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-pink-500/10 via-rose-500/10 to-fuchsia-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-pink-500/5 via-transparent to-fuchsia-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-pink-500/30 via-rose-500/20 to-fuchsia-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Palette className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-pink-500 via-rose-500 to-fuchsia-500">
+                    {t("admin.settings.theme_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.theme_global_hint")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-6 p-4 sm:p-6">
+              <div className="flex items-center justify-between rounded-xl border border-white/10 p-4 bg-card/40">
                 <div className="space-y-0.5">
-                  <Label className="text-base">{t("admin.settings.theme_user_choice")}</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {t("admin.settings.theme_user_choice_hint")}
-                  </p>
+                  <Label className="text-base font-medium">{t("admin.settings.theme_user_choice")}</Label>
+                  <p className="text-xs text-muted-foreground">{t("admin.settings.theme_user_choice_hint")}</p>
                 </div>
                 <Switch
                   checked={Boolean((settings as any)?.allowUserThemeChange ?? true)}
                   onCheckedChange={(c: boolean) => setSettings((s) => s ? { ...s, allowUserThemeChange: c } : s)}
                 />
               </div>
-              <CardTitle className="flex items-center gap-2">
-                <Palette className="h-5 w-5" />
-                {t("admin.settings.theme_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.theme_global_hint")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
               <div>
                 <Label className="text-sm font-medium mb-3 block">{t("admin.settings.theme_accent")}</Label>
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
@@ -3290,17 +3564,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="options">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Package className="h-5 w-5" />
-                {t("admin.settings.options_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.options_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-yellow-500/10 via-amber-500/10 to-orange-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-yellow-500/5 via-transparent to-orange-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-yellow-500/30 via-amber-500/20 to-orange-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Package className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-yellow-500 via-amber-500 to-orange-500">
+                    {t("admin.settings.options_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.options_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-6 p-4 sm:p-6">
               <div className="flex items-center gap-2">
                 <Switch
                   id="sell-options-enabled"
@@ -3477,17 +3756,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="custom-build">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Layers className="h-5 w-5" />
-                {t("admin.settings.custom_build_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.custom_build_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-purple-500/10 via-violet-500/10 to-indigo-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 via-transparent to-indigo-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-purple-500/30 via-violet-500/20 to-indigo-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Layers className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-purple-500 via-violet-500 to-indigo-500">
+                    {t("admin.settings.custom_build_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.custom_build_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-4 p-4 sm:p-6">
               <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
                 <Switch
                   id="custom-build-enabled"
@@ -3624,17 +3908,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="oauth">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <KeyRound className="h-5 w-5" />
-                {t("admin.settings.oauth_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.oauth_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-zinc-500/10 via-slate-500/10 to-stone-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-zinc-500/5 via-transparent to-stone-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-zinc-500/30 via-slate-500/20 to-stone-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <KeyRound className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-zinc-500 via-slate-500 to-stone-500">
+                    {t("admin.settings.oauth_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.oauth_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-6 p-4 sm:p-6">
               <div className="space-y-4 rounded-lg border p-4">
                 <div className="flex items-center justify-between">
                   <div>
@@ -3746,41 +4035,45 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="landing">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Globe className="h-5 w-5" />
-                {t("admin.settings.landing_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.landing_subtitle")}
-              </p>
-              <div className="pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={saving}
-                  onClick={async () => {
-                    setSaving(true);
-                    setMessage("");
-                    try {
-                      const updated = await api.resetLandingText(token);
-                      setSettings((prev) => (prev ? { ...prev, ...updated } : prev));
-                      setMessage(t("admin.settings.landing_texts_reset"));
-                    } catch {
-                      setMessage(t("admin.settings.landing_reset_error"));
-                    } finally {
-                      setSaving(false);
-                    }
-                  }}
-                >
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                  {t("admin.settings.landing_reset_texts")}
-                </Button>
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-green-500/10 via-emerald-500/10 to-teal-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-green-500/5 via-transparent to-teal-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-green-500/30 via-emerald-500/20 to-teal-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Globe className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500">
+                    {t("admin.settings.landing_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.landing_subtitle")}</p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-3 rounded-xl"
+                    disabled={saving}
+                    onClick={async () => {
+                      setSaving(true);
+                      setMessage("");
+                      try {
+                        const updated = await api.resetLandingText(token);
+                        setSettings((prev) => (prev ? { ...prev, ...updated } : prev));
+                        setMessage(t("admin.settings.landing_texts_reset"));
+                      } catch {
+                        setMessage(t("admin.settings.landing_reset_error"));
+                      } finally {
+                        setSaving(false);
+                      }
+                    }}
+                  >
+                    {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
+                    {t("admin.settings.landing_reset_texts")}
+                  </Button>
+                </div>
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
+            </div>
+            <CardContent className="space-y-4 p-4 sm:p-6">
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div>
                   <p className="font-medium">{t("admin.settings.landing_enable")}</p>
@@ -4220,17 +4513,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="server-ssh">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Terminal className="h-5 w-5" />
-                {t("admin.settings.ssh_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.ssh_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-stone-500/10 via-zinc-500/10 to-slate-600/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-stone-500/5 via-transparent to-slate-600/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-stone-500/30 via-zinc-500/20 to-slate-600/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Terminal className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-stone-400 via-zinc-400 to-slate-400">
+                    {t("admin.settings.ssh_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.ssh_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-6 p-4 sm:p-6">
               {!sshConfig ? (
                 <p className="text-sm text-muted-foreground py-4">
                   {t("admin.settings.ssh_not_found")}
@@ -4320,72 +4618,98 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="proxy-settings">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Shield className="h-5 w-5" />
-                {t("admin.settings.proxy_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.proxy_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="flex items-center justify-between rounded-lg border p-4">
-                <div className="space-y-0.5">
-                  <Label className="text-base font-medium">{t("admin.settings.proxy_enabled")}</Label>
-                  <p className="text-sm text-muted-foreground">Глобальный переключатель — отключает все прокси-маршруты</p>
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-orange-500/10 via-red-500/10 to-rose-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-orange-500/5 via-transparent to-rose-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-orange-500/30 via-red-500/20 to-rose-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Shield className="h-7 w-7 text-foreground" />
                 </div>
-                <Switch
-                  checked={settings.proxyEnabled ?? false}
-                  onCheckedChange={(v) => setSettings({ ...settings, proxyEnabled: v })}
-                />
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-orange-500 via-red-500 to-rose-500">
+                    {t("admin.settings.proxy_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.proxy_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-5 p-4 sm:p-6">
+              <div className="rounded-2xl border border-orange-500/20 bg-gradient-to-br from-orange-500/5 via-red-500/5 to-rose-500/5 p-5 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="h-9 w-9 rounded-xl bg-orange-500/15 flex items-center justify-center shrink-0"><Shield className="h-4 w-4 text-orange-500" /></div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-base font-semibold mb-1">{t("admin.settings.proxy_enabled")}</h3>
+                    <p className="text-xs text-muted-foreground">Глобальный переключатель — выключает ВСЕ прокси-маршруты сразу. Если выключен, бот/платежи/AI ходят напрямую.</p>
+                  </div>
+                  <Switch
+                    checked={settings.proxyEnabled ?? false}
+                    onCheckedChange={(v) => setSettings({ ...settings, proxyEnabled: v })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">Proxy URL</Label>
+                  <Input
+                    placeholder="http://user:pass@host:port или socks5://user:pass@host:port"
+                    value={settings.proxyUrl ?? ""}
+                    onChange={(e) => setSettings({ ...settings, proxyUrl: e.target.value || null })}
+                    disabled={!settings.proxyEnabled}
+                    className="font-mono text-xs"
+                  />
+                  <p className="text-[11px] text-muted-foreground">Протоколы: <code className="bg-muted/40 px-1 py-0.5 rounded">http://</code> · <code className="bg-muted/40 px-1 py-0.5 rounded">https://</code> · <code className="bg-muted/40 px-1 py-0.5 rounded">socks5://</code></p>
+                </div>
               </div>
 
-              <div className="space-y-2">
-                <Label>Proxy URL</Label>
-                <Input
-                  placeholder="http://user:pass@host:port или socks5://user:pass@host:port"
-                  value={settings.proxyUrl ?? ""}
-                  onChange={(e) => setSettings({ ...settings, proxyUrl: e.target.value || null })}
-                  disabled={!settings.proxyEnabled}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Поддерживаемые протоколы: <code>http://</code>, <code>https://</code>, <code>socks5://</code>
-                </p>
-              </div>
+              <div className="rounded-2xl border border-red-500/20 bg-gradient-to-br from-red-500/5 via-rose-500/5 to-pink-500/5 p-5 space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-xl bg-red-500/20 flex items-center justify-center"><Network className="h-4 w-4 text-red-500" /></div>
+                  <h3 className="text-base font-semibold">{t("admin.settings.proxy_routing")}</h3>
+                </div>
+                <p className="text-xs text-muted-foreground">Какие сервисы пускать через прокси. Можно гибко включать/выключать по одному.</p>
 
-              <div className="space-y-4 rounded-lg border p-4">
-                <p className="text-sm font-medium">{t("admin.settings.proxy_routing")}</p>
-
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>{t("admin.settings.proxy_telegram")}</Label>
-                    <p className="text-xs text-muted-foreground">Бот, уведомления, отправка сообщений</p>
+                <label className="flex items-start gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 cursor-pointer">
+                  <div className="h-9 w-9 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0"><MessageCircle className="h-4 w-4 text-sky-500" /></div>
+                  <div className="flex-1 min-w-0">
+                    <Label className="text-sm font-medium cursor-pointer">{t("admin.settings.proxy_telegram")}</Label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Бот, уведомления, отправка сообщений в Telegram</p>
                   </div>
                   <Switch
                     checked={settings.proxyTelegram ?? false}
                     onCheckedChange={(v) => setSettings({ ...settings, proxyTelegram: v })}
                     disabled={!settings.proxyEnabled}
                   />
-                </div>
+                </label>
 
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>{t("admin.settings.proxy_payments")}</Label>
-                    <p className="text-xs text-muted-foreground">Platega, YooKassa, YooMoney, CryptoPay, Heleket</p>
+                <label className="flex items-start gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 cursor-pointer">
+                  <div className="h-9 w-9 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0"><CreditCard className="h-4 w-4 text-amber-500" /></div>
+                  <div className="flex-1 min-w-0">
+                    <Label className="text-sm font-medium cursor-pointer">{t("admin.settings.proxy_payments")}</Label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Platega, YooKassa, YooMoney, CryptoPay, Heleket</p>
                   </div>
                   <Switch
                     checked={settings.proxyPayments ?? false}
                     onCheckedChange={(v) => setSettings({ ...settings, proxyPayments: v })}
                     disabled={!settings.proxyEnabled}
+                  /></label>
+                <label className="flex items-start gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 cursor-pointer">
+                  <div className="h-9 w-9 rounded-xl bg-fuchsia-500/10 flex items-center justify-center shrink-0"><Sparkles className="h-4 w-4 text-fuchsia-500" /></div>
+                  <div className="flex-1 min-w-0">
+                    <Label className="text-sm font-medium cursor-pointer">AI чат</Label>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">Запросы к Groq API (api.groq.com) — нужен прокси если хостинг блочит их IP</p>
+                  </div>
+                  <Switch
+                    checked={settings.proxyAi ?? false}
+                    onCheckedChange={(v) => setSettings({ ...settings, proxyAi: v })}
+                    disabled={!settings.proxyEnabled}
                   />
-                </div>
+                </label>
               </div>
 
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-200">
-                <strong>Важно:</strong> после изменения настроек прокси для Telegram бота необходимо перезапустить контейнер бота,
-                чтобы он подключился через новый прокси.
+              <div className="rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-orange-500/5 p-4 flex items-start gap-3">
+                <Sparkles className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  <strong>Важно:</strong> после изменения настроек прокси для Telegram бота необходимо перезапустить контейнер бота,
+                  чтобы он подключился через новый прокси.
+                </p>
               </div>
 
               <Button
@@ -4393,7 +4717,9 @@ export function SettingsPage() {
                   handleSubmit(e as unknown as React.FormEvent);
                 }}
                 disabled={saving}
+                className="w-full sm:w-auto h-11 px-6 rounded-xl bg-gradient-to-r from-orange-500 to-rose-500 hover:opacity-90 text-white font-semibold shadow-lg shadow-orange-500/20"
               >
+                {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
                 {saving ? t("admin.settings.saving") : t("admin.settings.save")}
               </Button>
             </CardContent>
@@ -4401,18 +4727,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="nalog-settings">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5" />
-                {t("admin.settings.nalog_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.nalog_subtitle")}
-                {t("admin.settings.nalog_selfemployed_hint")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-yellow-600/10 via-amber-600/10 to-orange-600/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-yellow-600/5 via-transparent to-orange-600/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-yellow-600/30 via-amber-600/20 to-orange-600/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <FileText className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-yellow-600 via-amber-600 to-orange-600">
+                    {t("admin.settings.nalog_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.nalog_subtitle")} {t("admin.settings.nalog_selfemployed_hint")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-4 p-4 sm:p-6">
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
                   <Label className="text-base font-medium">{t("admin.settings.nalog_enabled")}</Label>
@@ -4515,17 +4845,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="geo-map">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <MapPin className="h-5 w-5" />
-                {t("admin.settings.map_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.map_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-teal-500/10 via-cyan-500/10 to-sky-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-teal-500/5 via-transparent to-sky-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-teal-500/30 via-cyan-500/20 to-sky-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <MapPin className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-teal-500 via-cyan-500 to-sky-500">
+                    {t("admin.settings.map_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.map_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-6 p-4 sm:p-6">
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
                   <Label className="text-base font-medium">{t("admin.settings.map_enabled")}</Label>
@@ -4589,17 +4924,22 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="gifts">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Gift className="h-5 w-5" />
-                Подарки и дополнительные подписки
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Настройки системы подарков, кодов и дополнительных подписок
-              </p>
-            </CardHeader>
-            <CardContent className="space-y-6">
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-pink-500/10 via-fuchsia-500/10 to-rose-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-pink-500/5 via-transparent to-rose-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-pink-500/30 via-fuchsia-500/20 to-rose-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <Gift className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-pink-500 via-fuchsia-500 to-rose-500">
+                    Подарки и доп. подписки
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">Настройки системы подарков, кодов и дополнительных подписок</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-6 p-4 sm:p-6">
               <div className="flex items-center gap-3">
                 <Switch
                   id="gift-subscriptions-enabled"
@@ -4776,43 +5116,61 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="sync">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <RefreshCw className="h-5 w-5" />
-                {t("admin.settings.sync_title")}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("admin.settings.sync_subtitle")}
-              </p>
-            </CardHeader>
-            <CardContent className="flex flex-wrap items-center gap-3">
-              <Button
-                variant="outline"
-                onClick={handleSyncFromRemna}
-                disabled={syncLoading !== null}
-              >
-                <Download className="h-4 w-4 mr-2" />
-                {syncLoading === "from" ? t("admin.settings.sync_in_progress") : t("admin.settings.sync_from_remna")}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleSyncToRemna}
-                disabled={syncLoading !== null}
-              >
-                <Upload className="h-4 w-4 mr-2" />
-                {syncLoading === "to" ? t("admin.settings.sync_in_progress") : t("admin.settings.sync_to_remna")}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleSyncCreateRemnaForMissing}
-                disabled={syncLoading !== null}
-              >
-                <Link2 className="h-4 w-4 mr-2" />
-                {syncLoading === "missing" ? t("admin.settings.sync_running") : t("admin.settings.sync_create_missing")}
-              </Button>
+          <Card className="overflow-hidden border-white/10">
+            <div className="relative bg-gradient-to-br from-violet-500/10 via-indigo-500/10 to-blue-500/10 p-6 sm:p-8 border-b border-white/10">
+              <div className="absolute inset-0 bg-gradient-to-br from-violet-500/5 via-transparent to-blue-500/5 pointer-events-none" />
+              <div className="relative flex items-start gap-5">
+                <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-violet-500/30 via-indigo-500/20 to-blue-500/30 flex items-center justify-center shadow-xl border border-white/20 shrink-0">
+                  <ArrowLeftRight className="h-7 w-7 text-foreground" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-violet-500 via-indigo-500 to-blue-500">
+                    {t("admin.settings.sync_title")}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.sync_subtitle")}</p>
+                </div>
+              </div>
+            </div>
+            <CardContent className="space-y-4 p-4 sm:p-6">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <button type="button" onClick={handleSyncFromRemna} disabled={syncLoading !== null} className="group relative overflow-hidden rounded-2xl border border-violet-500/30 bg-gradient-to-br from-violet-500/10 via-violet-500/5 to-transparent p-5 text-left transition-all hover:border-violet-500/50 hover:shadow-lg hover:shadow-violet-500/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full bg-violet-500/10 blur-2xl group-hover:bg-violet-500/20 transition-colors" />
+                  <div className="relative flex items-center gap-3 mb-2">
+                    <div className="h-10 w-10 rounded-xl bg-violet-500/20 flex items-center justify-center">
+                      {syncLoading === "from" ? <Loader2 className="h-5 w-5 text-violet-500 animate-spin" /> : <Download className="h-5 w-5 text-violet-500" />}
+                    </div>
+                    <span className="text-sm font-bold uppercase tracking-wider text-violet-500/80">From Remna →</span>
+                  </div>
+                  <div className="relative text-base font-semibold mb-1">{syncLoading === "from" ? t("admin.settings.sync_in_progress") : t("admin.settings.sync_from_remna")}</div>
+                  <p className="relative text-xs text-muted-foreground">Подтянуть всех клиентов и подписки из Remna в локальную БД</p>
+                </button>
+
+                <button type="button" onClick={handleSyncToRemna} disabled={syncLoading !== null} className="group relative overflow-hidden rounded-2xl border border-indigo-500/30 bg-gradient-to-br from-indigo-500/10 via-indigo-500/5 to-transparent p-5 text-left transition-all hover:border-indigo-500/50 hover:shadow-lg hover:shadow-indigo-500/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full bg-indigo-500/10 blur-2xl group-hover:bg-indigo-500/20 transition-colors" />
+                  <div className="relative flex items-center gap-3 mb-2">
+                    <div className="h-10 w-10 rounded-xl bg-indigo-500/20 flex items-center justify-center">
+                      {syncLoading === "to" ? <Loader2 className="h-5 w-5 text-indigo-500 animate-spin" /> : <Upload className="h-5 w-5 text-indigo-500" />}
+                    </div>
+                    <span className="text-sm font-bold uppercase tracking-wider text-indigo-500/80">→ To Remna</span>
+                  </div>
+                  <div className="relative text-base font-semibold mb-1">{syncLoading === "to" ? t("admin.settings.sync_in_progress") : t("admin.settings.sync_to_remna")}</div>
+                  <p className="relative text-xs text-muted-foreground">Записать локальные изменения обратно в Remna-панель</p>
+                </button>
+
+                <button type="button" onClick={handleSyncCreateRemnaForMissing} disabled={syncLoading !== null} className="group relative overflow-hidden rounded-2xl border border-blue-500/30 bg-gradient-to-br from-blue-500/10 via-blue-500/5 to-transparent p-5 text-left transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-500/10 disabled:opacity-50 disabled:cursor-not-allowed">
+                  <div className="absolute -top-4 -right-4 w-20 h-20 rounded-full bg-blue-500/10 blur-2xl group-hover:bg-blue-500/20 transition-colors" />
+                  <div className="relative flex items-center gap-3 mb-2">
+                    <div className="h-10 w-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                      {syncLoading === "missing" ? <Loader2 className="h-5 w-5 text-blue-500 animate-spin" /> : <Link2 className="h-5 w-5 text-blue-500" />}
+                    </div>
+                    <span className="text-sm font-bold uppercase tracking-wider text-blue-500/80">+ Создать</span>
+                  </div>
+                  <div className="relative text-base font-semibold mb-1">{syncLoading === "missing" ? t("admin.settings.sync_running") : t("admin.settings.sync_create_missing")}</div>
+                  <p className="relative text-xs text-muted-foreground">Создать в Remna записи для клиентов, которых там нет</p>
+                </button>
+              </div>
               {syncMessage && (
-                <span className="text-sm text-muted-foreground">{syncMessage}</span>
+                <div className="rounded-xl border border-white/10 bg-card/40 p-4 text-sm">{syncMessage}</div>
               )}
             </CardContent>
           </Card>
