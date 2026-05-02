@@ -56,7 +56,7 @@
         "view_listing": "Открыть",
         "contact_seller": "Связаться в Telegram",
         "report": "Пожаловаться",
-        "views_count": "{count} просмотров",
+        "views_count": "{{count}} просмотров",
         "load_error": "Не удалось загрузить каталог"
       },
       "card": {
@@ -67,7 +67,7 @@
         "per_device": "/устройство",
         "country": "Страна",
         "seller": "Продавец",
-        "since": "На маркетплейсе с {date}"
+        "since": "На маркетплейсе с {{date}}"
       },
       "listing_form": {
         "create_title": "Новый листинг",

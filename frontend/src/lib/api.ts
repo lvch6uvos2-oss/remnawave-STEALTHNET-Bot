@@ -2050,7 +2050,6 @@ export interface MarketplaceCategoryPayload {
 
 export interface MarketplaceSellerDto {
   installationId: string;
-  domain: string;
   displayName: string | null;
   contactUsername: string;
   contactUrl: string;

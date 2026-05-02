@@ -56,7 +56,7 @@
         "view_listing": "Open",
         "contact_seller": "Contact on Telegram",
         "report": "Report",
-        "views_count": "{count} views",
+        "views_count": "{{count}} views",
         "load_error": "Failed to load catalog"
       },
       "card": {
@@ -67,7 +67,7 @@
         "per_device": "/device",
         "country": "Country",
         "seller": "Seller",
-        "since": "On marketplace since {date}"
+        "since": "On marketplace since {{date}}"
       },
       "listing_form": {
         "create_title": "New listing",

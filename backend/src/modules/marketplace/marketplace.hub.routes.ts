@@ -213,9 +213,10 @@ marketplaceHubRouter.get(
   })
 );
 
+// ВАЖНО: `domain` НЕ включаем в публичный select — это адрес панели продавца,
+// и его не должны видеть другие админы. Связь только через Telegram username.
 const publicInstallationSelect = {
   id: true,
-  domain: true,
   displayName: true,
   contactUsername: true,
   logoUrl: true,
@@ -244,7 +245,6 @@ function serializeListing(l: Prisma.MarketplaceListingGetPayload<{
     category: { id: l.category.id, slug: l.category.slug, labelRu: l.category.labelRu, labelEn: l.category.labelEn, icon: l.category.icon },
     seller: {
       installationId: l.installation.id,
-      domain: l.installation.domain,
       displayName: l.installation.displayName,
       contactUsername: l.installation.contactUsername,
       contactUrl: `https://t.me/${l.installation.contactUsername}`,

@@ -246,7 +246,7 @@ function ListingCard({ item, lang, onClick }: { item: MarketplaceListingDto; lan
           <div className="flex items-center gap-2 min-w-0">
             <SellerAvatar item={item} />
             <div className="min-w-0">
-              <div className="text-xs font-medium truncate">{item.seller.displayName ?? item.seller.domain}</div>
+              <div className="text-xs font-medium truncate">{item.seller.displayName ?? `@${item.seller.contactUsername}`}</div>
               <div className="text-[11px] text-muted-foreground truncate">@{item.seller.contactUsername}</div>
             </div>
           </div>
@@ -264,7 +264,7 @@ function SellerAvatar({ item }: { item: MarketplaceListingDto }) {
   if (logo) {
     return <img src={logo} alt="" className="h-8 w-8 rounded-full object-cover border" />;
   }
-  const initial = (item.seller.displayName ?? item.seller.domain ?? "?").trim().slice(0, 1).toUpperCase();
+  const initial = (item.seller.displayName ?? item.seller.contactUsername ?? "?").trim().slice(0, 1).toUpperCase();
   return (
     <div className="h-8 w-8 rounded-full bg-primary/15 text-primary flex items-center justify-center text-sm font-semibold border">
       {initial}
@@ -349,8 +349,8 @@ function ListingDialog({ open, item, lang, onClose }: { open: boolean; item: Mar
               <div className="flex items-center gap-3">
                 <SellerAvatar item={item} />
                 <div className="min-w-0">
-                  <div className="font-semibold truncate">{item.seller.displayName ?? item.seller.domain}</div>
-                  <div className="text-xs text-muted-foreground truncate">{item.seller.domain}</div>
+                  <div className="font-semibold truncate">{item.seller.displayName ?? `@${item.seller.contactUsername}`}</div>
+                  <div className="text-xs text-muted-foreground truncate">@{item.seller.contactUsername}</div>
                 </div>
               </div>
               <div className="text-xs text-muted-foreground">
