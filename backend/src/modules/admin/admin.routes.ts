@@ -47,6 +47,7 @@ import { distributeReferralRewards } from "../referral/referral.service.js";
 import { markPaymentPaid } from "../payment/mark-paid.service.js";
 import { activateTariffForClient } from "../tariff/tariff-activation.service.js";
 import { registerBackupRoutes } from "../backup/backup.routes.js";
+import { invalidateBrandCache } from "../branding/spa-html.js";
 import { getBroadcastRecipientsCount, startBroadcastJob, getBroadcastJob, listBroadcastHistory, getBroadcastHistoryItem } from "../broadcast/broadcast.service.js";
 import { uploadMascotImage, uploadVideo, uploadTicketAttachment, mascotUrl, videoUploadUrl, removeUploadedFile } from "../../lib/upload.js";
 import {
@@ -1609,6 +1610,7 @@ const updateSettingsSchema = z.object({
   proxyUrl: z.string().max(500).nullable().optional(),
   proxyTelegram: z.boolean().optional(),
   proxyPayments: z.boolean().optional(),
+  proxyAi: z.boolean().optional(),
   nalogEnabled: z.boolean().optional(),
   nalogInn: z.string().max(20).nullable().optional(),
   nalogPassword: z.string().max(200).nullable().optional(),
@@ -1625,6 +1627,9 @@ const updateSettingsSchema = z.object({
   giftExpiryNotificationDays: z.number().int().min(0).max(30).optional(),
   giftReferralEnabled: z.boolean().optional(),
   giftMessageMaxLength: z.number().int().min(0).max(1000).optional(),
+  // Поведение бота
+  botAutoDeleteUnknownMessages: z.boolean().optional(),
+  botInfoBlock: z.string().max(2000).nullable().optional(),
 });
 
 adminRouter.patch("/settings", async (req, res) => {
@@ -1735,6 +1740,7 @@ adminRouter.patch("/settings", async (req, res) => {
       create: { key: "service_name", value: updates.serviceName },
       update: { value: updates.serviceName },
     });
+    invalidateBrandCache();
   }
   if (updates.logo !== undefined) {
     const val = updates.logo ?? "";
@@ -1743,6 +1749,7 @@ adminRouter.patch("/settings", async (req, res) => {
       create: { key: "logo", value: val },
       update: { value: val },
     });
+    invalidateBrandCache();
   }
   if (updates.logoBot !== undefined) {
     const val = updates.logoBot ?? "";
@@ -2364,6 +2371,7 @@ adminRouter.patch("/settings", async (req, res) => {
     ["proxyUrl", "proxy_url"],
     ["proxyTelegram", "proxy_telegram"],
     ["proxyPayments", "proxy_payments"],
+    ["proxyAi", "proxy_ai"],
   ];
   for (const [key, dbKey] of proxyKeys) {
     const v = updates[key];
@@ -2416,11 +2424,13 @@ adminRouter.patch("/settings", async (req, res) => {
     ["giftExpiryNotificationDays", "gift_expiry_notification_days"],
     ["giftReferralEnabled", "gift_referral_enabled"],
     ["giftMessageMaxLength", "gift_message_max_length"],
+    ["botAutoDeleteUnknownMessages", "bot_auto_delete_unknown_messages"],
+    ["botInfoBlock", "bot_info_block"],
   ];
   for (const [key, dbKey] of giftKeys) {
     const v = updates[key];
     if (v === undefined) continue;
-    const val = typeof v === "boolean" ? (v ? "true" : "false") : String(v);
+    const val = v === null ? "" : typeof v === "boolean" ? (v ? "true" : "false") : String(v);
     await prisma.systemSetting.upsert({
       where: { key: dbKey },
       create: { key: dbKey, value: val },

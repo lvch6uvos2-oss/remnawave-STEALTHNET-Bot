@@ -133,7 +133,6 @@ export function ClientDashboardPage() {
   const token = state.token;
   const isMiniapp = useCabinetMiniapp();
   const client = state.client;
-  const showTrial = config?.trialEnabled && !client?.trialUsed;
   const trialDays = config?.trialDays ?? 0;
 
   useEffect(() => {
@@ -282,6 +281,9 @@ export function ClientDashboardPage() {
   const hasActiveSubscription =
     subscription && typeof subscription === "object" && (subParsed.status === "ACTIVE" || subParsed.status === undefined);
   const vpnUrl = subParsed.subscriptionUrl || null;
+  // Триал предлагаем только если подписки нет (vpnUrl пуст) и юзер ещё не использовал триал.
+  // Без проверки vpnUrl кнопка триала висела даже после покупки тарифа.
+  const showTrial = config?.trialEnabled && !client?.trialUsed && !vpnUrl;
   const [referralCopied, setReferralCopied] = useState<"site" | "bot" | null>(null);
   const siteOrigin = config?.publicAppUrl?.replace(/\/$/, "") || (typeof window !== "undefined" ? window.location.origin : "");
   const referralLinkSite =
@@ -350,6 +352,12 @@ export function ClientDashboardPage() {
         {giftRedeemMessage && (
           <div className={`rounded-xl backdrop-blur-md px-4 py-3 text-sm font-medium shadow-sm ${giftRedeemMessage.type === "success" ? "bg-green-500/15 border border-green-500/30 text-green-700 dark:text-green-400" : "bg-destructive/15 border border-destructive/30 text-destructive"}`}>
             {giftRedeemMessage.type === "success" ? "🎁 " : "❌ "}{giftRedeemMessage.text}
+          </div>
+        )}
+
+        {config?.botInfoBlock?.trim() && (
+          <div className="rounded-2xl border border-primary/30 bg-primary/5 backdrop-blur-md px-4 py-3 text-sm whitespace-pre-line shadow-sm">
+            {config.botInfoBlock.trim()}
           </div>
         )}
 
@@ -775,6 +783,12 @@ export function ClientDashboardPage() {
           </div>
         </div>
       </motion.section>
+
+      {config?.botInfoBlock?.trim() && (
+        <div className="rounded-2xl border border-primary/30 bg-primary/5 backdrop-blur-md px-5 py-4 text-sm whitespace-pre-line shadow-sm">
+          {config.botInfoBlock.trim()}
+        </div>
+      )}
 
       {/* Cards grid */}
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">

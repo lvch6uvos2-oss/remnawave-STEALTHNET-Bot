@@ -40,6 +40,13 @@ import { ProxyPage } from "@/pages/proxy";
 import { SingboxPage } from "@/pages/singbox";
 import LanguagesPage from "@/pages/languages";
 import { TourConstructorPage } from "@/pages/tour-constructor";
+import { MarketplaceLayout } from "@/pages/marketplace/marketplace-layout";
+import { MarketplaceBrowsePage } from "@/pages/marketplace/marketplace-browse";
+import { MarketplaceMyListingsPage } from "@/pages/marketplace/marketplace-my";
+import { MarketplaceEditListingPage } from "@/pages/marketplace/marketplace-edit";
+import { MarketplaceHubInstallationsPage } from "@/pages/marketplace/marketplace-hub-installations";
+import { MarketplaceHubReportsPage } from "@/pages/marketplace/marketplace-hub-reports";
+import { MarketplaceHubCategoriesPage } from "@/pages/marketplace/marketplace-hub-categories";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { CabinetLayout } from "@/pages/cabinet/cabinet-layout";
 import { ClientLoginPage } from "@/pages/cabinet/client-login";
@@ -224,6 +231,15 @@ function AppRoutes() {
         <Route path="secondary-subscriptions" element={<ForceChangePassword><AdminSecondarySubscriptionsPage /></ForceChangePassword>} />
         <Route path="tour-constructor" element={<ForceChangePassword><TourConstructorPage /></ForceChangePassword>} />
         <Route path="promo-vpn" element={<ForceChangePassword><GramadsPromoPage /></ForceChangePassword>} />
+        <Route path="marketplace" element={<ForceChangePassword><MarketplaceLayout /></ForceChangePassword>}>
+          <Route index element={<MarketplaceBrowsePage />} />
+          <Route path="my" element={<MarketplaceMyListingsPage />} />
+          <Route path="my/new" element={<MarketplaceEditListingPage />} />
+          <Route path="my/:id/edit" element={<MarketplaceEditListingPage />} />
+          <Route path="hub/installations" element={<MarketplaceHubInstallationsPage />} />
+          <Route path="hub/reports" element={<MarketplaceHubReportsPage />} />
+          <Route path="hub/categories" element={<MarketplaceHubCategoriesPage />} />
+        </Route>
       </Route>
       {/* Онбординг — вне CabinetLayout (без навбара) */}
       <Route

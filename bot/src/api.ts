@@ -144,6 +144,10 @@ export async function getPublicConfig(): Promise<{
   proxyUrl?: string | null;
   proxyTelegram?: boolean;
   proxyPayments?: boolean;
+  /** Авто-удаление нераспознанных сообщений (стикеры, случайный текст и т.п.) */
+  botAutoDeleteUnknownMessages?: boolean;
+  /** Кастомный информационный блок (главное меню бота + кабинет). Пустая строка = скрыто. */
+  botInfoBlock?: string | null;
   giftSubscriptionsEnabled?: boolean;
   defaultLanguage?: string;
   translations?: Record<string, Record<string, unknown>>;

@@ -1,11 +1,11 @@
 /**
- * STEALTHNET 3.2.7 — Telegram-бот
+ * STEALTHNET 3.3.2 — Telegram-бот
  * Полный функционал кабинета: главная, тарифы, профиль, пополнение, триал, реферальная ссылка, VPN.
  * Цветные кнопки: style primary / success / danger (Telegram Bot API).
  */
 
 import "dotenv/config";
-import { Bot, InputFile } from "grammy";
+import { Bot, InputFile, Context } from "grammy";
 import { ProxyAgent as UndiciProxyAgent } from "undici";
 import { SocksProxyAgent } from "socks-proxy-agent";
 import * as api from "./api.js";
@@ -387,6 +387,19 @@ const lastSquadsForRemove = new Map<number, { clientId: string; items: { uuid: s
 // Устройства (HWID): список для экрана «Удалить устройство» (индекс в callback)
 const lastDevicesList = new Map<number, { devices: { hwid: string; platform?: string; deviceModel?: string }[] }>();
 
+/**
+ * Если включён `botAutoDeleteUnknownMessages`, пробуем удалить сообщение пользователя.
+ * Используется в fallback-ветках handler-ов (когда юзер прислал что-то не относящееся
+ * к команде/активному вводу). Удаление silently fails если у бота нет прав.
+ */
+async function tryAutoDeleteUnknown(ctx: Context): Promise<void> {
+  try {
+    const config = await api.getPublicConfig();
+    if (!config?.botAutoDeleteUnknownMessages) return;
+    await ctx.deleteMessage().catch(() => {});
+  } catch { /* не критично */ }
+}
+
 /** Достаём subscriptionUrl из ответа Remna */
 function getSubscriptionUrl(sub: unknown): string | null {
   if (!sub || typeof sub !== "object") return null;
@@ -699,8 +712,10 @@ function buildMainMenuText(opts: {
   menuLineVisibility?: Record<string, boolean> | null;
   menuTextCustomEmojiIds?: Record<string, string> | null;
   botEmojis?: Record<string, { unicode?: string; tgEmojiId?: string }> | null;
+  /** Кастомный инфо-блок (тех. работы, акции, контакты). Скрывается если пусто. */
+  infoBlock?: string | null;
 }): { text: string; entities: CustomEmojiEntity[] } {
-  const { serviceName, balance, currency, subscription, tariffDisplayName, menuTexts, menuLineVisibility, menuTextCustomEmojiIds, botEmojis } = opts;
+  const { serviceName, balance, currency, subscription, tariffDisplayName, menuTexts, menuLineVisibility, menuTextCustomEmojiIds, botEmojis, infoBlock } = opts;
   const name = serviceName.trim() || "Кабинет";
   const balanceStr = formatMoney(balance, currency);
   const lines: string[] = [];
@@ -789,6 +804,21 @@ function buildMainMenuText(opts: {
       }
     }
     pushLine("chooseAction", t(menuTexts, "chooseAction"));
+  }
+
+  // Кастомный инфо-блок: пустая строка-разделитель + сам блок построчно.
+  // Скрывается если null/empty. Каждая строка обрабатывается отдельно для корректной позиции entities.
+  const trimmedInfo = infoBlock?.trim();
+  if (trimmedInfo) {
+    lines.push("");
+    lineStartKeys.push(null);
+    lineEntitiesByIndex.push([]);
+    for (const rawLine of trimmedInfo.split("\n")) {
+      const { text: processed, entities } = applyCustomEmojiPlaceholders(rawLine, botEmojis);
+      lines.push(processed);
+      lineStartKeys.push(null);
+      lineEntitiesByIndex.push(entities);
+    }
   }
 
   const text = lines.join("\n");
@@ -1028,6 +1058,7 @@ bot.command("start", async (ctx) => {
       menuLineVisibility: config?.botMenuLineVisibility ?? null,
       menuTextCustomEmojiIds: config?.menuTextCustomEmojiIds ?? null,
       botEmojis: config?.botEmojis ?? null,
+      infoBlock: config?.botInfoBlock ?? null,
     });
     const caption = text.length > TELEGRAM_CAPTION_MAX ? text.slice(0, TELEGRAM_CAPTION_MAX - 3) + "..." : text;
     const captionEntities = text.length > TELEGRAM_CAPTION_MAX && entities.length ? entities.filter((e) => e.offset + e.length <= TELEGRAM_CAPTION_MAX - 3) : entities;
@@ -1782,6 +1813,7 @@ bot.on("callback_query:data", async (ctx) => {
         menuLineVisibility: config?.botMenuLineVisibility ?? null,
         menuTextCustomEmojiIds: config?.menuTextCustomEmojiIds ?? null,
         botEmojis: config?.botEmojis ?? null,
+        infoBlock: config?.botInfoBlock ?? null,
       });
       const hasVideoInstructionsCb = config?.videoInstructionsEnabled && (config?.videoInstructions?.length ?? 0) > 0;
       const hasSupportLinks = !!(config?.supportLink || config?.agreementLink || config?.offerLink || config?.instructionsLink || hasVideoInstructionsCb);
@@ -3836,7 +3868,12 @@ bot.on("message:text", async (ctx) => {
   }
 
   const num = Number(ctx.message.text.replace(/,/, "."));
-  if (!Number.isFinite(num) || num < 1 || num > 1000000) return;
+  if (!Number.isFinite(num) || num < 1 || num > 1000000) {
+    // Юзер прислал произвольный текст, который не команда / не активный ввод / не сумма пополнения.
+    // Если включён auto-delete — удаляем чтобы чат оставался чистым.
+    await tryAutoDeleteUnknown(ctx);
+    return;
+  }
 
   try {
     const config = publicConfig ?? await api.getPublicConfig();
@@ -3914,6 +3951,12 @@ bot.on("message:text", async (ctx) => {
   } catch {
     // не число или ошибка — игнорируем
   }
+});
+
+// Fallback для НЕтекстовых сообщений — стикеры, фото, голосовые, GIF, документы, локации и т.п.
+// Сюда не попадают тексты (handler выше) и команды. Если auto-delete включён — удаляем.
+bot.on("message", async (ctx) => {
+  await tryAutoDeleteUnknown(ctx);
 });
 
 bot.catch((err) => {

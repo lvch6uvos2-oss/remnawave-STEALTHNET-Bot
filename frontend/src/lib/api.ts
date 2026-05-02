@@ -55,6 +55,7 @@ export const MANAGER_SECTIONS: { key: string; label: string; category: ManagerSe
   { key: "auto-broadcast", label: "Авто-рассылка", category: "tools" },
   { key: "contests", label: "Конкурсы", category: "tools" },
   { key: "tour-constructor", label: "Конструктор тура", category: "tools" },
+  { key: "marketplace", label: "Маркетплейс", category: "tools" },
   // Настройки
   { key: "settings", label: "Настройки", category: "settings" },
   { key: "languages", label: "Языки", category: "settings" },
@@ -107,6 +108,12 @@ export interface ContestFormPayload {
   dailyMessage: string | null;
   buttonText?: string | null;
   buttonUrl?: string | null;
+  /** Включены ли напоминания для этого контеста (issue #35) */
+  reminderEnabled?: boolean;
+  /** Интервал между напоминаниями в часах. 0 = не слать periodic-напоминания (только startNotification + deadline). */
+  reminderIntervalHours?: number;
+  /** CSV часов до endAt: "24,1" → за 24ч и за 1ч до окончания. Пусто = выкл. */
+  reminderDeadlineHoursBefore?: string;
 }
 
 export interface ContestListItem {
@@ -125,6 +132,9 @@ export interface ContestListItem {
   dailyMessage: string | null;
   buttonText?: string | null;
   buttonUrl?: string | null;
+  reminderEnabled?: boolean;
+  reminderIntervalHours?: number;
+  reminderDeadlineHoursBefore?: string;
   status: ContestStatus;
   createdAt: string;
   updatedAt: string;
@@ -1904,7 +1914,240 @@ export const api = {
   async gramadsChangeStrategy(token: string, post: GramadsPostDto) { return api.gramadsCall<GramadsPostDto>(token, "POST", "/PostManagement/ChangeStrategy", post); },
   async gramadsSetExcludedCategories(token: string, post: GramadsPostDto) { return api.gramadsCall<GramadsPostDto>(token, "POST", "/PostManagement/SetExcludedCategories", post); },
   async gramadsSetExcludedLanguages(token: string, post: GramadsPostDto) { return api.gramadsCall<GramadsPostDto>(token, "POST", "/PostManagement/SetExcludedLanguages", post); },
+
+  // ─── Маркетплейс между админами ───────────────────────────────────────────
+  async marketplaceStatus(token: string): Promise<MarketplaceStatusDto> {
+    return request("/admin/marketplace/status", { token });
+  },
+  async marketplaceUpdateSettings(token: string, body: MarketplaceSettingsUpdate): Promise<{ ok: boolean }> {
+    return request("/admin/marketplace/settings", { method: "PATCH", body: JSON.stringify(body), token });
+  },
+  async marketplaceConnect(token: string): Promise<{ ok: boolean; status: string; message?: string; installationId?: string | null }> {
+    return request("/admin/marketplace/connect", { method: "POST", token });
+  },
+  async marketplaceCategories(token: string): Promise<{ items: MarketplaceCategoryDto[] }> {
+    return request("/admin/marketplace/categories", { token });
+  },
+  async marketplaceListings(
+    token: string,
+    params: MarketplaceBrowseParams = {}
+  ): Promise<{ items: MarketplaceListingDto[]; total: number; page: number; limit: number }> {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, String(v));
+    const qs = q.toString();
+    return request(`/admin/marketplace/listings${qs ? `?${qs}` : ""}`, { token });
+  },
+  async marketplaceListing(token: string, id: string): Promise<MarketplaceListingDto> {
+    return request(`/admin/marketplace/listings/${encodeURIComponent(id)}`, { token });
+  },
+  async marketplaceTrackView(token: string, id: string): Promise<{ ok: boolean; deduped?: boolean }> {
+    return request(`/admin/marketplace/listings/${encodeURIComponent(id)}/view`, { method: "POST", token });
+  },
+  async marketplaceMyListings(token: string): Promise<{ items: MarketplaceListingDto[] }> {
+    return request("/admin/marketplace/my/listings", { token });
+  },
+  async marketplaceCreateListing(token: string, body: MarketplaceListingPayload): Promise<MarketplaceListingDto> {
+    return request("/admin/marketplace/my/listings", { method: "POST", body: JSON.stringify(body), token });
+  },
+  async marketplaceUpdateListing(token: string, id: string, body: Partial<MarketplaceListingPayload> & { status?: "active" | "archived" }): Promise<MarketplaceListingDto> {
+    return request(`/admin/marketplace/my/listings/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body), token });
+  },
+  async marketplaceDeleteListing(token: string, id: string): Promise<{ ok: boolean }> {
+    return request(`/admin/marketplace/my/listings/${encodeURIComponent(id)}`, { method: "DELETE", token });
+  },
+  async marketplaceReport(token: string, body: { listingId: string; reason: MarketplaceReportReason; comment?: string }): Promise<{ ok: boolean; reports: number; autoHidden: boolean }> {
+    return request("/admin/marketplace/reports", { method: "POST", body: JSON.stringify(body), token });
+  },
+
+  // Хаб-админ (доступно только если status.role === "hub")
+  async marketplaceHubInstallations(token: string, q?: string): Promise<{ items: MarketplaceInstallationDto[] }> {
+    const qs = q && q.trim() ? `?q=${encodeURIComponent(q)}` : "";
+    return request(`/admin/marketplace/hub/installations${qs}`, { token });
+  },
+  async marketplaceHubBanInstallation(token: string, id: string, isBanned: boolean, reason?: string): Promise<{ id: string; isBanned: boolean; banReason: string | null }> {
+    return request(`/admin/marketplace/hub/installations/${encodeURIComponent(id)}/ban`, {
+      method: "PATCH",
+      body: JSON.stringify({ isBanned, reason }),
+      token,
+    });
+  },
+  async marketplaceHubDeleteInstallation(token: string, id: string): Promise<{ ok: boolean }> {
+    return request(`/admin/marketplace/hub/installations/${encodeURIComponent(id)}`, { method: "DELETE", token });
+  },
+  async marketplaceHubReports(token: string, status: "open" | "resolved" | "dismissed" = "open"): Promise<{ items: MarketplaceReportDto[] }> {
+    return request(`/admin/marketplace/hub/reports?status=${status}`, { token });
+  },
+  async marketplaceHubResolveReport(token: string, id: string, body: { status: "resolved" | "dismissed"; unhideListing?: boolean }): Promise<{ ok: boolean }> {
+    return request(`/admin/marketplace/hub/reports/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      token,
+    });
+  },
+  async marketplaceHubForceDeleteListing(token: string, id: string): Promise<{ ok: boolean }> {
+    return request(`/admin/marketplace/hub/listings/${encodeURIComponent(id)}`, { method: "DELETE", token });
+  },
+  async marketplaceHubCategories(token: string): Promise<{ items: MarketplaceCategoryDto[] }> {
+    return request("/admin/marketplace/hub/categories", { token });
+  },
+  async marketplaceHubCreateCategory(token: string, body: MarketplaceCategoryPayload): Promise<MarketplaceCategoryDto> {
+    return request("/admin/marketplace/hub/categories", { method: "POST", body: JSON.stringify(body), token });
+  },
+  async marketplaceHubUpdateCategory(token: string, id: string, body: Partial<MarketplaceCategoryPayload>): Promise<MarketplaceCategoryDto> {
+    return request(`/admin/marketplace/hub/categories/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body), token });
+  },
+  async marketplaceHubDeleteCategory(token: string, id: string): Promise<{ ok: boolean }> {
+    return request(`/admin/marketplace/hub/categories/${encodeURIComponent(id)}`, { method: "DELETE", token });
+  },
 };
+
+export type MarketplaceCurrency = "USD" | "RUB" | "EUR" | "USDT";
+export type MarketplacePriceUnit = "one_time" | "per_month" | "per_gb" | "per_device";
+export type MarketplaceListingStatus = "active" | "archived" | "auto_hidden";
+export type MarketplaceReportReason = "spam" | "scam" | "wrong_category" | "offensive" | "other";
+
+export interface MarketplaceStatusDto {
+  enabled: boolean;
+  role: "client" | "hub";
+  hubUrl: string;
+  installationId: string | null;
+  apiKeyConnected: boolean;
+  contactUsername: string | null;
+  displayName: string | null;
+  logoUrl: string | null;
+  description: string | null;
+  lastConnectAt: string | null;
+  lastConnectStatus: string | null;
+}
+
+export interface MarketplaceSettingsUpdate {
+  enabled?: boolean;
+  role?: "client" | "hub";
+  contactUsername?: string | null;
+  displayName?: string | null;
+  logoUrl?: string | null;
+  description?: string | null;
+}
+
+export interface MarketplaceCategoryDto {
+  id: string;
+  slug: string;
+  labelRu: string;
+  labelEn: string;
+  icon?: string | null;
+  sortOrder: number;
+  isEnabled: boolean;
+}
+
+export interface MarketplaceCategoryPayload {
+  slug: string;
+  labelRu: string;
+  labelEn: string;
+  icon?: string | null;
+  sortOrder?: number;
+  isEnabled?: boolean;
+}
+
+export interface MarketplaceSellerDto {
+  installationId: string;
+  domain: string;
+  displayName: string | null;
+  contactUsername: string;
+  contactUrl: string;
+  logoUrl: string | null;
+  memberSince: string;
+}
+
+export interface MarketplaceListingDto {
+  id: string;
+  title: string;
+  description: string;
+  priceCents: number;
+  currency: MarketplaceCurrency;
+  priceUnit: MarketplacePriceUnit;
+  country: string | null;
+  tags: string[];
+  coverImageUrl: string | null;
+  gallery: string[];
+  status: MarketplaceListingStatus;
+  views: number;
+  createdAt: string;
+  updatedAt: string;
+  category: { id: string; slug: string; labelRu: string; labelEn: string; icon?: string | null };
+  seller: MarketplaceSellerDto;
+}
+
+export interface MarketplaceListingPayload {
+  categoryId: string;
+  title: string;
+  description: string;
+  priceCents: number;
+  currency: MarketplaceCurrency;
+  priceUnit: MarketplacePriceUnit;
+  country?: string | null;
+  tags: string[];
+  coverImageUrl?: string | null;
+  gallery: string[];
+}
+
+export interface MarketplaceBrowseParams {
+  category?: string;
+  country?: string;
+  currency?: MarketplaceCurrency;
+  q?: string;
+  priceMin?: number;
+  priceMax?: number;
+  page?: number;
+  limit?: number;
+  sort?: "new" | "cheap" | "expensive";
+  installationId?: string;
+}
+
+export interface MarketplaceInstallationDto {
+  id: string;
+  domain: string;
+  displayName: string | null;
+  contactUsername: string;
+  contactTelegramId: string | null;
+  logoUrl: string | null;
+  description: string | null;
+  isBanned: boolean;
+  banReason: string | null;
+  totalListings: number;
+  apiKeyPrefix: string;
+  lastSeenAt: string;
+  lastIp: string | null;
+  createdAt: string;
+}
+
+export interface MarketplaceReportDto {
+  id: string;
+  listingId: string;
+  reason: MarketplaceReportReason;
+  comment: string | null;
+  status: "open" | "resolved" | "dismissed";
+  createdAt: string;
+  resolvedAt: string | null;
+  listing: {
+    id: string;
+    title: string;
+    status: MarketplaceListingStatus;
+    reportsCount: number;
+    category: { slug: string; labelRu: string; labelEn: string };
+    installation: {
+      id: string;
+      domain: string;
+      displayName: string | null;
+      contactUsername: string;
+      isBanned: boolean;
+    };
+  };
+  reporter: {
+    id: string;
+    domain: string;
+    displayName: string | null;
+  };
+}
 
 export interface ClientReferralStats {
   referralCode: string | null;
@@ -2105,6 +2348,8 @@ export type UpdateSettingsPayload = {
   forceSubscribeChannelId?: string | null;
   forceSubscribeMessage?: string | null;
   blacklistEnabled?: boolean;
+  botAutoDeleteUnknownMessages?: boolean;
+  botInfoBlock?: string | null;
   sellOptionsEnabled?: boolean;
   sellOptionsTrafficEnabled?: boolean;
   sellOptionsTrafficProducts?: string | null;
@@ -2246,6 +2491,7 @@ export type UpdateSettingsPayload = {
   proxyUrl?: string | null;
   proxyTelegram?: boolean;
   proxyPayments?: boolean;
+  proxyAi?: boolean;
   nalogEnabled?: boolean;
   nalogInn?: string | null;
   nalogPassword?: string | null;
@@ -2474,6 +2720,10 @@ export interface AdminSettings {
   forceSubscribeMessage?: string | null;
   /** Community Blacklist — автоблокировка пользователей из общего списка */
   blacklistEnabled?: boolean;
+  /** Авто-удаление нераспознанных сообщений в боте (стикеры, случайный текст и т.п.) */
+  botAutoDeleteUnknownMessages?: boolean;
+  /** Кастомный инфо-блок: показывается в главном меню бота и в кабинете. Пусто = скрыт. */
+  botInfoBlock?: string | null;
   /** Продажа опций: доп. трафик, устройства, серверы */
   sellOptionsEnabled?: boolean;
   sellOptionsTrafficEnabled?: boolean;
@@ -2621,6 +2871,7 @@ export interface AdminSettings {
   proxyUrl?: string | null;
   proxyTelegram?: boolean;
   proxyPayments?: boolean;
+  proxyAi?: boolean;
   nalogEnabled?: boolean;
   nalogInn?: string | null;
   nalogPassword?: string | null;
@@ -3561,4 +3812,6 @@ export interface PublicConfig {
   giftExpiryNotificationDays?: number;
   giftReferralEnabled?: boolean;
   giftMessageMaxLength?: number;
+  /** Кастомный инфо-блок (тех. работы, акции, контакты). Пусто = скрыт. Поддерживает многострочный текст. */
+  botInfoBlock?: string | null;
 }

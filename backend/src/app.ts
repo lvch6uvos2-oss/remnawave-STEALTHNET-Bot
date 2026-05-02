@@ -17,6 +17,7 @@ import { yoomoneyWebhooksRouter } from "./modules/webhooks/yoomoney.webhooks.rou
 import { yookassaWebhooksRouter } from "./modules/webhooks/yookassa.webhooks.routes.js";
 import { cryptopayWebhooksRouter } from "./modules/webhooks/cryptopay.webhooks.routes.js";
 import { heleketWebhooksRouter } from "./modules/webhooks/heleket.webhooks.routes.js";
+import { lavaWebhooksRouter } from "./modules/webhooks/lava.webhooks.routes.js";
 import { botAdminRouter } from "./modules/bot-admin/bot-admin.routes.js";
 import { contestAdminRouter } from "./modules/contest/contest.admin.routes.js";
 import { contestPublicRouter } from "./modules/contest/contest.public.routes.js";
@@ -27,6 +28,12 @@ import { externalApiRouter } from "./modules/api-keys/external-api.routes.js";
 import { geoMapRouter } from "./modules/geo-map/geo-map.routes.js";
 import { giftRouter, giftPublicRouter } from "./modules/gift/gift.routes.js";
 import { paymentRedirectRouter } from "./modules/payment-redirect/payment-redirect.routes.js";
+import { marketplaceClientRouter } from "./modules/marketplace/marketplace.client.routes.js";
+import { marketplaceHubRouter } from "./modules/marketplace/marketplace.hub.routes.js";
+import { marketplaceHubAdminRouter } from "./modules/marketplace/marketplace.hub.admin.routes.js";
+import { getMarketplaceRuntime } from "./modules/marketplace/marketplace.runtime.js";
+import { requireAuth } from "./modules/auth/middleware.js";
+import { renderSpaIndex } from "./modules/branding/spa-html.js";
 
 const app = express();
 
@@ -44,9 +51,10 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Api-Key"],
 }));
-// Crypto Pay и Heleket webhooks нужен raw body для проверки подписи (до express.json)
+// Crypto Pay, Heleket и Lava webhooks нужен raw body для проверки подписи (до express.json)
 app.use("/api/webhooks/cryptopay", express.raw({ type: "application/json" }), cryptopayWebhooksRouter);
 app.use("/api/webhooks/heleket", express.raw({ type: "application/json" }), heleketWebhooksRouter);
+app.use("/api/webhooks/lava", express.raw({ type: "application/json" }), lavaWebhooksRouter);
 
 // Лимит 5MB для настроек с логотипом и favicon (data URL)
 app.use(express.json({ limit: "200mb" }));
@@ -128,14 +136,35 @@ const giftPublicLimiter = rateLimit({
 app.use("/api/gift/public", giftPublicLimiter);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", version: "3.2.7" });
+  res.json({ status: "ok", version: "3.3.2" });
 });
+
+// SSR-рендер index.html с подстановкой имени из брендинга (Telegram preview).
+// Дёргается nginx'ом для `/`, `/index.html` и SPA-фоллбэка.
+app.get("/_spa", renderSpaIndex);
 
 // Статика для загруженных файлов (маскоты, видео)
 app.use("/api/uploads", express.static(path.join("/app/uploads"), {
   maxAge: "30d",
   immutable: true,
 }));
+
+// Маркетплейс между админами: всегда монтируем, но хаб-роуты включаются только
+// если runtime-роль = hub (см. requireHubRole).
+async function requireHubRole(_req: express.Request, res: express.Response, next: express.NextFunction) {
+  const rt = await getMarketplaceRuntime();
+  if (!rt.enabled) return res.status(404).json({ message: "Marketplace disabled" });
+  if (rt.role !== "hub") return res.status(404).json({ message: "This installation is not the marketplace hub" });
+  next();
+}
+async function requireMarketplaceEnabled(_req: express.Request, res: express.Response, next: express.NextFunction) {
+  const rt = await getMarketplaceRuntime();
+  if (!rt.enabled) return res.status(404).json({ message: "Marketplace disabled" });
+  next();
+}
+app.use("/api/marketplace", requireHubRole, marketplaceHubRouter);
+app.use("/api/admin/marketplace/hub", requireAuth, requireHubRole, marketplaceHubAdminRouter);
+app.use("/api/admin/marketplace", requireMarketplaceEnabled, marketplaceClientRouter);
 
 app.use("/api/auth", authRouter);
 app.use("/api/admin", adminRouter);

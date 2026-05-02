@@ -6,6 +6,7 @@ import {
   Megaphone, Tag, BarChart3, FileText, ExternalLink, Sun, Moon, Monitor,
   Palette, Menu, X, Database, Target, UserCog, Send, CalendarClock, Globe, Server, MessageSquare, Trophy,
   Network, ShieldAlert, Key, Map, Video, Languages, Gift, Sparkles, Rocket,
+  Bell, ChevronRight, Check, ShoppingBag,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAdminLanguageSync } from "@/i18n/use-language-sync";
@@ -15,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api, type AdminNotificationCounters } from "@/lib/api";
 
-const PANEL_VERSION = "3.3.1";
+const PANEL_VERSION = "3.3.2";
 const GITHUB_URL = "https://github.com/systemmaster1200-eng/remnawave-STEALTHNET-Bot";
 
 type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; section: string; category: string };
@@ -55,6 +56,7 @@ function useNavSections(): NavItem[] {
     { to: "/admin/contests", label: t("admin.nav.contests"), icon: Trophy, section: "contests", category: "tools" },
     { to: "/admin/tour-constructor", label: "Конструктор тура", icon: Sparkles, section: "tour-constructor", category: "tools" },
     { to: "/admin/promo-vpn", label: t("admin.nav.promo_vpn"), icon: Rocket, section: "promo-vpn", category: "tools" },
+    { to: "/admin/marketplace", label: t("admin.nav.marketplace"), icon: ShoppingBag, section: "marketplace", category: "tools" },
     { to: "/admin/settings", label: t("admin.nav.settings"), icon: Settings, section: "settings", category: "settings" },
     { to: "/admin/languages", label: t("admin.nav.languages"), icon: Languages, section: "languages", category: "settings" },
     { to: "/admin/admins", label: t("admin.nav.managers"), icon: UserCog, section: "admins", category: "settings" },
@@ -324,51 +326,133 @@ export function DashboardLayout() {
 
       {/* ═══ Main content ═══ */}
       <main className="flex-1 min-w-0 flex flex-col md:pl-[290px] w-full relative z-10">
-        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-2 px-4 md:px-6 bg-background/70 backdrop-blur-xl border-b border-border/40 transition-all">
-          <div className="flex items-center gap-3 min-w-0">
-            <Button variant="ghost" size="icon" className="md:hidden shrink-0" onClick={() => setMobileMenuOpen(true)}>
+        <header className="sticky top-3 z-40 mx-3 sm:mx-4 mt-3 flex h-16 shrink-0 items-center justify-between gap-3 px-4 md:px-5 rounded-[1.35rem] bg-white/10 dark:bg-white/5 backdrop-blur-2xl border border-white/20 dark:border-white/10 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.3)] dark:shadow-[0_8px_32px_-8px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.1)] transition-all">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <Button variant="ghost" size="icon" className="md:hidden shrink-0 rounded-xl" onClick={() => setMobileMenuOpen(true)}>
               <Menu className="h-5 w-5" />
             </Button>
-            {brand.serviceName ? <span className="text-sm font-medium text-muted-foreground md:hidden truncate">{brand.serviceName}</span> : null}
+            {/* Breadcrumb / Page title */}
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <div className="hidden md:flex h-9 w-9 rounded-xl bg-gradient-to-br from-primary/20 to-primary/10 border border-primary/20 items-center justify-center shrink-0">
+                <Sparkles className="h-4 w-4 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <div className="hidden md:flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                  <span>Admin</span>
+                  <ChevronRight className="h-3 w-3 opacity-50" />
+                  <span className="text-primary truncate">{(() => {
+                    const seg = location.pathname.replace(/^\/admin\/?/, "").split("/")[0] || "dashboard";
+                    const map: Record<string, string> = {
+                      dashboard: "Главная", analytics: "Аналитика", "sales-report": "Отчёт продаж",
+                      "traffic-abuse": "Аномалии трафика", "geo-map": "Карта", clients: "Клиенты",
+                      proxy: "Прокси", singbox: "Singbox", backup: "Бэкапы", tickets: "Тикеты",
+                      tariffs: "Тарифы", promo: "Промо-ссылки", "promo-codes": "Промокоды",
+                      marketing: "Маркетинг", "referral-network": "Реф. сеть",
+                      "secondary-subscriptions": "Доп. подписки", "video-instructions": "Видео",
+                      broadcast: "Рассылки", "auto-broadcast": "Авто-рассылки", contests: "Контесты",
+                      "tour-constructor": "Тур", "promo-vpn": "Promo VPN", settings: "Настройки",
+                      languages: "Языки", admins: "Менеджеры", "api-keys": "API ключи",
+                      "change-password": "Смена пароля",
+                    };
+                    return map[seg] ?? seg;
+                  })()}</span>
+                </div>
+                {brand.serviceName ? <span className="text-sm font-medium text-muted-foreground md:hidden truncate">{brand.serviceName}</span> : null}
+              </div>
+            </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Notifications bell */}
+            <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-9 px-2.5 rounded-xl relative" title={notificationsEnabled ? "Уведомления включены" : "Уведомления выключены"} disabled>
+              <Bell className={cn("h-4 w-4", notificationsEnabled ? "text-foreground" : "text-muted-foreground/40")} />
+              {notificationToasts.length > 0 && (
+                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-background animate-pulse" />
+              )}
+            </Button>
+            {/* Theme picker — стиль из кабинета */}
             <div className="relative">
-              <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-8 px-2.5 rounded-lg" onClick={() => setShowThemePanel(!showThemePanel)}>
+              <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-9 px-2.5 rounded-xl border border-transparent hover:border-white/10 bg-background/20 hover:bg-background/40" onClick={() => setShowThemePanel(!showThemePanel)}>
                 <Palette className="h-3.5 w-3.5" />
                 <span className="hidden sm:inline">{t("admin.header.theme")}</span>
               </Button>
               {showThemePanel && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setShowThemePanel(false)} />
-                  <div className="absolute right-0 top-full z-50 mt-2 w-72 rounded-xl border bg-card/95 backdrop-blur-xl p-4 shadow-xl">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">{t("admin.header.mode")}</p>
-                    <div className="flex gap-1 mb-4">
-                      {MODE_OPTIONS.map((opt) => (
-                        <button key={opt.value} onClick={() => setMode(opt.value)}
-                          className={cn("flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-colors",
-                            themeConfig.mode === opt.value ? "bg-primary text-primary-foreground" : "bg-muted/50 hover:bg-muted")}>
-                          <opt.icon className="h-3.5 w-3.5" />{opt.label}
-                        </button>
-                      ))}
+                  <div className={cn(
+                    "absolute right-0 top-full z-50 mt-3 w-[calc(100vw-2rem)] sm:w-[320px] max-w-[320px] rounded-[2rem] border border-white/40 dark:border-white/10 bg-slate-200/60 dark:bg-slate-900/60 backdrop-blur-[32px] p-5 shadow-[0_10px_60px_rgba(0,0,0,0.15)] dark:shadow-[0_10px_60px_rgba(0,0,0,0.5)] transition-all duration-300 origin-top-right",
+                    "opacity-100 scale-100 pointer-events-auto translate-y-0"
+                  )}>
+                    <div className="mb-5">
+                      <h4 className="mb-3 text-sm font-semibold tracking-tight text-foreground">{t("admin.header.mode")}</h4>
+                      <div className="flex rounded-xl bg-muted/60 p-1 border border-border/50">
+                        {MODE_OPTIONS.map((opt) => {
+                          const isActive = themeConfig.mode === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              onClick={() => setMode(opt.value)}
+                              className={cn(
+                                "flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-xs font-medium transition-all duration-300",
+                                isActive
+                                  ? "bg-background text-foreground shadow-sm ring-1 ring-border/50"
+                                  : "text-muted-foreground hover:bg-background/50 hover:text-foreground"
+                              )}
+                            >
+                              <opt.icon className="h-3.5 w-3.5" />
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <p className="text-xs font-medium text-muted-foreground mb-2">{t("admin.header.accent")}</p>
-                    <div className="grid grid-cols-4 gap-2">
-                      {(Object.entries(ACCENT_PALETTES) as [ThemeAccent, typeof ACCENT_PALETTES["default"]][]).map(([key, palette]) => (
-                        <button key={key} onClick={() => setAccent(key)}
-                          className={cn("flex flex-col items-center gap-1 rounded-lg p-2 text-[10px] transition-all",
-                            themeConfig.accent === key ? "ring-2 ring-primary bg-muted" : "hover:bg-muted/50")}>
-                          <div className="h-6 w-6 rounded-full border-2 border-foreground/10" style={{ backgroundColor: palette.swatch }} />
-                          <span className="text-muted-foreground truncate w-full text-center">{palette.label}</span>
-                        </button>
-                      ))}
+
+                    <div>
+                      <h4 className="mb-3 text-sm font-semibold tracking-tight text-foreground">{t("admin.header.accent")}</h4>
+                      <div className="grid grid-cols-4 gap-2">
+                        {(Object.entries(ACCENT_PALETTES) as [ThemeAccent, typeof ACCENT_PALETTES["default"]][]).map(([key, palette]) => {
+                          const isActive = themeConfig.accent === key;
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => setAccent(key)}
+                              className={cn(
+                                "group flex flex-col items-center gap-2 rounded-xl p-2 transition-all duration-300",
+                                isActive ? "bg-primary/10" : "hover:bg-muted/60"
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  "relative flex h-8 w-8 items-center justify-center rounded-full shadow-sm transition-transform duration-300",
+                                  isActive ? "scale-110 ring-4 ring-primary/20" : "group-hover:scale-110"
+                                )}
+                                style={{ backgroundColor: palette.swatch }}
+                              >
+                                {isActive && <Check className="h-4 w-4 text-white drop-shadow-md" />}
+                              </div>
+                              <span className={cn(
+                                "text-[10px] font-medium tracking-tight truncate w-full text-center transition-colors",
+                                isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
+                              )}>
+                                {palette.label}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                   </div>
                 </>
               )}
             </div>
+            {/* Version badge */}
             <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer"
-              className="hidden sm:flex items-center gap-1.5 rounded-full border bg-muted/50 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent">
-              <Shield className="h-3 w-3" />{t("admin.header.version")} {PANEL_VERSION}<ExternalLink className="h-3 w-3 opacity-50" />
+              className="hidden sm:flex items-center gap-1.5 rounded-xl border border-white/10 bg-gradient-to-br from-emerald-500/10 to-teal-500/5 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400 transition-all hover:from-emerald-500/20 hover:to-teal-500/10 hover:shadow-md">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+              </span>
+              <span>v{PANEL_VERSION}</span>
+              <ExternalLink className="h-3 w-3 opacity-50" />
             </a>
           </div>
         </header>

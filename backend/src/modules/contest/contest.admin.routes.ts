@@ -30,6 +30,14 @@ const createContestSchema = z.object({
   dailyMessage: z.string().max(2000).nullable().optional(),
   buttonText: z.string().max(200).nullable().optional(),
   buttonUrl: z.string().max(2000).nullable().optional(),
+  // Конфиг напоминаний (issue #35)
+  reminderEnabled: z.boolean().optional(),
+  reminderIntervalHours: z.number().int().min(0).max(24 * 30).optional(),
+  reminderDeadlineHoursBefore: z
+    .string()
+    .max(200)
+    .regex(/^(\s*\d+\s*(,\s*\d+\s*)*)?$/, "Формат: '24,1' (часы через запятую)")
+    .optional(),
 });
 
 const updateContestSchema = createContestSchema.partial();
@@ -88,6 +96,9 @@ contestAdminRouter.post("/", asyncRoute(async (req, res) => {
       dailyMessage: data.dailyMessage ?? null,
       buttonText: data.buttonText ?? null,
       buttonUrl: data.buttonUrl ?? null,
+      reminderEnabled: data.reminderEnabled ?? true,
+      reminderIntervalHours: data.reminderIntervalHours ?? 24,
+      reminderDeadlineHoursBefore: data.reminderDeadlineHoursBefore ?? "",
       status: "draft",
     },
   });
@@ -116,6 +127,9 @@ contestAdminRouter.patch("/:id", asyncRoute(async (req, res) => {
   if (data.dailyMessage !== undefined) update.dailyMessage = data.dailyMessage;
   if (data.buttonText !== undefined) update.buttonText = data.buttonText;
   if (data.buttonUrl !== undefined) update.buttonUrl = data.buttonUrl;
+  if (data.reminderEnabled !== undefined) update.reminderEnabled = data.reminderEnabled;
+  if (data.reminderIntervalHours !== undefined) update.reminderIntervalHours = data.reminderIntervalHours;
+  if (data.reminderDeadlineHoursBefore !== undefined) update.reminderDeadlineHoursBefore = data.reminderDeadlineHoursBefore;
 
   const contest = await prisma.contest.update({
     where: { id },

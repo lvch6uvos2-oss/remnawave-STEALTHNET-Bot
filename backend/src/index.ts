@@ -9,6 +9,7 @@ import { startAutoRenewScheduler } from "./modules/payment/auto-renew.cron.js";
 import { startAutoBackupScheduler, stopAutoBackupScheduler } from "./modules/backup/auto-backup.scheduler.js";
 import { startGiftExpiryCron } from "./modules/gift/gift-expiry.cron.js";
 import { startAbandonedAccountsCleanup } from "./modules/client/abandoned-accounts.cron.js";
+import { startMarketplaceScheduler, stopMarketplaceScheduler } from "./modules/marketplace/marketplace.scheduler.js";
 
 async function main() {
   await prisma.$connect();
@@ -22,15 +23,17 @@ async function main() {
   startGiftExpiryCron();
   startAbandonedAccountsCleanup();
   await startAutoBackupScheduler();
+  startMarketplaceScheduler();
 
   const server = app.listen(env.PORT, "0.0.0.0", () => {
-    console.log(`API v3.2.7 listening on port ${env.PORT}`);
+    console.log(`API v3.3.2 listening on port ${env.PORT}`);
   });
 
   const shutdown = async () => {
     stopAutoBroadcastScheduler();
     stopContestDailyReminderScheduler();
     stopAutoBackupScheduler();
+    stopMarketplaceScheduler();
     server.close();
     await prisma.$disconnect();
     process.exit(0);
