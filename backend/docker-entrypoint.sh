@@ -44,7 +44,8 @@ cat "$MIGRATE_LOG" >&2 || true
 # в противном случае applied не корректен и сюда не попадаем.
 if grep -q "P3009" "$MIGRATE_LOG"; then
   log "P3009: в истории есть failed-миграция, пытаюсь её снять"
-  STUCK=$(grep -oE "[0-9]{14,}_[A-Za-z0-9_]+" "$MIGRATE_LOG" | head -1 || true)
+  # Имена папок миграций: YYYYMMDD_name (8 цифр) или YYYYMMDDHHMMSS_name (14+)
+  STUCK=$(grep -oE "[0-9]{8,}_[A-Za-z0-9_]+" "$MIGRATE_LOG" | head -1 || true)
   if [ -z "$STUCK" ]; then
     log "ERROR: P3009, но не получилось вычислить имя зависшей миграции из лога"
     exit 1
