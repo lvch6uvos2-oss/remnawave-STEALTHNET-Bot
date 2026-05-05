@@ -34,9 +34,11 @@ import {
   Tag,
   Gift,
   Percent,
+  Wand2,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { MassPromoDialog } from "@/components/mass-promo-dialog";
 
 interface Squad {
   uuid: string;
@@ -83,6 +85,7 @@ export function PromoCodesPage() {
 
   const [detail, setDetail] = useState<PromoCodeDetail | null>(null);
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [showMassDialog, setShowMassDialog] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -401,11 +404,25 @@ export function PromoCodesPage() {
             </p>
           </div>
         </div>
-        <Button onClick={openCreate} className="gap-1.5 rounded-xl">
-          <Plus className="h-4 w-4" />
-          Создать
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setShowMassDialog(true)} variant="outline" className="gap-1.5 rounded-xl">
+            <Wand2 className="h-4 w-4" />
+            Сгенерировать пачку
+          </Button>
+          <Button onClick={openCreate} className="gap-1.5 rounded-xl">
+            <Plus className="h-4 w-4" />
+            Создать
+          </Button>
+        </div>
       </motion.div>
+
+      <MassPromoDialog
+        open={showMassDialog}
+        onClose={() => setShowMassDialog(false)}
+        onCreated={() => load()}
+        squads={squads}
+      />
+
 
       {codes.length === 0 ? (
         <Card className="bg-background/60 backdrop-blur-3xl border-white/10 rounded-[2rem] p-12 shadow-xl">

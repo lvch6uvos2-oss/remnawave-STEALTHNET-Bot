@@ -29,17 +29,28 @@ const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
 
 function AttachmentsGallery({ items }: { items: TicketAttachmentDto[] }) {
   if (!items || items.length === 0) return null;
+  // Превью капается max-w 220px (single) / 160px (multi) с aspect-square +
+  // object-cover для красивой плитки. Клик по превью открывает оригинал в
+  // новой вкладке.
+  const cellSize = items.length > 1 ? 160 : 220;
   return (
-    <div className={cn("mt-2 grid gap-1.5", items.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+    <div className="mt-2 flex flex-wrap gap-1.5">
       {items.map((a, i) => (
         <a
           key={`${a.url}-${i}`}
           href={a.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="block overflow-hidden rounded-xl border border-white/10 bg-black/5 hover:opacity-90 transition-opacity"
+          className="block overflow-hidden rounded-xl border border-white/10 bg-black/30 hover:opacity-90 transition-opacity shrink-0"
+          style={{ width: cellSize, height: cellSize }}
+          title={a.name ?? "Открыть оригинал"}
         >
-          <img src={a.url} alt={a.name ?? "attachment"} className="w-full max-h-48 object-cover" loading="lazy" />
+          <img
+            src={a.url}
+            alt={a.name ?? "attachment"}
+            className="w-full h-full object-cover"
+            loading="lazy"
+          />
         </a>
       ))}
     </div>

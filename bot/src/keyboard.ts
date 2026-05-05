@@ -13,8 +13,8 @@ interface InlineButton {
   icon_custom_emoji_id?: string;
 }
 
-type WebAppButton = { text: string; web_app: { url: string }; icon_custom_emoji_id?: string };
-type UrlButton = { text: string; url: string; icon_custom_emoji_id?: string };
+type WebAppButton = { text: string; web_app: { url: string }; icon_custom_emoji_id?: string; style?: ButtonStyle };
+type UrlButton = { text: string; url: string; icon_custom_emoji_id?: string; style?: ButtonStyle };
 export type InlineMarkup = { inline_keyboard: (InlineButton | WebAppButton | UrlButton)[][] };
 
 export type BotButtonConfig = { id: string; visible: boolean; label: string; order: number; style?: string; iconCustomEmojiId?: string; onePerRow?: boolean };
@@ -160,28 +160,36 @@ export function mainMenu(opts: {
     const iconId = b.iconCustomEmojiId;
     const onePerRow = b.onePerRow === true;
     const labelForIcon = iconId ? stripLeadingEmoji(b.label) : b.label;
+    // Стиль (primary/success/danger) для всех типов кнопок — в т.ч. web_app/url.
+    // Telegram Bot API игнорирует поле для не-callback кнопок, но мы передаём
+    // его на случай поддержки в будущих версиях клиента.
+    const styleForBtn = toStyle(b.style);
     if (b.id === "cabinet") {
       if (base) {
         const w: WebAppButton = { text: labelForIcon, web_app: { url: `${base}/cabinet` } };
         if (iconId) w.icon_custom_emoji_id = iconId;
+        if (styleForBtn) w.style = styleForBtn;
         items.push({ node: w, onePerRow });
       }
     } else     if (b.id === "vpn" && (opts.remnaSubscriptionUrl || base)) {
       if (opts.remnaSubscriptionUrl) {
         const u: UrlButton = { text: labelForIcon, url: opts.remnaSubscriptionUrl };
         if (iconId) u.icon_custom_emoji_id = iconId;
+        if (styleForBtn) u.style = styleForBtn;
         items.push({ node: u, onePerRow });
       } else {
         const w: WebAppButton = { text: labelForIcon, web_app: { url: `${base}/cabinet/subscribe` } };
         if (iconId) w.icon_custom_emoji_id = iconId;
+        if (styleForBtn) w.style = styleForBtn;
         items.push({ node: w, onePerRow });
       }
     } else if (b.id === "tickets" && base) {
       const w: WebAppButton = { text: labelForIcon, web_app: { url: `${base}/cabinet/tickets` } };
       if (iconId) w.icon_custom_emoji_id = iconId;
+      if (styleForBtn) w.style = styleForBtn;
       items.push({ node: w, onePerRow });
     } else if (MENU_IDS[b.id]) {
-      items.push({ node: btn(b.label, MENU_IDS[b.id], toStyle(b.style), iconId), onePerRow });
+      items.push({ node: btn(b.label, MENU_IDS[b.id], styleForBtn, iconId), onePerRow });
     }
   }
   const rows: (InlineButton | WebAppButton | UrlButton)[][] = [];
@@ -454,7 +462,7 @@ export function tariffDevicePickerButtons(
   return { inline_keyboard: rows };
 }
 
-/** Кнопки выбора способа оплаты (СПБ, Карты и т.д. из админки) для тарифа + баланс + ЮMoney */
+/** Кнопки выбора способа оплаты (СБП, Карты и т.д. из админки) для тарифа + баланс + ЮMoney */
 export function tariffPaymentMethodButtons(
   tariffId: string,
   methods: { id: number; label: string }[],
@@ -466,6 +474,8 @@ export function tariffPaymentMethodButtons(
   yookassaEnabled?: boolean,
   cryptopayEnabled?: boolean,
   tariffCurrency?: string,
+  heleketEnabled?: boolean,
+  lavaEnabled?: boolean,
 ): InlineMarkup {
   const back = (backLabel && backLabel.trim()) || DEFAULT_BACK_LABEL;
   const backSty = undefined;
@@ -483,8 +493,15 @@ export function tariffPaymentMethodButtons(
   if (yookassaEnabled && (!tariffCurrency || tariffCurrency.toUpperCase() === "RUB")) {
     rows.push([btn("💳 ЮKassa — карта / СБП", `pay_tariff_yookassa:${tariffId}`, undefined, cardId)]);
   }
+  // LAVA Business — только RUB (СБП / Карты / СберPay)
+  if (lavaEnabled && (!tariffCurrency || tariffCurrency.toUpperCase() === "RUB")) {
+    rows.push([btn("💳 Lava — СБП / Карты", `pay_tariff_lava:${tariffId}`, undefined, cardId)]);
+  }
   if (cryptopayEnabled) {
     rows.push([btn("💳 Crypto Bot — криптовалюта", `pay_tariff_cryptopay:${tariffId}`, undefined, cardId)]);
+  }
+  if (heleketEnabled) {
+    rows.push([btn("💳 Heleket — криптовалюта", `pay_tariff_heleket:${tariffId}`, undefined, cardId)]);
   }
   for (const m of methods) {
     rows.push([btn(m.label, `pay_tariff:${tariffId}:${m.id}`, undefined, cardId)]);
@@ -677,6 +694,8 @@ export function topupPaymentMethodButtons(
   yoomoneyEnabled?: boolean,
   yookassaEnabled?: boolean,
   cryptopayEnabled?: boolean,
+  heleketEnabled?: boolean,
+  lavaEnabled?: boolean,
 ): InlineMarkup {
   const back = (backLabel && backLabel.trim()) || DEFAULT_BACK_LABEL;
   const backSty = resolveStyle(toStyle(backStyle), "danger");
@@ -688,8 +707,14 @@ export function topupPaymentMethodButtons(
   if (yookassaEnabled) {
     rows.push([btn("💳 ЮKassa — карта / СБП", `topup_yookassa:${amount}`, "primary", cardId)]);
   }
+  if (lavaEnabled) {
+    rows.push([btn("💳 Lava — СБП / Карты", `topup_lava:${amount}`, "primary", cardId)]);
+  }
   if (cryptopayEnabled) {
     rows.push([btn("💳 Crypto Bot — криптовалюта", `topup_cryptopay:${amount}`, "primary", cardId)]);
+  }
+  if (heleketEnabled) {
+    rows.push([btn("💳 Heleket — криптовалюта", `topup_heleket:${amount}`, "primary", cardId)]);
   }
   for (const m of methods) {
     rows.push([btn(m.label, `topup:${amount}:${m.id}`, "primary", cardId)]);

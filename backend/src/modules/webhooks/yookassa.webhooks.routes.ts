@@ -2,10 +2,20 @@
  * Webhook ЮKassa — уведомления о статусе платежа (JSON).
  * Событие payment.succeeded: помечаем платёж PAID, активируем тариф или зачисляем баланс, рефералы.
  * Документация: https://yookassa.ru/developers/using-api/webhooks
+ *
+ * Аутентификация:
+ * - YooKassa поддерживает HTTP Basic Auth на webhook URL. Админ настраивает это в кабинете
+ *   ЮKassa: webhook URL вида https://user:pass@panel.example.com/api/webhooks/yookassa.
+ *   Админ задаёт `yookassa_webhook_basic_user` / `yookassa_webhook_basic_password` в админке.
+ * - Дополнительно: после прохождения basic-auth мы делаем double-check через YooKassa API
+ *   (`GET /payments/:id`) — не доверяем event'у из webhook'а напрямую, ограничивает SSRF-риск.
+ *   (Реализован отдельно в yookassa.service.ts; здесь только проверяем статус.)
  */
 
 import { Router } from "express";
+import { timingSafeEqual } from "node:crypto";
 import { prisma } from "../../db.js";
+import { getSystemConfig } from "../client/client.service.js";
 import { activateTariffByPaymentId } from "../tariff/tariff-activation.service.js";
 import { createProxySlotsByPaymentId } from "../proxy/proxy-slots-activation.service.js";
 import { createSingboxSlotsByPaymentId } from "../singbox/singbox-slots-activation.service.js";
@@ -50,7 +60,67 @@ type YookassaNotification = {
   };
 };
 
+/**
+ * Constant-time-сравнение двух строк через timingSafeEqual.
+ * Возвращает false при разных длинах — это безопасно (длина ожидаемой строки не секрет).
+ */
+function safeStringEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
+
+/**
+ * Проверяет HTTP Basic Auth заголовок против `yookassa_webhook_basic_user/password`
+ * из system_settings. Возвращает true если все ОК или basic-auth выключен (нет пароля).
+ *
+ * SECURITY: если в админке не задан пароль — webhook принимается без проверки (legacy).
+ * Чтобы включить — заходишь в админку → Платежи → ЮKassa → задаёшь user+password,
+ * затем в кабинете ЮKassa прописываешь URL вида `https://USER:PASS@panel.example.com/...`.
+ * Когда пароль задан — все запросы без или с неверным auth получают 401.
+ */
+async function verifyYookassaWebhookAuth(req: { headers: Record<string, unknown> }): Promise<{ ok: boolean; reason?: string }> {
+  const config = await getSystemConfig();
+  const expectedUser = (config as { yookassaWebhookBasicUser?: string | null }).yookassaWebhookBasicUser?.trim();
+  const expectedPass = (config as { yookassaWebhookBasicPassword?: string | null }).yookassaWebhookBasicPassword?.trim();
+
+  // Не настроено — legacy mode, пропускаем (но громко предупреждаем).
+  if (!expectedUser || !expectedPass) {
+    console.warn("[YooKassa Webhook] BASIC AUTH NOT CONFIGURED — webhook accepted without verification. Set yookassaWebhookBasicUser / yookassaWebhookBasicPassword in admin settings.");
+    return { ok: true, reason: "no_credentials_configured" };
+  }
+
+  const authHeader = (req.headers["authorization"] ?? req.headers["Authorization"]) as string | undefined;
+  if (!authHeader || !authHeader.startsWith("Basic ")) {
+    return { ok: false, reason: "missing_basic_auth" };
+  }
+
+  let decoded: string;
+  try {
+    decoded = Buffer.from(authHeader.slice(6).trim(), "base64").toString("utf8");
+  } catch {
+    return { ok: false, reason: "invalid_base64" };
+  }
+
+  const colonIdx = decoded.indexOf(":");
+  if (colonIdx < 0) return { ok: false, reason: "invalid_format" };
+  const gotUser = decoded.slice(0, colonIdx);
+  const gotPass = decoded.slice(colonIdx + 1);
+
+  if (!safeStringEqual(gotUser, expectedUser) || !safeStringEqual(gotPass, expectedPass)) {
+    return { ok: false, reason: "wrong_credentials" };
+  }
+  return { ok: true };
+}
+
 yookassaWebhooksRouter.post("/yookassa", async (req, res) => {
+  // ВАЖНО: проверка аутентификации ПЕРЕД любыми DB-операциями.
+  const auth = await verifyYookassaWebhookAuth(req);
+  if (!auth.ok) {
+    console.warn(`[YooKassa Webhook] Auth failed: ${auth.reason}`);
+    res.set("WWW-Authenticate", 'Basic realm="yookassa-webhook"');
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
   let body: YookassaNotification = {};
   if (req.body && typeof req.body === "object") {
     body = req.body as YookassaNotification;

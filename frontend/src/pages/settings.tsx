@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { useAuth } from "@/contexts/auth";
 import { api, type AdminSettings, type AutoRenewStats, type SyncResult, type SyncToRemnaResult, type SyncCreateRemnaForMissingResult, type SubscriptionPageConfig, type SshConfig } from "@/lib/api";
 import { SubscriptionPageEditor } from "@/components/subscription-page-editor";
@@ -10,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { RefreshCw, Download, Upload, Link2, Settings2, Gift, Users, ArrowLeftRight, Mail, MessageCircle, CreditCard, ChevronDown, ChevronUp, Copy, Check, Bot, FileJson, Palette, Wallet, Package, Plus, Trash2, KeyRound, Loader2, Sparkles, Layers, Globe, BarChart3, RotateCw, Shield, Terminal, FileText, MapPin, GripVertical, Smile, Sliders, MessageSquare, Eye, Megaphone, Trash, Bell, Send, Building, Languages as LanguagesIcon, Network } from "lucide-react";
+import { Download, Upload, Link2, Settings2, Gift, Users, ArrowLeftRight, Mail, MessageCircle, CreditCard, ChevronDown, ChevronUp, Copy, Check, Bot, FileJson, Palette, Wallet, Package, Plus, Trash2, KeyRound, Loader2, Sparkles, Layers, Globe, BarChart3, RotateCw, Shield, Terminal, FileText, MapPin, GripVertical, Smile, Sliders, MessageSquare, Eye, Megaphone, Trash, Bell, Send, Building, Languages as LanguagesIcon, Network } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ACCENT_PALETTES } from "@/contexts/theme";
@@ -44,7 +45,7 @@ const LANG_NAMES: Record<string, string> = {
 const ALLOWED_CURRENCIES = ["usd", "rub"];
 
 const DEFAULT_PLATEGA_METHODS: { id: number; enabled: boolean; label: string }[] = [
-  { id: 2, enabled: true, label: "СПБ" },
+  { id: 2, enabled: true, label: "СБП" },
   { id: 11, enabled: false, label: "Карты" },
   { id: 12, enabled: false, label: "Международный" },
   { id: 13, enabled: false, label: "Криптовалюта" },
@@ -625,6 +626,7 @@ export function SettingsPage() {
         logo: settings.logo ?? null,
         logoBot: settings.logoBot ?? null,
         favicon: settings.favicon ?? null,
+        cabinetDesign: settings.cabinetDesign ?? undefined,
         remnaClientUrl: settings.remnaClientUrl ?? null,
         smtpHost: settings.smtpHost ?? null,
         smtpPort: settings.smtpPort ?? undefined,
@@ -653,6 +655,7 @@ export function SettingsPage() {
         plategaMerchantId: settings.plategaMerchantId ?? null,
         plategaSecret: settings.plategaSecret && settings.plategaSecret !== "********" ? settings.plategaSecret : undefined,
         plategaMethods: settings.plategaMethods != null ? JSON.stringify(settings.plategaMethods) : undefined,
+        plategaWebhookSecret: (settings as { plategaWebhookSecret?: string | null }).plategaWebhookSecret && (settings as { plategaWebhookSecret?: string | null }).plategaWebhookSecret !== "********" ? (settings as { plategaWebhookSecret?: string | null }).plategaWebhookSecret : undefined,
         paymentProvidersConfig: settings.paymentProviders != null ? JSON.stringify(settings.paymentProviders) : undefined,
         yoomoneyClientId: settings.yoomoneyClientId ?? null,
         yoomoneyClientSecret: settings.yoomoneyClientSecret && settings.yoomoneyClientSecret !== "********" ? settings.yoomoneyClientSecret : undefined,
@@ -660,6 +663,8 @@ export function SettingsPage() {
         yoomoneyNotificationSecret: settings.yoomoneyNotificationSecret && settings.yoomoneyNotificationSecret !== "********" ? settings.yoomoneyNotificationSecret : undefined,
         yookassaShopId: settings.yookassaShopId ?? null,
         yookassaSecretKey: settings.yookassaSecretKey && settings.yookassaSecretKey !== "********" ? settings.yookassaSecretKey : undefined,
+        yookassaWebhookBasicUser: (settings as { yookassaWebhookBasicUser?: string | null }).yookassaWebhookBasicUser ?? null,
+        yookassaWebhookBasicPassword: (settings as { yookassaWebhookBasicPassword?: string | null }).yookassaWebhookBasicPassword && (settings as { yookassaWebhookBasicPassword?: string | null }).yookassaWebhookBasicPassword !== "********" ? (settings as { yookassaWebhookBasicPassword?: string | null }).yookassaWebhookBasicPassword : undefined,
         cryptopayApiToken: settings.cryptopayApiToken ?? null,
         cryptopayTestnet: settings.cryptopayTestnet ?? false,
         heleketMerchantId: settings.heleketMerchantId ?? null,
@@ -1248,6 +1253,37 @@ export function SettingsPage() {
                     {t("admin.settings.app_url_hint")}
                   </p>
                 </div>
+
+                {/* Cabinet design selector — переключение между Classic и Stealth UI кабинета */}
+                <div className="space-y-2">
+                  <Label>Дизайн мини-аппа клиента</Label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {([
+                      { v: "classic", title: "Classic", desc: "Текущий glass-дизайн с настройкой темы и акцента", swatch: "from-primary/30 to-purple-500/20" },
+                      { v: "stealth", title: "Stealth", desc: "Тёмный неон с red-акцентом, network-фоном и stadium-кнопками", swatch: "from-rose-500/40 to-orange-500/30" },
+                    ] as const).map((d) => {
+                      const active = (settings.cabinetDesign ?? "classic") === d.v;
+                      return (
+                        <button
+                          key={d.v}
+                          type="button"
+                          onClick={() => setSettings((s) => (s ? { ...s, cabinetDesign: d.v } : s))}
+                          className={`relative overflow-hidden rounded-2xl border p-4 text-left transition-all ${active ? "border-primary ring-2 ring-primary/30 bg-primary/5" : "border-white/10 hover:border-white/30 bg-card/40"}`}
+                        >
+                          <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${d.swatch}`} />
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-base font-semibold tracking-tight">{d.title}</span>
+                            {active && <span className="text-[10px] font-bold uppercase tracking-widest bg-primary text-primary-foreground rounded-md px-1.5 py-0.5">Активно</span>}
+                          </div>
+                          <p className="text-xs text-muted-foreground leading-relaxed">{d.desc}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Выбранный дизайн применится ко всем клиентам при следующем открытии кабинета. Админ-панель не затрагивается.
+                  </p>
+                </div>
                 </div>
                 {/* === Локализация === */}
                 <div className="rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/5 via-orange-500/5 to-yellow-500/5 p-5 space-y-4">
@@ -1476,6 +1512,7 @@ export function SettingsPage() {
                             <div key={btn.id} className={`group rounded-xl border bg-card/60 p-3 transition-all ${btn.visible ? "border-white/10" : "border-white/5 opacity-50"}`}>
                               <div className="flex items-center gap-2 mb-2">
                                 <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-primary text-[10px] font-bold">{idx + 1}</span>
+                                <span className={`h-3 w-3 rounded-full ${BOT_STYLE_OPTIONS.find((o) => o.value === (btn.style ?? ""))?.swatch ?? "bg-muted"} shrink-0 ring-2 ring-white/10`} title={BOT_STYLE_OPTIONS.find((o) => o.value === (btn.style ?? ""))?.label ?? "По умолчанию"} />
                                 <span className="text-sm font-medium flex-1 truncate">{BOT_BUTTON_HUMAN_NAMES[btn.id] ?? btn.id}</span>
                                 <div className="flex items-center gap-1.5">
                                   <Switch
@@ -2553,6 +2590,26 @@ export function SettingsPage() {
                         />
                       </div>
                     </div>
+                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 mt-4 space-y-2">
+                      <Label className="text-emerald-700 dark:text-emerald-400">🔒 Защита webhook'ов от форджинга</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Включается автоматически когда заданы <code className="text-[11px]">Merchant ID</code> и <code className="text-[11px]">Secret key</code> выше. Каждый входящий webhook проверяется через Platega API: запрашиваем у них реальный статус транзакции и доверяем только их ответу. Атакер не может подделать ответ от <code className="text-[11px]">app.platega.io</code>, поэтому форджинг невозможен.
+                      </p>
+                      <details className="text-xs">
+                        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Опционально: HMAC подпись (на будущее)</summary>
+                        <div className="mt-2 space-y-1.5">
+                          <p className="text-muted-foreground">
+                            Если когда-нибудь Platega добавит подписание webhook'ов в кабинете — впишешь сюда секрет и все webhook'и без валидной HMAC-SHA256 в <code className="text-[11px]">X-Signature</code> будут отвергаться. <strong>Сейчас в их кабинете такой опции нет — оставь поле пустым.</strong>
+                          </p>
+                          <Input
+                            type="password"
+                            value={(settings as { plategaWebhookSecret?: string | null }).plategaWebhookSecret ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, plategaWebhookSecret: e.target.value || null } as typeof s : s))}
+                            placeholder="(оставь пустым — Platega не поддерживает HMAC)"
+                          />
+                        </div>
+                      </details>
+                    </div>
                     <div className="space-y-2">
                       <Label>{t("admin.settings.payment_methods")}</Label>
                       <p className="text-xs text-muted-foreground">{t("admin.settings.payment_methods_hint")}</p>
@@ -2765,6 +2822,35 @@ export function SettingsPage() {
                           placeholder="live_..."
                         />
                         <p className="text-xs text-muted-foreground">{t("admin.settings.yookassa_key_hint")}</p>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 mt-4 space-y-3">
+                      <div>
+                        <Label className="text-amber-700 dark:text-amber-400">Webhook Basic Auth</Label>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Защита от форджинга webhook'ов. В кабинете ЮKassa настроить webhook URL вида{" "}
+                          <code className="text-[11px]">https://USER:PASS@panel.example.com/api/webhooks/yookassa</code>{" "}
+                          и сюда вписать те же USER и PASS. Если не задано — webhook принимается без проверки (с warning'ом в логах).
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="space-y-2">
+                          <Label className="text-xs">Basic-auth username</Label>
+                          <Input
+                            value={(settings as { yookassaWebhookBasicUser?: string | null }).yookassaWebhookBasicUser ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, yookassaWebhookBasicUser: e.target.value || null } as typeof s : s))}
+                            placeholder="webhook_user"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Basic-auth password</Label>
+                          <Input
+                            type="password"
+                            value={(settings as { yookassaWebhookBasicPassword?: string | null }).yookassaWebhookBasicPassword ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, yookassaWebhookBasicPassword: e.target.value || null } as typeof s : s))}
+                            placeholder="случайный длинный пароль"
+                          />
+                        </div>
                       </div>
                     </div>
                     <div className="pt-2 border-t">
@@ -4045,470 +4131,27 @@ export function SettingsPage() {
                   <Globe className="h-7 w-7 text-foreground" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500">
-                    {t("admin.settings.landing_title")}
-                  </h2>
-                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{t("admin.settings.landing_subtitle")}</p>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="mt-3 rounded-xl"
-                    disabled={saving}
-                    onClick={async () => {
-                      setSaving(true);
-                      setMessage("");
-                      try {
-                        const updated = await api.resetLandingText(token);
-                        setSettings((prev) => (prev ? { ...prev, ...updated } : prev));
-                        setMessage(t("admin.settings.landing_texts_reset"));
-                      } catch {
-                        setMessage(t("admin.settings.landing_reset_error"));
-                      } finally {
-                        setSaving(false);
-                      }
-                    }}
-                  >
-                    {saving ? <Loader2 className="h-4 w-4 animate-spin mr-1.5" /> : <RefreshCw className="h-4 w-4 mr-1.5" />}
-                    {t("admin.settings.landing_reset_texts")}
-                  </Button>
+                  <h2 className="text-2xl font-bold tracking-tight">{t("admin.settings.tab_landing")}</h2>
+                  <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+                    Лендинг переехал в отдельный блочный редактор: drag-drop секций, превью без сохранения, шрифты и снапшоты.
+                  </p>
                 </div>
               </div>
             </div>
-            <CardContent className="space-y-4 p-4 sm:p-6">
-              <div className="flex items-center justify-between rounded-lg border p-4">
-                <div>
-                  <p className="font-medium">{t("admin.settings.landing_enable")}</p>
-                  <p className="text-sm text-muted-foreground">{t("admin.settings.landing_show_hint")}</p>
-                </div>
-                <Switch
-                  checked={settings.landingEnabled ?? false}
-                  onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingEnabled: v } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_hero_title")}</Label>
-                <Input
-                  placeholder="Например: STEALTHNET — быстрый VPN"
-                  value={settings.landingHeroTitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroTitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_hero_subtitle")}</Label>
-                <Textarea
-                  rows={3}
-                  placeholder="Telegram, YouTube, видеозвонки и доступ к любым сервисам в одной подписке. Без ограничений и скрытых платежей."
-                  value={settings.landingHeroSubtitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroSubtitle: e.target.value || null } : s))}
-                />
-                <p className="text-xs text-muted-foreground">{t("admin.settings.landing_hero_empty_hint")}</p>
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_hero_cta")}</Label>
-                <Input
-                  placeholder="Регистрация"
-                  value={settings.landingHeroCtaText ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroCtaText: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_hero_badge")}</Label>
-                <Input
-                  placeholder="Анонимность и доступ"
-                  value={settings.landingHeroBadge ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroBadge: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_hero_hint_label")}</Label>
-                <Input
-                  placeholder="Регистрация за минуту · Оплата картой, СБП или криптой"
-                  value={settings.landingHeroHint ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroHint: e.target.value || null } : s))}
-                />
-              </div>
-              <p className="text-sm font-medium text-muted-foreground">{t("admin.settings.landing_features_strip")}</p>
-              {([1, 2, 3, 4, 5] as const).map((n) => (
-                <div key={n} className="rounded-lg border p-4 space-y-2">
-                  <Label>{t("admin.settings.landing_feature_title", { n })}</Label>
-                  <Input
-                    placeholder={n === 1 ? "Защита" : ""}
-                    value={(settings as unknown as Record<string, string | null | undefined>)[`landingFeature${n}Label`] ?? ""}
-                    onChange={(e) => setSettings((s) => (s ? { ...s, [`landingFeature${n}Label`]: e.target.value || null } : s))}
-                  />
-                  <Label>{t("admin.settings.landing_feature_desc", { n })}</Label>
-                  <Input
-                    placeholder={n === 1 ? "AES-256 шифрование" : ""}
-                    value={(settings as unknown as Record<string, string | null | undefined>)[`landingFeature${n}Sub`] ?? ""}
-                    onChange={(e) => setSettings((s) => (s ? { ...s, [`landingFeature${n}Sub`]: e.target.value || null } : s))}
-                  />
-                </div>
-              ))}
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_why_title")}</Label>
-                <Input
-                  placeholder="Почему мы"
-                  value={settings.landingBenefitsTitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingBenefitsTitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_why_subtitle")}</Label>
-                <Input
-                  placeholder="Всё необходимое для приватного и стабильного доступа в одном сервисе."
-                  value={settings.landingBenefitsSubtitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingBenefitsSubtitle: e.target.value || null } : s))}
-                />
-              </div>
-              <p className="text-sm font-medium text-muted-foreground">{t("admin.settings.landing_cards_title")}</p>
-              {([1, 2, 3, 4, 5, 6] as const).map((n) => (
-                <div key={n} className="rounded-lg border p-4 space-y-2">
-                  <Label>{t("admin.settings.landing_card_title", { n })}</Label>
-                  <Input
-                    placeholder={n === 1 ? "Всегда онлайн" : ""}
-                    value={(settings as unknown as Record<string, string | null | undefined>)[`landingBenefit${n}Title`] ?? ""}
-                    onChange={(e) => setSettings((s) => (s ? { ...s, [`landingBenefit${n}Title`]: e.target.value || null } : s))}
-                  />
-                  <Label>{t("admin.settings.landing_card_desc", { n })}</Label>
-                  <Textarea
-                    rows={2}
-                    placeholder={n === 1 ? "Работает даже когда кажется, что интернета нет..." : ""}
-                    value={(settings as unknown as Record<string, string | null | undefined>)[`landingBenefit${n}Desc`] ?? ""}
-                    onChange={(e) => setSettings((s) => (s ? { ...s, [`landingBenefit${n}Desc`]: e.target.value || null } : s))}
-                  />
-                </div>
-              ))}
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_tariffs_title_label")}</Label>
-                <Input
-                  placeholder="Выберите тариф"
-                  value={settings.landingTariffsTitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingTariffsTitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_tariffs_subtitle_label")}</Label>
-                <Input
-                  placeholder="Прозрачные условия без скрытых платежей."
-                  value={settings.landingTariffsSubtitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingTariffsSubtitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_devices_title_label")}</Label>
-                <Input
-                  placeholder="На всех ваших устройствах"
-                  value={settings.landingDevicesTitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingDevicesTitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_devices_subtitle_label")}</Label>
-                <Input
-                  placeholder="Один аккаунт. Одинаковый опыт на каждой платформе."
-                  value={settings.landingDevicesSubtitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingDevicesSubtitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_faq_title_label")}</Label>
-                <Input
-                  placeholder="Частые вопросы"
-                  value={settings.landingFaqTitle ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingFaqTitle: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_faq_json")}</Label>
-                <Textarea
-                  rows={10}
-                  className="font-mono text-sm"
-                  placeholder='[{"q":"Что такое VPN?","a":"VPN шифрует..."}]'
-                  value={settings.landingFaqJson ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingFaqJson: e.target.value || null } : s))}
-                />
-              </div>
-              <p className="text-sm font-medium text-muted-foreground pt-2">{t("admin.settings.landing_sections_visibility")}</p>
-              <div className="rounded-lg border p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_features")}</p></div>
-                  <Switch checked={settings.landingShowFeatures !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowFeatures: v } : s))} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_why")}</p></div>
-                  <Switch checked={settings.landingShowBenefits !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowBenefits: v } : s))} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_tariffs")}</p></div>
-                  <Switch checked={settings.landingShowTariffs !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowTariffs: v } : s))} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_devices")}</p></div>
-                  <Switch checked={settings.landingShowDevices !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowDevices: v } : s))} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_howto")}</p></div>
-                  <Switch checked={settings.landingShowHowItWorks !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowHowItWorks: v } : s))} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_faq")}</p></div>
-                  <Switch checked={settings.landingShowFaq !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowFaq: v } : s))} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><p className="font-medium text-sm">{t("admin.settings.landing_section_cta")}</p></div>
-                  <Switch checked={settings.landingShowCta !== false} onCheckedChange={(v) => setSettings((s) => (s ? { ...s, landingShowCta: v } : s))} />
-                </div>
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_contacts")}</Label>
-                <Textarea
-                  rows={3}
-                  placeholder="Telegram: @support&#10;Email: support@example.com"
-                  value={settings.landingContacts ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingContacts: e.target.value || null } : s))}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_offer_link")}</Label>
-                <Input
-                  placeholder="https://..."
-                  value={settings.landingOfferLink ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingOfferLink: e.target.value || null } : s))}
-                />
-                <p className="text-xs text-muted-foreground">{t("admin.settings.landing_offer_hint")}</p>
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_privacy_link")}</Label>
-                <Input
-                  placeholder="https://..."
-                  value={settings.landingPrivacyLink ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingPrivacyLink: e.target.value || null } : s))}
-                />
-                <p className="text-xs text-muted-foreground">{t("admin.settings.landing_privacy_hint")}</p>
-              </div>
-              <div className="grid gap-2">
-                <Label>{t("admin.settings.landing_footer_text")}</Label>
-                <Textarea
-                  rows={2}
-                  placeholder="© 2025 Сервис. Все права защищены."
-                  value={settings.landingFooterText ?? ""}
-                  onChange={(e) => setSettings((s) => (s ? { ...s, landingFooterText: e.target.value || null } : s))}
-                />
-              </div>
 
-              <Collapsible>
-                <CollapsibleTrigger className="flex items-center gap-2 rounded-lg border p-4 hover:bg-muted/50 w-full text-left font-medium">
-                  <ChevronDown className="h-4 w-4" />
-                  {t("admin.settings.landing_extra_texts")}
-                </CollapsibleTrigger>
-                <CollapsibleContent className="space-y-4 pt-4">
-                  <div className="grid gap-2">
-                    <Label>{t("admin.settings.landing_headline_1")}</Label>
-                    <Input placeholder="Тихий доступ," value={settings.landingHeroHeadline1 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroHeadline1: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>{t("admin.settings.landing_headline_2")}</Label>
-                    <Input placeholder="который выглядит дорого." value={settings.landingHeroHeadline2 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingHeroHeadline2: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>{t("admin.settings.landing_header_badge")}</Label>
-                    <Input placeholder="premium access" value={settings.landingHeaderBadge ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingHeaderBadge: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><Label>{t("admin.settings.landing_btn_login")}</Label><Input placeholder="Вход" value={settings.landingButtonLogin ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingButtonLogin: e.target.value || null } : s))} /></div>
-                    <div><Label>{t("admin.settings.landing_btn_login_cabinet")}</Label><Input placeholder="Войти в кабинет" value={settings.landingButtonLoginCabinet ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingButtonLoginCabinet: e.target.value || null } : s))} /></div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><Label>{t("admin.settings.landing_nav_benefits")}</Label><Input placeholder="Преимущества" value={settings.landingNavBenefits ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingNavBenefits: e.target.value || null } : s))} /></div>
-                    <div><Label>{t("admin.settings.landing_nav_tariffs")}</Label><Input placeholder="Тарифы" value={settings.landingNavTariffs ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingNavTariffs: e.target.value || null } : s))} /></div>
-                    <div><Label>{t("admin.settings.landing_nav_devices")}</Label><Input placeholder="Устройства" value={settings.landingNavDevices ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingNavDevices: e.target.value || null } : s))} /></div>
-                    <div><Label>{t("admin.settings.landing_nav_faq")}</Label><Input placeholder="FAQ" value={settings.landingNavFaq ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingNavFaq: e.target.value || null } : s))} /></div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>{t("admin.settings.landing_benefits_badge")}</Label>
-                    <Input placeholder="Почему мы" value={settings.landingBenefitsBadge ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingBenefitsBadge: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>{t("admin.settings.landing_payment_text")}</Label>
-                    <Input placeholder="Карта, СБП, крипта и быстрый старт" value={settings.landingDefaultPaymentText ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingDefaultPaymentText: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div><Label>{t("admin.settings.landing_btn_choose")}</Label><Input placeholder="Выбрать тариф" value={settings.landingButtonChooseTariff ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingButtonChooseTariff: e.target.value || null } : s))} /></div>
-                    <div><Label>{t("admin.settings.landing_btn_watch")}</Label><Input placeholder="Смотреть тарифы" value={settings.landingButtonWatchTariffs ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingButtonWatchTariffs: e.target.value || null } : s))} /></div>
-                    <div><Label>{t("admin.settings.landing_btn_start")}</Label><Input placeholder="Начать" value={settings.landingButtonStart ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingButtonStart: e.target.value || null } : s))} /></div>
-                    <div><Label>Кнопка «Открыть кабинет»</Label><Input placeholder="Открыть кабинет и подключиться" value={settings.landingButtonOpenCabinet ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingButtonOpenCabinet: e.target.value || null } : s))} /></div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Сообщение «тарифы не опубликованы»</Label>
-                    <Input placeholder="Тарифы пока не опубликованы…" value={settings.landingNoTariffsMessage ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingNoTariffsMessage: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Статистика: платформ / тарифов / доступ / способов оплаты</Label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <Input placeholder="платформ" value={settings.landingStatsPlatforms ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingStatsPlatforms: e.target.value || null } : s))} />
-                      <Input placeholder="тарифов онлайн" value={settings.landingStatsTariffsLabel ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingStatsTariffsLabel: e.target.value || null } : s))} />
-                      <Input placeholder="доступ" value={settings.landingStatsAccessLabel ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingStatsAccessLabel: e.target.value || null } : s))} />
-                      <Input placeholder="способа оплаты" value={settings.landingStatsPaymentMethods ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingStatsPaymentMethods: e.target.value || null } : s))} />
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Ready to connect» (финальный CTA) — подпись</Label>
-                    <Input placeholder="ready to connect" value={settings.landingReadyToConnectEyebrow ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingReadyToConnectEyebrow: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Ready to connect» — заголовок</Label>
-                    <Input placeholder="Если честно — теперь это уже не «лендинг», а витрина продукта." value={settings.landingReadyToConnectTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingReadyToConnectTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Ready to connect» — описание</Label>
-                    <Textarea rows={3} placeholder="Весь контент продолжает жить в админке, а визуально страница наконец ощущается как сервис, за который не стыдно брать деньги." value={settings.landingReadyToConnectDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingReadyToConnectDesc: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок инфраструктуры — заголовок</Label>
-                    <Input placeholder="Мощная сеть и стабильное подключение…" value={settings.landingInfraTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingInfraTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Текст «network cockpit»</Label>
-                    <Input placeholder="Спокойный доступ без ощущения технарского конструктора" value={settings.landingNetworkCockpitText ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingNetworkCockpitText: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Секция «Всё для комфорта» — заголовок</Label>
-                    <Input placeholder="Всё для твоего комфорта и безопасности в сети" value={settings.landingComfortTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingComfortTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Секция «Всё для комфорта» — бейдж</Label>
-                    <Input placeholder="стабильность · скорость · безопасность" value={settings.landingComfortBadge ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingComfortBadge: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>«Главные принципы» — заголовок</Label>
-                    <Input placeholder="Мы строим сервис, которому доверяют…" value={settings.landingPrinciplesTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingPrinciplesTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Пульс продукта» — заголовок</Label>
-                    <Input placeholder="Не просто VPN, а аккуратно собранный сервис…" value={settings.landingPulseTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingPulseTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Технологии» — заголовок</Label>
-                    <Input placeholder="Продуманная инфраструктура для твоей свободы." value={settings.landingTechTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingTechTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Технологии» — описание</Label>
-                    <Textarea rows={2} placeholder="Мы используем только современные протоколы…" value={settings.landingTechDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingTechDesc: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Подзаголовок категории тарифов</Label>
-                    <Input placeholder="Подбирай вариант под свой сценарий…" value={settings.landingCategorySubtitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingCategorySubtitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Описание тарифа по умолчанию</Label>
-                    <Input placeholder="Чистый доступ без лишних ограничений" value={settings.landingTariffDefaultDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingTariffDefaultDesc: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Три пункта в карточке тарифа</Label>
-                    <Input placeholder="Подключение через личный кабинет" value={settings.landingTariffBullet1 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingTariffBullet1: e.target.value || null } : s))} />
-                    <Input placeholder="Поддержка и инструкции внутри сервиса" value={settings.landingTariffBullet2 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingTariffBullet2: e.target.value || null } : s))} />
-                    <Input placeholder="Автоматическая активация после оплаты" value={settings.landingTariffBullet3 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingTariffBullet3: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Описание минимального тарифа (правая колонка)</Label>
-                    <Input placeholder="первый мягкий вход в сервис…" value={settings.landingLowestTariffDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingLowestTariffDesc: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок устройств — текст «device cockpit»</Label>
-                    <Input placeholder="Один аккаунт, много устройств, ноль ощущения хаоса" value={settings.landingDevicesCockpitText ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingDevicesCockpitText: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Универсальность» — заголовок и описание</Label>
-                    <Input placeholder="Одинаково приятный опыт на десктопе…" value={settings.landingUniversalityTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingUniversalityTitle: e.target.value || null } : s))} />
-                    <Textarea rows={2} placeholder="Один аккаунт для всех твоих устройств…" value={settings.landingUniversalityDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingUniversalityDesc: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Быстрая настройка» — заголовок и описание</Label>
-                    <Input placeholder="Установка займет меньше минуты" value={settings.landingQuickSetupTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingQuickSetupTitle: e.target.value || null } : s))} />
-                    <Textarea rows={2} placeholder="Нажал, оплатил, получил доступ…" value={settings.landingQuickSetupDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingQuickSetupDesc: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Премиальный сервис» — заголовок</Label>
-                    <Input placeholder="Премиальный сервис без технической боли" value={settings.landingPremiumServiceTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingPremiumServiceTitle: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Премиальный сервис» — абзацы 1 и 2</Label>
-                    <Textarea rows={2} placeholder="Один вход, одна подписка…" value={settings.landingPremiumServicePara1 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingPremiumServicePara1: e.target.value || null } : s))} />
-                    <Textarea rows={2} placeholder="Наша цель — предоставить инструмент…" value={settings.landingPremiumServicePara2 ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingPremiumServicePara2: e.target.value || null } : s))} />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Блок «Как это работает» — заголовок и описание</Label>
-                    <Input placeholder="От первого визита до безопасного интернета…" value={settings.landingHowItWorksTitle ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingHowItWorksTitle: e.target.value || null } : s))} />
-                    <Textarea rows={2} placeholder="Мы сделали всё, чтобы процесс подключения…" value={settings.landingHowItWorksDesc ?? ""} onChange={(e) => setSettings((s) => (s ? { ...s, landingHowItWorksDesc: e.target.value || null } : s))} />
-                  </div>
-                  <p className="text-sm font-medium text-muted-foreground">Шаги (3 шт)</p>
-                  {([0, 1, 2] as const).map((i) => (
-                    <div key={i} className="rounded-lg border p-4 space-y-2">
-                      <Label>Шаг {i + 1} — заголовок</Label>
-                      <Input value={landingJourneySteps[i]?.title ?? ""} onChange={(e) => setLandingJourneySteps((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { title: "", desc: "" }), title: e.target.value }; return n; })} placeholder="Выбираешь сценарий" />
-                      <Label>Шаг {i + 1} — описание</Label>
-                      <Textarea rows={2} value={landingJourneySteps[i]?.desc ?? ""} onChange={(e) => setLandingJourneySteps((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { title: "", desc: "" }), desc: e.target.value }; return n; })} placeholder="Доступны гибкие тарифы…" />
-                    </div>
-                  ))}
-                  <p className="text-sm font-medium text-muted-foreground">Карточки сигналов (3 шт)</p>
-                  {([0, 1, 2] as const).map((i) => (
-                    <div key={i} className="rounded-lg border p-4 space-y-2">
-                      <Label>Карточка {i + 1} — подпись (eyebrow)</Label>
-                      <Input value={landingSignalCards[i]?.eyebrow ?? ""} onChange={(e) => setLandingSignalCards((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { eyebrow: "", title: "", desc: "" }), eyebrow: e.target.value }; return n; })} placeholder="privacy core" />
-                      <Label>Карточка {i + 1} — заголовок</Label>
-                      <Input value={landingSignalCards[i]?.title ?? ""} onChange={(e) => setLandingSignalCards((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { eyebrow: "", title: "", desc: "" }), title: e.target.value }; return n; })} placeholder="Zero-log и аккуратная защита" />
-                      <Label>Карточка {i + 1} — описание</Label>
-                      <Textarea rows={2} value={landingSignalCards[i]?.desc ?? ""} onChange={(e) => setLandingSignalCards((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { eyebrow: "", title: "", desc: "" }), desc: e.target.value }; return n; })} placeholder="Не ощущается как странный хак…" />
-                    </div>
-                  ))}
-                  <p className="text-sm font-medium text-muted-foreground">Принципы доверия (3 пункта)</p>
-                  {([0, 1, 2] as const).map((i) => (
-                    <div key={i} className="grid gap-2">
-                      <Label>Пункт {i + 1}</Label>
-                      <Input value={landingTrustPoints[i] ?? ""} onChange={(e) => setLandingTrustPoints((prev) => { const n = [...prev]; n[i] = e.target.value; return n; })} placeholder="Современные протоколы шифрования" />
-                    </div>
-                  ))}
-                  <p className="text-sm font-medium text-muted-foreground">Панели опыта (3 шт)</p>
-                  {([0, 1, 2] as const).map((i) => (
-                    <div key={i} className="rounded-lg border p-4 space-y-2">
-                      <Label>Панель {i + 1} — заголовок</Label>
-                      <Input value={landingExperiencePanels[i]?.title ?? ""} onChange={(e) => setLandingExperiencePanels((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { title: "", desc: "" }), title: e.target.value }; return n; })} placeholder="Никаких зависаний" />
-                      <Label>Панель {i + 1} — описание</Label>
-                      <Textarea rows={2} value={landingExperiencePanels[i]?.desc ?? ""} onChange={(e) => setLandingExperiencePanels((prev) => { const n = [...prev]; n[i] = { ...(n[i] ?? { title: "", desc: "" }), desc: e.target.value }; return n; })} placeholder="Смотри видео в 4K…" />
-                    </div>
-                  ))}
-                  <p className="text-sm font-medium text-muted-foreground">Список устройств (до 8 названий)</p>
-                  <div className="grid gap-2">
-                    {([0, 1, 2, 3, 4, 5, 6, 7] as const).map((i) => (
-                      <div key={i}>
-                        <Label>Устройство {i + 1}</Label>
-                        <Input value={landingDevicesList[i] ?? ""} onChange={(e) => setLandingDevicesList((prev) => { const n = [...prev]; n[i] = e.target.value; return n; })} placeholder={i === 0 ? "Windows" : i === 1 ? "macOS" : i === 2 ? "iPhone / iPad" : i === 3 ? "Android" : "Linux"} />
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-sm font-medium text-muted-foreground">Быстрый старт (3 пункта)</p>
-                  {([0, 1, 2] as const).map((i) => (
-                    <div key={i} className="grid gap-2">
-                      <Label>Пункт {i + 1}</Label>
-                      <Input value={landingQuickStartList[i] ?? ""} onChange={(e) => setLandingQuickStartList((prev) => { const n = [...prev]; n[i] = e.target.value; return n; })} placeholder="Мгновенный доступ после оплаты" />
-                    </div>
-                  ))}
-                </CollapsibleContent>
-              </Collapsible>
-
-              <div className="pt-2 flex items-center gap-2">
-                <Button
-                  type="button"
-                  disabled={saving}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    handleSubmit(e as unknown as React.FormEvent);
-                  }}
-                >
-                  {saving ? t("admin.settings.saving") : t("admin.settings.save")}
+            <CardContent className="p-6 sm:p-8">
+              <div className="rounded-2xl border border-white/10 bg-white/40 dark:bg-white/5 p-8 text-center">
+                <Globe className="mx-auto h-10 w-10 text-emerald-500" />
+                <h3 className="mt-4 text-lg font-semibold">Откройте редактор лендинга</h3>
+                <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+                  Здесь больше нет полей: тексты, картинки, шрифты, цвета и порядок секций редактируются в визуальном редакторе.
+                </p>
+                <Button asChild size="lg" className="mt-6 gap-2">
+                  <Link to="/admin/landing-editor">
+                    <Globe className="h-4 w-4" />
+                    Перейти в редактор
+                  </Link>
                 </Button>
-                {message && <span className="text-sm text-muted-foreground">{message}</span>}
               </div>
             </CardContent>
           </Card>

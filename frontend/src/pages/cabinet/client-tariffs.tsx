@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { Package, Calendar, Wifi, Smartphone, CreditCard, Loader2, Gift, Tag, Check, Wallet, ChevronDown, Shield, Zap, ArrowLeft, AlertTriangle, Sparkles } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
+import { useCabinetDesign } from "@/lib/use-cabinet-design";
+import { StealthTariffs } from "@/pages/cabinet/stealth/stealth-tariffs";
 import { api } from "@/lib/api";
 import type { PublicTariffCategory } from "@/lib/api";
 import { formatRuDays } from "@/lib/i18n";
@@ -78,6 +80,12 @@ function hasExtras(t: TariffForPay): boolean {
 }
 
 export function ClientTariffsPage() {
+  const design = useCabinetDesign();
+  if (design === "stealth") return <StealthTariffs />;
+  return <ClassicTariffsPage />;
+}
+
+function ClassicTariffsPage() {
   const { t } = useTranslation();
   const { state, refreshProfile } = useClientAuth();
   const token = state.token;

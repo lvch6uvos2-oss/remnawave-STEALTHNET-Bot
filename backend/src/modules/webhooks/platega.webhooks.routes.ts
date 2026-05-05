@@ -4,10 +4,33 @@
  * - идемпотентно переводит платежи PENDING -> PAID/FAILED
  * - топ-ап: зачисляет баланс атомарно вместе со сменой статуса
  * - тариф: активирует в Remna и распределяет реферальные (с ретраем по повторному webhook)
+ *
+ * Аутентификация (security fix против форджинга платежей):
+ *
+ * 1. **API double-check (основной)** — после получения webhook'а мы дёргаем Platega
+ *    API `/transaction/status` с нашими `merchantId+secret` и проверяем что транзакция
+ *    действительно в успешном статусе. Атакер не может подделать ответ от Platega API,
+ *    поэтому даже без подписи webhook'а forge невозможен. Включён всегда когда заданы
+ *    `plategaMerchantId` и `plategaSecret`.
+ *
+ * 2. **HMAC (опциональный)** — если admin задал `plategaWebhookSecret` в админке и
+ *    Platega поддерживает custom HMAC headers, проверяется HMAC-SHA256(rawBody, secret)
+ *    в заголовке `X-Signature` (hex, опционально с префиксом `sha256=`). На большинстве
+ *    платежных провайдеров (включая Platega на сегодня) этой опции в кабинете нет —
+ *    оставлено как future-proof заглушка.
+ *
+ * Если оба механизма не настроены — webhook принимается с громким warning'ом в логи.
+ *
+ * NB: для проверки HMAC нужен RAW body, поэтому в app.ts роут смонтирован с
+ *     express.raw({ type: "application/json" }).
  */
 
 import { Router } from "express";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { prisma } from "../../db.js";
+import { getSystemConfig } from "../client/client.service.js";
+import { getPlategaTransactionStatus, isPlategaConfigured } from "../platega/platega.service.js";
+import { recordWebhook, markOutcome } from "../webhook-inbox/webhook-inbox.service.js";
 import { activateTariffByPaymentId } from "../tariff/tariff-activation.service.js";
 import { createProxySlotsByPaymentId } from "../proxy/proxy-slots-activation.service.js";
 import { createSingboxSlotsByPaymentId } from "../singbox/singbox-slots-activation.service.js";
@@ -207,12 +230,124 @@ async function ensureTariffActivation(paymentId: string): Promise<void> {
   }
 }
 
+/**
+ * Verify HMAC-SHA256 signature in `X-Signature` header against raw body.
+ * Используется опционально, если в админке задан platega_webhook_secret.
+ */
+function verifyPlategaHmacSignature(
+  rawBody: Buffer,
+  headerSig: string | undefined,
+  secret: string,
+): { ok: boolean; reason?: string } {
+  if (!headerSig || typeof headerSig !== "string" || !headerSig.trim()) {
+    return { ok: false, reason: "missing_x_signature" };
+  }
+
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+  const received = headerSig.trim().replace(/^sha256=/i, "").toLowerCase();
+  const expectedLower = expected.toLowerCase();
+
+  let aBuf: Buffer;
+  let bBuf: Buffer;
+  try {
+    aBuf = Buffer.from(expectedLower, "hex");
+    bBuf = Buffer.from(received, "hex");
+  } catch {
+    return { ok: false, reason: "invalid_hex" };
+  }
+
+  if (aBuf.length !== bBuf.length) return { ok: false, reason: "length_mismatch" };
+  if (!timingSafeEqual(aBuf, bBuf)) return { ok: false, reason: "signature_mismatch" };
+  return { ok: true };
+}
+
+const PLATEGA_API_SUCCESS_STATUSES = new Set([
+  "CONFIRMED", "PAID", "SUCCESS", "SUCCEEDED", "COMPLETED", "SUCCESSFUL", "APPROVED",
+]);
+
+/**
+ * Double-check через Platega API: проверяем что транзакция действительно в успешном
+ * статусе. Атакер не может подделать ответ от Platega API (запрос идёт от нашего сервера
+ * к app.platega.io с нашими credentials), поэтому даже без подписи webhook'а forge
+ * невозможен.
+ *
+ * Возвращает:
+ *   - { trusted: true, status } если API подтверждает success
+ *   - { trusted: false, reason } если API вернул другой статус (или мы не смогли его дёрнуть)
+ *   - { trusted: "unverified" } если plategaMerchantId/plategaSecret не настроены — нечего и проверять
+ */
+async function verifyViaPlategaApi(transactionId: string | null): Promise<
+  | { trusted: true; status: string }
+  | { trusted: false; reason: string }
+  | { trusted: "unverified"; reason: string }
+> {
+  const config = await getSystemConfig();
+  const merchantId = (config as { plategaMerchantId?: string | null }).plategaMerchantId?.trim();
+  const secret = (config as { plategaSecret?: string | null }).plategaSecret?.trim();
+  if (!merchantId || !secret) {
+    return { trusted: "unverified", reason: "platega api credentials not configured" };
+  }
+  if (!transactionId || !transactionId.trim()) {
+    return { trusted: false, reason: "no transactionId in webhook body" };
+  }
+
+  const result = await getPlategaTransactionStatus({ merchantId, secret }, transactionId);
+  if ("error" in result) {
+    return { trusted: false, reason: `platega api error: ${result.error}` };
+  }
+  const upperStatus = result.status.toUpperCase();
+  if (PLATEGA_API_SUCCESS_STATUSES.has(upperStatus)) {
+    return { trusted: true, status: upperStatus };
+  }
+  return { trusted: false, reason: `platega api returned status=${result.status}` };
+}
+
+// Используется ниже. Объявлено здесь чтобы видеть типы выше.
+void isPlategaConfigured;
+
 plategaWebhooksRouter.post("/platega", async (req, res) => {
+  // 1. Получаем raw body (нужен для HMAC если он задан) и парсим JSON.
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === "string" ? req.body : "");
+
+  // 0. Сохраняем webhook в inbox для аудита/replay. ID нужен чтобы потом markOutcome().
+  const captured = await recordWebhook("platega", req, rawBody);
+  const ack = (status: number, outcome: Parameters<typeof markOutcome>[2], errorMessage?: string, paymentId?: string | null) => {
+    void markOutcome(captured, status, outcome, { errorMessage, paymentId });
+  };
+
+  // 2. Опциональная HMAC проверка — если в админке задан platega_webhook_secret.
+  //    Большинство пользователей оставляют это поле пустым (Platega не требует HMAC),
+  //    тогда мы пропускаем эту проверку и опираемся на API double-check ниже.
+  const config = await getSystemConfig();
+  const hmacSecret = (config as { plategaWebhookSecret?: string | null }).plategaWebhookSecret?.trim();
+  if (hmacSecret) {
+    const headerSig = (req.headers["x-signature"] ?? req.headers["X-Signature"]) as string | undefined;
+    const sigCheck = verifyPlategaHmacSignature(rawBody, headerSig, hmacSecret);
+    if (!sigCheck.ok) {
+      console.warn(`[Platega Webhook] HMAC signature failed: ${sigCheck.reason}`);
+      ack(401, "rejected_signature", `HMAC: ${sigCheck.reason}`);
+      return res.status(401).json({ message: "Invalid signature" });
+    }
+  }
+
+  // 3. Парсим JSON из raw body.
+  let parsedBody: Record<string, unknown> | null = null;
+  if (rawBody.length > 0) {
+    try {
+      parsedBody = JSON.parse(rawBody.toString("utf8")) as Record<string, unknown>;
+    } catch (e) {
+      console.warn("[Platega Webhook] Invalid JSON body", e);
+      ack(400, "rejected_payload", "Invalid JSON");
+      return res.status(400).json({ message: "Invalid JSON" });
+    }
+  }
+
   // Возвращаем 200, чтобы провайдер не спамил ретраями при наших внутренних ошибках.
   try {
-    const data = (req.body && typeof req.body === "object") ? (req.body as Record<string, unknown>) : null;
+    const data = parsedBody;
     if (!data || Object.keys(data).length === 0) {
       console.warn("[Platega Webhook] Empty body");
+      ack(200, "rejected_payload", "Empty body");
       return res.status(200).json({ received: true });
     }
 
@@ -250,12 +385,14 @@ plategaWebhooksRouter.post("/platega", async (req, res) => {
     const candidateIds = [...new Set([payloadId, transactionId, externalId, orderId].filter(Boolean) as string[])];
     if (candidateIds.length === 0) {
       console.warn("[Platega Webhook] No identifiers", { keys: Object.keys(data) });
+      ack(200, "rejected_payload", "no identifiers in payload");
       return res.status(200).json({ received: true });
     }
 
     const payment = await findPlategaPaymentByAnyId(candidateIds);
     if (!payment) {
       console.warn("[Platega Webhook] Payment not found", { candidateIds, status });
+      ack(200, "payment_not_found", `tried: ${candidateIds.join(",")}`);
       return res.status(200).json({ received: true });
     }
 
@@ -269,13 +406,36 @@ plategaWebhooksRouter.post("/platega", async (req, res) => {
       if (failed.count > 0) {
         console.log("[Platega Webhook] Payment marked FAILED", { paymentId: payment.id, status, transactionId, orderId: payment.orderId });
       }
+      ack(200, "payment_failed", `provider status=${status}`, payment.id);
       return res.status(200).json({ received: true });
     }
 
     if (!SUCCESS_STATUSES.has(status)) {
       console.log("[Platega Webhook] Ignored status", { status, paymentId: payment.id, candidateIds });
+      ack(200, "ignored_event", `status=${status}`, payment.id);
       return res.status(200).json({ received: true });
     }
+
+    // SECURITY: double-check через Platega API. Атакер может подделать webhook
+    // (URL публичный, подписи у Platega нет в кабинете), но не может подделать
+    // ответ от app.platega.io. Запрашиваем у API реальный статус — если не PAID,
+    // отвергаем как поддельный webhook.
+    const apiVerify = await verifyViaPlategaApi(transactionId ?? payment.externalId);
+    if (apiVerify.trusted === false) {
+      console.warn("[Platega Webhook] API double-check FAILED", {
+        paymentId: payment.id,
+        candidateIds,
+        webhookStatus: status,
+        reason: apiVerify.reason,
+      });
+      ack(401, "rejected_signature", `API double-check: ${apiVerify.reason}`, payment.id);
+      return res.status(401).json({ message: "Platega API does not confirm this transaction" });
+    }
+    if (apiVerify.trusted === "unverified") {
+      // Креды не настроены — falling back to webhook trust. Громко предупреждаем.
+      console.warn("[Platega Webhook] API double-check skipped (credentials not configured) — accepting webhook UNVERIFIED. Set plategaMerchantId+plategaSecret in admin to enable verification.", { paymentId: payment.id });
+    }
+
 
     const isExtraOption = hasExtraOptionInMetadata(payment.metadata);
     const isTopUp = !payment.tariffId && !payment.proxyTariffId && !payment.singboxTariffId && !isExtraOption;
@@ -331,9 +491,11 @@ plategaWebhooksRouter.post("/platega", async (req, res) => {
       console.error("[Platega Webhook] Referral distribution error", { paymentId: payment.id, error: e });
     });
 
+    ack(200, "accepted", undefined, payment.id);
     return res.status(200).json({ received: true });
   } catch (e) {
     console.error("[Platega Webhook] Error:", e);
+    ack(200, "error", String(e));
     return res.status(200).json({ received: true });
   }
 });

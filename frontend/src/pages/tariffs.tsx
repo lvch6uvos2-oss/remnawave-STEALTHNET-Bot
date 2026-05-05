@@ -27,7 +27,9 @@ import {
   Tag,
   X,
   TrendingDown,
+  FileSpreadsheet,
 } from "lucide-react";
+import { TariffCsvDialog } from "@/components/tariff-csv-dialog";
 import {
   DndContext,
   closestCenter,
@@ -732,6 +734,7 @@ export function TariffsPage() {
   const [remnaConfigured, setRemnaConfigured] = useState<boolean | null>(null);
 
   const [categoryModal, setCategoryModal] = useState<"add" | { edit: TariffCategoryWithTariffs } | null>(null);
+  const [showCsvDialog, setShowCsvDialog] = useState(false);
   const [tariffModal, setTariffModal] = useState<
     | { kind: "add"; categoryId: string }
     | { kind: "edit"; category: TariffCategoryWithTariffs; tariff: TariffRecord }
@@ -876,11 +879,24 @@ export function TariffsPage() {
             </p>
           </div>
         </div>
-        <Button onClick={() => setCategoryModal("add")} className="gap-1.5 rounded-xl">
-          <Plus className="h-4 w-4" />
-          Добавить категорию
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setShowCsvDialog(true)} variant="outline" className="gap-1.5 rounded-xl">
+            <FileSpreadsheet className="h-4 w-4" />
+            CSV
+          </Button>
+          <Button onClick={() => setCategoryModal("add")} className="gap-1.5 rounded-xl">
+            <Plus className="h-4 w-4" />
+            Добавить категорию
+          </Button>
+        </div>
       </motion.div>
+
+      <TariffCsvDialog
+        open={showCsvDialog}
+        onClose={() => setShowCsvDialog(false)}
+        onApplied={() => load()}
+      />
+
 
       {error && (
         <motion.div

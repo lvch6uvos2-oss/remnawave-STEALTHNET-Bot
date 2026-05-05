@@ -139,6 +139,11 @@ model Client {
   telegramUsername           String?   @map("telegram_username")
   isBlocked                  Boolean   @default(false) @map("is_blocked")
   blockReason                String?   @map("block_reason")
+  /// Telegram-бот для этого клиента недоступен (заблокирован пользователем, аккаунт удалён и т.п.).
+  /// Выставляется автоматически при ошибках вида "bot was blocked" / "user is deactivated"
+  /// в рассылках. Клиент исключается из массовых рассылок до тех пор, пока флаг не снят
+  /// (например, при следующем /start от пользователя или вручную в админке).
+  telegramUnreachable        Boolean   @default(false) @map("telegram_unreachable")
   referralPercent            Float?    @map("referral_percent")
   /// Персональная скидка, % (0–100). Применяется админом выборочно; работает на все продуктовые
   /// оплаты (тариф, прокси, singbox, кастомный билд, доп-опции) и стэкается с промокодом.
@@ -781,12 +786,40 @@ model Contest {
   reminderIntervalHours       Int       @default(24) @map("reminder_interval_hours") // 0 = выкл периодических, >0 = каждые N часов
   reminderDeadlineHoursBefore String    @default("") @map("reminder_deadline_hours_before") @db.Text // CSV "24,1" — отправить за N часов до endAt
   reminderDeadlineSentJson    String?   @map("reminder_deadline_sent_json") @db.Text // {"24":"2026-01-01T...","1":"..."} — какие deadline-напоминания уже отправлены
+  /// Валюта для призов типа `balance` (RUB | USD | EUR …). Если null — fallback на default_currency
+  /// из system_settings или RUB. Раньше валюта хранилась только в client.preferredCurrency и приз
+  /// 100 «попадал» в текущую валюту победителя — расхождение между админом и победителем.
+  prizeBalanceCurrency        String?   @map("prize_balance_currency") @db.VarChar(8)
+  /// Снапшот участников на момент розыгрыша — сохраняется в runDraw, чтобы зафиксировать
+  /// состояние и позволить undo. Формат: [{ clientId, totalDays, count, refs }, ...].
+  participantsSnapshotJson    String?   @map("participants_snapshot_json") @db.Text
   createdAt                   DateTime  @default(now()) @map("created_at")
   updatedAt                   DateTime  @updatedAt @map("updated_at")
 
   winners ContestWinner[]
+  events  ContestEvent[]
 
   @@map("contests")
+}
+
+/// Аудит-лог конкурса: кто и когда что сделал. Заполняется в admin-рутах (launch, draw,
+/// undo-draw, manual winner add/remove, prize apply). Не критичен для логики, но важен
+/// для расследования инцидентов (типа "почему этот клиент в победителях?").
+model ContestEvent {
+  id        String   @id @default(cuid())
+  contestId String   @map("contest_id")
+  /// Тип события: launched | drew | undid_draw | winner_added | winner_removed | prize_applied | …
+  kind      String   @db.VarChar(40)
+  /// Email/id админа, выполнившего действие.
+  actorId   String?  @map("actor_id") @db.VarChar(120)
+  /// Дополнительные данные события (kind-specific).
+  payload   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  contest Contest @relation(fields: [contestId], references: [id], onDelete: Cascade)
+
+  @@index([contestId, createdAt(sort: Desc)])
+  @@map("contest_events")
 }
 
 model ApiKey {
@@ -1048,4 +1081,141 @@ model MarketplaceReport {
   @@index([status])
   @@index([listingId])
   @@map("marketplace_reports")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Landing Editor (3.3.4+)
+// Блочный редактор лендинга. `props` — структурные данные (цвета, лейаут, картинки),
+// `i18n` — все переводимые тексты в виде { ru: {...}, en: {...} }.
+// `*Draft` хранит несохранённые изменения; публичный рендер всегда читает основные
+// поля, edit-режим читает draft ?? main.
+// ─────────────────────────────────────────────────────────────────────────────
+model LandingBlock {
+  id         String   @id @default(cuid())
+  /// Тип блока: hero | features | benefits | tariffs | devices | faq | cta | stats | logos | testimonials | video | spacer | custom
+  type       String   @db.VarChar(40)
+  /// Вариант дизайна внутри типа (split | centered | grid-3 | accordion | …).
+  variant    String   @default("default") @db.VarChar(60)
+  /// Позиция в стриме (целое, шаг 10 для удобной вставки между).
+  order      Int
+  visible    Boolean  @default(true)
+  /// Структурные поля блока: цвета, лейаут, картинки, ссылки.
+  props      Json     @default("{}")
+  /// Локализованные тексты: { ru: {…}, en: {…} } — ключи зависят от типа блока.
+  i18n       Json     @default("{}")
+  propsDraft Json?    @map("props_draft")
+  i18nDraft  Json?    @map("i18n_draft")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([order])
+  @@index([visible, order])
+  @@map("landing_blocks")
+}
+
+// Глобальная тема лендинга — один ряд (singleton, id = "default").
+model LandingTheme {
+  id             String   @id @default("default")
+  primaryColor   String?  @map("primary_color") @db.VarChar(20)
+  accentColor    String?  @map("accent_color") @db.VarChar(20)
+  backgroundColor String? @map("background_color") @db.VarChar(20)
+  textColor      String?  @map("text_color") @db.VarChar(20)
+  /// Активный шрифт (имя из fontPresets).
+  fontFamily     String?  @map("font_family") @db.VarChar(80)
+  /// Доступные шрифты: [{ name, url, previewText }] — Inter, Manrope, Onest, Space Grotesk и т.д.
+  fontPresets    Json     @default("[]") @map("font_presets")
+  borderRadius   String?  @map("border_radius") @db.VarChar(20)
+  containerWidth String?  @map("container_width") @db.VarChar(20)
+  customCss      String?  @map("custom_css") @db.Text
+  /// Целиком черновик темы (если есть несохранённые изменения).
+  draft          Json?    @map("draft")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("landing_theme")
+}
+
+// Снапшоты состояния лендинга для бэкап/восстановления.
+// Авто-снапшот перед каждым Publish + ручные снапшоты из редактора.
+model LandingSnapshot {
+  id        String   @id @default(cuid())
+  /// "auto-before-publish" | "manual" | произвольный.
+  label     String?  @db.VarChar(120)
+  /// { blocks: [...], theme: {...} } — полное состояние на момент снапшота.
+  data      Json
+  /// Email/ID админа, создавшего снапшот.
+  createdBy String?  @map("created_by") @db.VarChar(120)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@map("landing_snapshots")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin audit log (3.3.5+).
+// Универсальный журнал действий админов: кто, когда, над чем, какое действие,
+// с каким payload. ContestEvent остаётся отдельной таблицей (там история
+// контеста живёт вместе с самим контестом и каскадно удаляется); общий админ-
+// аудит сюда — для расследования инцидентов, споров, безопасности.
+// ─────────────────────────────────────────────────────────────────────────────
+model AdminEvent {
+  id         String   @id @default(cuid())
+  /// Тип события: client.block | client.unblock | payment.refund | settings.update | admin.login | …
+  kind       String   @db.VarChar(80)
+  /// Email/ID админа выполнившего действие (null для системных событий).
+  actorId    String?  @map("actor_id") @db.VarChar(120)
+  /// IP откуда пришёл запрос (X-Forwarded-For или req.ip).
+  actorIp    String?  @map("actor_ip") @db.VarChar(64)
+  /// Тип целевого объекта: client | payment | tariff | contest | settings | promo_group | gift_code | …
+  targetType String?  @map("target_type") @db.VarChar(40)
+  /// ID целевого объекта (cuid обычно).
+  targetId   String?  @map("target_id")
+  /// Свободные данные: diff, причина, before/after.
+  payload    Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([targetType, targetId, createdAt(sort: Desc)])
+  @@index([kind, createdAt(sort: Desc)])
+  @@map("admin_events")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Webhook inbox — все входящие webhook'и от платежных провайдеров сохраняются
+// сюда. Нужно для:
+//   - расследования "почему платёж завис" (видишь raw body что прислал провайдер),
+//   - replay'я (если webhook не обработался из-за временной проблемы),
+//   - аудита (видишь все попытки атаки на unsigned endpoint'ы).
+// ─────────────────────────────────────────────────────────────────────────────
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  /// platega | yookassa | yoomoney | cryptopay | heleket | lava | overpay
+  provider      String    @db.VarChar(20)
+  /// Сырое тело запроса (как пришло — для HMAC verification и replay).
+  rawBody       String    @map("raw_body") @db.Text
+  /// Все relevant заголовки в JSON ({ "x-signature": "...", "authorization": "..." }).
+  headers       Json
+  /// IP отправителя (для IP-whitelist аудита).
+  remoteIp      String?   @map("remote_ip") @db.VarChar(64)
+  /// HTTP-статус, который мы вернули.
+  responseStatus Int      @map("response_status")
+  /// Результат обработки: accepted | rejected_signature | rejected_payload | payment_not_found | payment_already_paid | error
+  outcome       String    @db.VarChar(40)
+  /// Причина отказа / ошибки, если есть.
+  errorMessage  String?   @map("error_message") @db.Text
+  /// ID платежа, к которому привязали (если нашли).
+  paymentId     String?   @map("payment_id")
+  /// Длительность обработки в мс (для perf-мониторинга).
+  durationMs    Int?      @map("duration_ms")
+  /// Кто нажал «replay»: если null — оригинальный webhook от провайдера.
+  replayedBy    String?   @map("replayed_by") @db.VarChar(120)
+  /// FK на оригинальный webhook (если это replay).
+  replayOfId    String?   @map("replay_of_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  @@index([provider, createdAt(sort: Desc)])
+  @@index([paymentId])
+  @@index([outcome, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("webhook_events")
 }

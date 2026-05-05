@@ -21,7 +21,7 @@ import { lavaWebhooksRouter } from "./modules/webhooks/lava.webhooks.routes.js";
 import { botAdminRouter } from "./modules/bot-admin/bot-admin.routes.js";
 import { botAdminRouter as botsAdminCrudRouter, botInternalRouter } from "./modules/bot/bot.routes.js";
 import { contestAdminRouter } from "./modules/contest/contest.admin.routes.js";
-import { contestPublicRouter } from "./modules/contest/contest.public.routes.js";
+import { contestPublicRouter, contestClientRouter } from "./modules/contest/contest.public.routes.js";
 import { adminReferralsRouter } from "./modules/admin/referrals.routes.js";
 import { trafficAbuseRouter } from "./modules/admin/traffic-abuse.routes.js";
 import { apiKeysAdminRouter } from "./modules/api-keys/api-keys.admin.routes.js";
@@ -33,6 +33,24 @@ import { marketplaceClientRouter } from "./modules/marketplace/marketplace.clien
 import { marketplaceHubRouter } from "./modules/marketplace/marketplace.hub.routes.js";
 import { marketplaceHubAdminRouter } from "./modules/marketplace/marketplace.hub.admin.routes.js";
 import { getMarketplaceRuntime } from "./modules/marketplace/marketplace.runtime.js";
+import { landingAdminRouter } from "./modules/landing/landing.admin.routes.js";
+import { landingPublicRouter } from "./modules/landing/landing.public.routes.js";
+import { auditAdminRouter } from "./modules/audit/audit.routes.js";
+import { webhookInboxAdminRouter } from "./modules/webhook-inbox/webhook-inbox.routes.js";
+import { diagnosticsAdminRouter } from "./modules/diagnostics/diagnostics.routes.js";
+import { quickSearchAdminRouter } from "./modules/quick-search/quick-search.routes.js";
+import { adminSecurityRouter } from "./modules/auth/admin-security.routes.js";
+import { notificationsCountersRouter } from "./modules/notifications-counters/notifications-counters.routes.js";
+import { paymentActionsRouter } from "./modules/payment-actions/payment-actions.routes.js";
+import { clientsBulkRouter } from "./modules/clients-bulk/clients-bulk.routes.js";
+import { businessAnalyticsRouter } from "./modules/business-analytics/business-analytics.routes.js";
+import { promoBulkRouter } from "./modules/promo-bulk/promo-bulk.routes.js";
+import { tariffCsvRouter } from "./modules/tariff-csv/tariff-csv.routes.js";
+import { antiFraudRouter } from "./modules/anti-fraud/anti-fraud.routes.js";
+import { adminPermissionsRouter } from "./modules/admin-permissions/admin-permissions.routes.js";
+import { emailTemplatesRouter } from "./modules/email-templates/email-templates.routes.js";
+import { botMessagesRouter } from "./modules/bot-messages/bot-messages.routes.js";
+import { botConversationsRouter } from "./modules/bot-conversations/bot-conversations.routes.js";
 import { requireAuth } from "./modules/auth/middleware.js";
 import { renderSpaIndex } from "./modules/branding/spa-html.js";
 
@@ -56,6 +74,10 @@ app.use(cors({
 app.use("/api/webhooks/cryptopay", express.raw({ type: "application/json" }), cryptopayWebhooksRouter);
 app.use("/api/webhooks/heleket", express.raw({ type: "application/json" }), heleketWebhooksRouter);
 app.use("/api/webhooks/lava", express.raw({ type: "application/json" }), lavaWebhooksRouter);
+// Platega — HMAC проверяет raw body. Apply path-specific raw middleware ДО express.json,
+// чтобы плательщик мог проверить подпись над оригинальными байтами. Сам router смонтирован
+// ниже на /api/webhooks (где у него уже есть `.post("/platega", ...)`).
+app.use("/api/webhooks/platega", express.raw({ type: "application/json" }));
 
 // Лимит 5MB для настроек с логотипом и favicon (data URL)
 app.use(express.json({ limit: "200mb" }));
@@ -137,7 +159,7 @@ const giftPublicLimiter = rateLimit({
 app.use("/api/gift/public", giftPublicLimiter);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", version: "3.3.3" });
+  res.json({ status: "ok", version: "4.0.0" });
 });
 
 // SSR-рендер index.html с подстановкой имени из брендинга (Telegram preview).
@@ -179,17 +201,38 @@ app.use("/api/admin/singbox", singboxAdminRouter);
 app.use("/api/proxy-nodes", proxyAgentRouter);
 app.use("/api/singbox-nodes", singboxAgentRouter);
 app.use("/api/client", clientRouter);
+app.use("/api/client/contests", contestClientRouter);
 app.use("/api/client/gift", giftRouter);
 app.use("/api/gift/public", giftPublicRouter);
+app.use("/api/admin/landing", landingAdminRouter);
+app.use("/api/admin/audit", auditAdminRouter);
+app.use("/api/admin/webhook-inbox", webhookInboxAdminRouter);
+app.use("/api/admin/diagnostics", diagnosticsAdminRouter);
+app.use("/api/admin/quick-search", quickSearchAdminRouter);
+app.use("/api/admin/security", adminSecurityRouter);
+app.use("/api/admin/notifications", notificationsCountersRouter);
+app.use("/api/admin/payments", paymentActionsRouter);
+app.use("/api/admin/clients", clientsBulkRouter);
+app.use("/api/admin/business-analytics", businessAnalyticsRouter);
+app.use("/api/admin/promo-codes", promoBulkRouter);
+// CSV-импорт принимает text/csv ИЛИ application/json — express.json() выше
+// уже разбирает JSON, добавляем text-parser для text/csv параллельно.
+app.use("/api/admin/tariffs-csv", express.text({ type: ["text/csv", "text/plain"], limit: "5mb" }), tariffCsvRouter);
+app.use("/api/admin/anti-fraud", antiFraudRouter);
+app.use("/api/admin/admin-permissions", adminPermissionsRouter);
+app.use("/api/admin/email-templates", emailTemplatesRouter);
+app.use("/api/admin/bot-messages", botMessagesRouter);
+app.use("/api/admin/bot-conversations", botConversationsRouter);
 app.use("/api/public", publicConfigRouter);
 app.use("/api/public", contestPublicRouter);
+app.use("/api/public", landingPublicRouter);
 app.use("/api/pay", paymentRedirectRouter);
 app.use("/api/v1", externalApiRouter);
 app.use("/api/bot-admin", botAdminRouter);
 app.use("/api/admin/bots", botsAdminCrudRouter);
 app.use("/api/internal", botInternalRouter);
 app.use("/api/webhooks", remnaWebhooksRouter);
-app.use("/api/webhooks", plategaWebhooksRouter);
+app.use("/api/webhooks", plategaWebhooksRouter); // raw body для /platega уже применён выше
 app.use("/api/webhooks", yoomoneyWebhooksRouter);
 app.use("/api/webhooks", yookassaWebhooksRouter);
 // cryptopay уже смонтирован выше с raw body

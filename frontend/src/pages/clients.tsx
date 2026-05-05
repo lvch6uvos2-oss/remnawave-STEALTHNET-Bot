@@ -27,11 +27,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Pencil, Trash2, Ban, ShieldCheck, Wifi, Ticket, KeyRound, Search,
   Copy, Check, Smartphone, Activity, User, Users, Settings, HardDrive, Link, Unlink,
-  RefreshCw, Loader2, Package, Gift
+  RefreshCw, Loader2, Package, Gift, Coins, MailX, MailCheck, RotateCw,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
+import { clientsBulkApi, type BulkClientAction } from "@/lib/admin-extras-api";
 
 function formatTrafficBytes(bytes: number | null | undefined): string {
   if (bytes == null || bytes <= 0) return "0 B";
@@ -99,7 +100,16 @@ export function ClientsPage() {
   const [search, setSearch] = useState("");
   const [searchApplied, setSearchApplied] = useState("");
   const [filterBlocked, setFilterBlocked] = useState<"all" | "blocked" | "active">("all");
-  
+
+  // ─── Bulk-actions state ───────────────────────────────────────────────
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState<BulkClientAction | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkResult, setBulkResult] = useState<{ ok: number; failed: number } | null>(null);
+  // optional inputs
+  const [bulkAmount, setBulkAmount] = useState("");
+  const [bulkReason, setBulkReason] = useState("");
+
   const [onlineStatuses, setOnlineStatuses] = useState<Record<string, { onlineAt: string | null }>>({});
 
   const token = state.accessToken!;
@@ -117,6 +127,68 @@ export function ClientsPage() {
       setLoading(false);
     }).catch(() => setLoading(false));
   };
+
+  // ─── Bulk-actions helpers ─────────────────────────────────────────────
+  const allRowIds = (data?.items ?? []).map((c) => c.id);
+  const allSelected = allRowIds.length > 0 && allRowIds.every((id) => selectedIds.has(id));
+  function toggleId(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    if (allSelected) setSelectedIds(new Set());
+    else setSelectedIds(new Set(allRowIds));
+  }
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setBulkError(null);
+    setBulkResult(null);
+    setBulkAmount("");
+    setBulkReason("");
+  }
+  async function runBulk(action: BulkClientAction) {
+    if (selectedIds.size === 0) return;
+    setBulkBusy(action);
+    setBulkError(null);
+    setBulkResult(null);
+    try {
+      const params: { reason?: string; amount?: number } = {};
+      if (action === "credit_balance" || action === "debit_balance") {
+        const n = parseFloat(bulkAmount);
+        if (!Number.isFinite(n) || n <= 0) {
+          setBulkError("Введите положительное число для amount");
+          setBulkBusy(null);
+          return;
+        }
+        params.amount = n;
+      }
+      if (action === "block" && bulkReason) params.reason = bulkReason;
+
+      const r = await clientsBulkApi.bulk(token, {
+        action,
+        ids: Array.from(selectedIds),
+        params: Object.keys(params).length ? params : undefined,
+      });
+      setBulkResult({ ok: r.ok, failed: r.failed });
+      if (r.failed === 0) {
+        // полный успех — снимаем выделение и перезагружаем
+        setTimeout(() => {
+          setSelectedIds(new Set());
+          loadClients();
+        }, 1500);
+      } else {
+        loadClients();
+      }
+    } catch (e) {
+      setBulkError(e instanceof Error ? e.message : "bulk error");
+    } finally {
+      setBulkBusy(null);
+    }
+  }
 
   useEffect(() => {
     loadClients();
@@ -384,6 +456,118 @@ export function ClientsPage() {
         </div>
       </Card>
 
+      {/* BULK ACTIONS BAR */}
+      {selectedIds.size > 0 && (
+        <Card className="bg-primary/10 backdrop-blur-3xl border-primary/30 p-4 rounded-2xl shadow-xl">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:gap-4">
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full bg-primary text-primary-foreground text-xs font-bold">
+                {selectedIds.size}
+              </span>
+              <span className="text-sm font-medium text-foreground">выбрано</span>
+              <button
+                onClick={clearSelection}
+                className="text-xs text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+              >
+                сбросить
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                placeholder="amount"
+                type="number"
+                value={bulkAmount}
+                onChange={(e) => setBulkAmount(e.target.value)}
+                className="h-8 w-[100px] text-xs rounded-lg bg-background/40 border-white/10"
+              />
+              <Input
+                placeholder="причина (для блокировки)"
+                value={bulkReason}
+                onChange={(e) => setBulkReason(e.target.value)}
+                className="h-8 w-[180px] text-xs rounded-lg bg-background/40 border-white/10"
+              />
+
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("block")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs border-rose-500/30 text-rose-500 hover:bg-rose-500/10"
+              >
+                {bulkBusy === "block" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Ban className="h-3 w-3" />}
+                Block
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("unblock")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs border-emerald-500/30 text-emerald-500 hover:bg-emerald-500/10"
+              >
+                {bulkBusy === "unblock" ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
+                Unblock
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("credit_balance")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs"
+              >
+                {bulkBusy === "credit_balance" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Coins className="h-3 w-3" />}
+                +Balance
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("debit_balance")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs"
+              >
+                {bulkBusy === "debit_balance" ? <Loader2 className="h-3 w-3 animate-spin" /> : <Coins className="h-3 w-3" />}
+                −Balance
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("reset_trial")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs"
+              >
+                {bulkBusy === "reset_trial" ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCw className="h-3 w-3" />}
+                Reset Trial
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("mark_unreachable")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs"
+              >
+                {bulkBusy === "mark_unreachable" ? <Loader2 className="h-3 w-3 animate-spin" /> : <MailX className="h-3 w-3" />}
+                TG ✗
+              </Button>
+              <Button
+                size="sm" variant="outline"
+                onClick={() => runBulk("mark_reachable")}
+                disabled={bulkBusy !== null}
+                className="h-8 rounded-lg gap-1.5 text-xs"
+              >
+                {bulkBusy === "mark_reachable" ? <Loader2 className="h-3 w-3 animate-spin" /> : <MailCheck className="h-3 w-3" />}
+                TG ✓
+              </Button>
+            </div>
+          </div>
+
+          {(bulkError || bulkResult) && (
+            <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-3 text-xs">
+              {bulkError && <span className="text-rose-500">{bulkError}</span>}
+              {bulkResult && (
+                <span className={cn("font-medium", bulkResult.failed === 0 ? "text-emerald-500" : "text-amber-500")}>
+                  Готово: {bulkResult.ok} ОК
+                  {bulkResult.failed > 0 && ` · ${bulkResult.failed} с ошибкой`}
+                </span>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
       {/* TABLE */}
       <Card className="bg-background/60 backdrop-blur-3xl border-white/10 rounded-[2rem] shadow-xl overflow-hidden relative min-h-[400px]">
         {loading && !data ? (
@@ -409,7 +593,14 @@ export function ClientsPage() {
               <thead className="text-xs uppercase bg-foreground/[0.04] dark:bg-white/[0.04] text-muted-foreground border-b border-white/10">
                 <tr>
                   <th className="px-6 py-4 rounded-tl-[2rem]">
-                    <div className="h-4 w-4 rounded border border-white/20 bg-white/5" />
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-white/30 bg-background cursor-pointer accent-primary"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label="Выбрать всех"
+                    />
                   </th>
                   <th className="px-6 py-4 font-semibold tracking-wider">Пользователь</th>
                   <th className="px-6 py-4 font-semibold tracking-wider">Контакты</th>
@@ -435,8 +626,14 @@ export function ClientsPage() {
                         c.isBlocked && "bg-red-500/5 hover:bg-red-500/10 border-l-red-500/50"
                       )}
                     >
-                      <td className="px-6 py-4 w-10">
-                        <div className="h-4 w-4 rounded border border-white/20 bg-background group-hover:border-primary/50 transition-colors" />
+                      <td className="px-6 py-4 w-10" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-white/30 bg-background cursor-pointer accent-primary"
+                          checked={selectedIds.has(c.id)}
+                          onChange={() => toggleId(c.id)}
+                          aria-label={`Выбрать клиента ${c.id}`}
+                        />
                       </td>
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-3">

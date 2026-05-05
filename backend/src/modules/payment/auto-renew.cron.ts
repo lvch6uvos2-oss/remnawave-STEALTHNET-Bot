@@ -208,17 +208,28 @@ export async function processAutoRenewals() {
         const { finalPrice: tariffPrice, promoCodeId: autoRenewPromoCodeId } =
           await tryApplyPromoForAutoRenew(client.id, client.autoRenewPromoCode, priceAfterPersonal);
 
-        if (client.balance >= tariffPrice) {
-          // Enough balance → RENEW
-          await prisma.$transaction(async (tx) => {
-            await tx.client.update({
-              where: { id: client.id },
-              data: {
-                balance: { decrement: tariffPrice },
-                autoRenewRetryCount: 0, // reset retries on success
-                autoRenewNotifiedAt: null, // reset notification flag
-              },
-            });
+        // Атомик debit-with-balance-check. Раньше было: read balance → check >= price
+        // → потом transaction с decrement. Окно между check и decrement = пара секунд
+        // (transaction делает много вещей внутри). Если за это время юзер сам списал
+        // баланс через /payments/balance — auto-renew всё равно decrement'ил, баланс
+        // уезжал в минус. Теперь — сначала атомарно списываем (UPDATE WHERE balance >= price),
+        // если count=0 — пропускаем renewal, конкурент уже занял баланс.
+        const debitGuard = await prisma.client.updateMany({
+          where: { id: client.id, balance: { gte: tariffPrice } },
+          data: {
+            balance: { decrement: tariffPrice },
+            autoRenewRetryCount: 0,
+            autoRenewNotifiedAt: null,
+          },
+        });
+
+        if (debitGuard.count > 0) {
+          // Enough balance → RENEW (баланс уже списан атомарно выше).
+          // Если payment.create или активация упадут — нужно откатить debit,
+          // иначе бабки списали а тарифа не выдали.
+          let renewalFailed = false;
+          try {
+            await prisma.$transaction(async (tx) => {
 
             const metaObj: Record<string, unknown> = { autoRenew: true };
             if (autoRenewPromoCodeId) {
@@ -261,7 +272,18 @@ export async function processAutoRenewals() {
             import("../referral/referral.service.js")
               .then((m) => m.distributeReferralRewards(payment.id))
               .catch((e) => console.error("[auto-renew] Referral reward error:", e));
-          });
+            });
+          } catch (err) {
+            // Транзакция упала — откатываем атомарный debit, чтобы юзер не остался
+            // без денег и без тарифа.
+            renewalFailed = true;
+            await prisma.client.update({
+              where: { id: client.id },
+              data: { balance: { increment: tariffPrice } },
+            }).catch((e) => console.error("[auto-renew] Rollback debit failed:", e));
+            console.error(`[auto-renew] Client ${client.id} renewal failed, debit rolled back:`, err);
+          }
+          if (renewalFailed) continue;
 
           await notifyAutoRenewSuccess(
             client.id,
@@ -342,14 +364,24 @@ export async function processAutoRenewals() {
               });
 
               if (autopayResult.ok) {
-                // Автоплатёж прошёл — списываем баланс (если есть) + создаём Payment, активируем тариф
-                const payment = await prisma.$transaction(async (tx) => {
-                  if (balancePortion > 0) {
-                    await tx.client.update({
-                      where: { id: client.id },
-                      data: { balance: { decrement: balancePortion } },
-                    });
+                // Автоплатёж прошёл. Если есть balancePortion — атомарно
+                // списываем (юзер мог за это время уже опустошить баланс через
+                // /payments/balance, тогда decrement даст отрицательный остаток).
+                // Если списать не удалось — забираем всё с карты, balancePortion=0.
+                let actualBalancePortion = balancePortion;
+                if (balancePortion > 0) {
+                  const balDebit = await prisma.client.updateMany({
+                    where: { id: client.id, balance: { gte: balancePortion } },
+                    data: { balance: { decrement: balancePortion } },
+                  });
+                  if (balDebit.count === 0) {
+                    // Конкурент опустошил баланс — yookassa списала всё что нужно,
+                    // компенсировать не из чего. Логируем для расследования.
+                    console.warn(`[auto-renew] Client ${client.id}: balance was drained between check and debit; treating as full-card payment.`);
+                    actualBalancePortion = 0;
                   }
+                }
+                const payment = await prisma.$transaction(async (tx) => {
 
                   const ypMeta: Record<string, unknown> = { autoRenew: true };
                   if (autoRenewPromoCodeId) {

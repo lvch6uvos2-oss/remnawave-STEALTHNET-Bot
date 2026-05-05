@@ -58,12 +58,20 @@ lavaWebhooksRouter.post("/", async (req: Request, res: Response) => {
   const config = await getSystemConfig();
   const additionalKey = (config as { lavaAdditionalKey?: string | null }).lavaAdditionalKey?.trim();
   const secretKey = (config as { lavaSecretKey?: string | null }).lavaSecretKey?.trim();
-  // Если «дополнительный ключ» не задан — используем основной (Lava разрешает так в кабинете по выбору).
-  const verifyKey = additionalKey || secretKey;
-  if (!verifyKey) {
-    console.warn("[Lava Webhook] Lava not configured");
+
+  // Lava подписывает webhook'и через additional_key (подтверждено саппортом 04.05.2026).
+  // secret_key используется только для исходящих запросов (создание платежа).
+  // Раньше тут был fallback на secretKey — это давало 401 на легитимные webhook'и,
+  // если админ не настроил additional_key (Lava-то подписывает другим ключом).
+  if (!additionalKey) {
+    if (secretKey) {
+      console.warn("[Lava Webhook] additional_key NOT configured — webhook нельзя проверить. Зайди в кабинет Lava → Доп. настройки → Дополнительный секретный ключ → сгенерируй и впиши его в админке (Settings → Платежи → Lava → Additional key).");
+      return res.status(503).send("Lava webhook signing key not configured");
+    }
+    console.warn("[Lava Webhook] Lava not configured at all");
     return res.status(200).send("OK");
   }
+  const verifyKey = additionalKey;
 
   // Lava кладёт подпись в Authorization; некоторые версии — в Signature.
   const sigHeader =

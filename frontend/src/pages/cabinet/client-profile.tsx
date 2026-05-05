@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
 import { User, Wallet, Copy, Check, CreditCard, Loader2, Link2, Mail, Fingerprint, CalendarDays, Shield, KeyRound, Monitor, Trash2, Zap } from "lucide-react";
+import { useCabinetDesign } from "@/lib/use-cabinet-design";
+import { StealthProfile } from "@/pages/cabinet/stealth/stealth-profile";
 import { QRCodeSVG } from "qrcode.react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { useCabinetMiniapp } from "@/pages/cabinet/cabinet-layout";
@@ -40,6 +42,12 @@ function formatPaymentStatus(status: string, t: (key: string) => string): string
 }
 
 export function ClientProfilePage() {
+  const design = useCabinetDesign();
+  if (design === "stealth") return <StealthProfile />;
+  return <ClassicProfilePage />;
+}
+
+function ClassicProfilePage() {
   const { t } = useTranslation();
   const { state, refreshProfile } = useClientAuth();
   const [payments, setPayments] = useState<ClientPayment[]>([]);

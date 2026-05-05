@@ -6,7 +6,8 @@ import {
   Megaphone, Tag, BarChart3, FileText, ExternalLink, Sun, Moon, Monitor,
   Palette, Menu, X, Database, Target, UserCog, Send, CalendarClock, Globe, Server, MessageSquare, Trophy,
   Network, ShieldAlert, Key, Map, Video, Languages, Gift, Sparkles, Rocket, Bot,
-  Bell, ChevronRight, Check, ShoppingBag,
+  ChevronRight, Check, ShoppingBag,
+  Activity, Inbox, ClipboardList, TrendingUp, Mail,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAdminLanguageSync } from "@/i18n/use-language-sync";
@@ -15,8 +16,9 @@ import { useTheme, ACCENT_PALETTES, type ThemeMode, type ThemeAccent } from "@/c
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api, type AdminNotificationCounters } from "@/lib/api";
+import { InboxBell } from "@/components/inbox-bell";
 
-const PANEL_VERSION = "3.3.3";
+const PANEL_VERSION = "4.0.0";
 const GITHUB_URL = "https://github.com/systemmaster1200-eng/remnawave-STEALTHNET-Bot";
 
 type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; section: string; category: string };
@@ -36,6 +38,9 @@ function useNavSections(): NavItem[] {
   return [
     { to: "/admin", label: t("admin.nav.dashboard"), icon: LayoutDashboard, section: "dashboard", category: "overview" },
     { to: "/admin/analytics", label: t("admin.nav.analytics"), icon: BarChart3, section: "analytics", category: "overview" },
+    { to: "/admin/business-analytics", label: "Бизнес-аналитика", icon: TrendingUp, section: "analytics", category: "overview" },
+    { to: "/admin/anti-fraud", label: "Anti-fraud", icon: ShieldAlert, section: "analytics", category: "overview" },
+    { to: "/admin/bot-conversations", label: "Активность клиентов", icon: MessageSquare, section: "clients", category: "management" },
     { to: "/admin/sales-report", label: t("admin.nav.sales_report"), icon: FileText, section: "sales-report", category: "overview" },
     { to: "/admin/traffic-abuse", label: t("admin.nav.traffic_abuse"), icon: ShieldAlert, section: "traffic-abuse", category: "overview" },
     { to: "/admin/geo-map", label: t("admin.nav.geo_map"), icon: Map, section: "geo-map", category: "overview" },
@@ -62,6 +67,11 @@ function useNavSections(): NavItem[] {
     { to: "/admin/bots", label: t("admin.nav.clone_bots"), icon: Bot, section: "bots", category: "settings" },
     { to: "/admin/admins", label: t("admin.nav.managers"), icon: UserCog, section: "admins", category: "settings" },
     { to: "/admin/api-keys", label: t("admin.nav.api_keys"), icon: Key, section: "api-keys", category: "settings" },
+    { to: "/admin/diagnostics", label: "Диагностика", icon: Activity, section: "diagnostics", category: "settings" },
+    { to: "/admin/email-templates", label: "Email-шаблоны", icon: Mail, section: "settings", category: "settings" },
+    { to: "/admin/bot-messages", label: "Тексты бота", icon: Bot, section: "settings", category: "settings" },
+    { to: "/admin/webhook-inbox", label: "Webhook inbox", icon: Inbox, section: "webhook-inbox", category: "settings" },
+    { to: "/admin/audit", label: "Аудит-лог", icon: ClipboardList, section: "audit", category: "settings" },
   ];
 }
 
@@ -363,13 +373,14 @@ export function DashboardLayout() {
             </div>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Notifications bell */}
-            <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-9 px-2.5 rounded-xl relative" title={notificationsEnabled ? "Уведомления включены" : "Уведомления выключены"} disabled>
-              <Bell className={cn("h-4 w-4", notificationsEnabled ? "text-foreground" : "text-muted-foreground/40")} />
-              {notificationToasts.length > 0 && (
-                <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-background animate-pulse" />
-              )}
-            </Button>
+            {/* Real-time toast indicator (legacy, низ-приоритет) */}
+            {notificationToasts.length > 0 && (
+              <span title={notificationsEnabled ? "Уведомления включены" : "Уведомления выключены"} className="flex items-center justify-center h-9 w-2">
+                <span className="h-2 w-2 rounded-full bg-rose-500 animate-pulse" />
+              </span>
+            )}
+            {/* Inbox Bell (counters → tickets/webhooks/payments/cron failures/etc.) */}
+            <InboxBell />
             {/* Theme picker — стиль из кабинета */}
             <div className="relative">
               <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-9 px-2.5 rounded-xl border border-transparent hover:border-white/10 bg-background/20 hover:bg-background/40" onClick={() => setShowThemePanel(!showThemePanel)}>

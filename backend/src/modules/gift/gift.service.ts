@@ -403,15 +403,13 @@ export async function createGiftCode(
     return { ok: false, error: "Подарки отключены", status: 403 };
   }
 
+  // Read for ownership check + tariff name lookup (read-only).
   const sub = await prisma.secondarySubscription.findUnique({
     where: { id: secondarySubscriptionId },
     include: { tariff: { select: { name: true } } },
   });
   if (!sub || sub.ownerId !== rootClientId) {
     return { ok: false, error: "Подписка не найдена", status: 404 };
-  }
-  if (sub.giftStatus === "GIFT_RESERVED") {
-    return { ok: false, error: "Для этой подписки уже создан подарок", status: 409 };
   }
   if (sub.giftStatus === "GIFTED") {
     return { ok: false, error: "Подписка уже подарена", status: 400 };
@@ -420,18 +418,27 @@ export async function createGiftCode(
     return { ok: false, error: "Подписка активирована на себя и не может быть подарена", status: 400 };
   }
 
-  // Проверяем, нет ли активного кода для этой подписки
-  const existingCode = await prisma.giftCode.findFirst({
+  // Тут была дыра: 25 параллельных /create-code на одну подписку — все 25
+  // успевали прочитать giftStatus=null, проверить что активного кода нет,
+  // и каждый создавал свой код. На выходе одна подписка → 25+ кодов.
+  //
+  // Фикс — атомарный flip giftStatus null → GIFT_RESERVED через updateMany.
+  // PG лочит строку, кто первый успел — забрал. Остальным count=0, идут
+  // лесом с 409. Заодно убирается отдельная проверка "активный код уже есть",
+  // потому что инвариант: ACTIVE GiftCode <=> giftStatus = GIFT_RESERVED.
+  const reserve = await prisma.secondarySubscription.updateMany({
     where: {
-      secondarySubscriptionId,
-      status: "ACTIVE",
+      id: secondarySubscriptionId,
+      ownerId: rootClientId,
+      giftStatus: null,
     },
+    data: { giftStatus: "GIFT_RESERVED" },
   });
-  if (existingCode) {
+  if (reserve.count === 0) {
     return { ok: false, error: "Активный код для этой подписки уже существует", status: 409 };
   }
 
-  // Генерируем уникальный код
+  // Генерируем уникальный код (теперь это безопасно — резервация уже зафиксирована)
   let code = generateGiftCode();
   let attempts = 0;
   while (attempts < 10) {
@@ -444,6 +451,11 @@ export async function createGiftCode(
     attempts++;
   }
   if (attempts >= 10) {
+    // Rollback reservation — could not generate unique code.
+    await prisma.secondarySubscription.update({
+      where: { id: secondarySubscriptionId },
+      data: { giftStatus: null },
+    }).catch(() => {});
     return { ok: false, error: "Не удалось сгенерировать уникальный код", status: 500 };
   }
 
@@ -452,9 +464,10 @@ export async function createGiftCode(
   // Обрезаем сообщение до 200 символов
   const trimmedMessage = giftMessage?.trim().slice(0, 200) || null;
 
-  // Транзакция: создаём код + помечаем подписку как зарезервированную
-  await prisma.$transaction([
-    prisma.giftCode.create({
+  // Создаём GiftCode. Резервация уже стоит — параллельные /create-code не могут
+  // дойти сюда для той же подписки.
+  try {
+    await prisma.giftCode.create({
       data: {
         code,
         creatorId: rootClientId,
@@ -463,12 +476,15 @@ export async function createGiftCode(
         expiresAt,
         giftMessage: trimmedMessage,
       },
-    }),
-    prisma.secondarySubscription.update({
+    });
+  } catch (err) {
+    // Rollback reservation on unexpected failure (e.g. unique-violation).
+    await prisma.secondarySubscription.update({
       where: { id: secondarySubscriptionId },
-      data: { giftStatus: "GIFT_RESERVED" },
-    }),
-  ]);
+      data: { giftStatus: null },
+    }).catch(() => {});
+    throw err;
+  }
 
   await logGiftEvent(rootClientId, "CODE_CREATED", secondarySubscriptionId, {
     code,
@@ -583,17 +599,29 @@ export async function redeemGiftCode(
   // Определяем новый индекс у получателя
   const newIndex = await getNextSubscriptionIndex(recipientRootClientId);
 
-  // Транзакция: активируем код + перепривязываем подписку
-  await prisma.$transaction([
-    prisma.giftCode.update({
-      where: { id: giftCode.id },
-      data: {
-        status: "REDEEMED",
-        redeemedById: recipientRootClientId,
-        redeemedAt: new Date(),
-      },
-    }),
-    prisma.secondarySubscription.update({
+  // Главная дыра в редеме: $transaction([code.update, sub.update]) — НЕ лок.
+  // Это просто два SQL'а в одной транзе. Параллельные /redeem с одним кодом
+  // все видели status=ACTIVE, каждый писал REDEEMED поверх, каждый перепривязывал
+  // подписку себе. По репорту — код прокатил 25 раз. Подписка одна, владельцев 25.
+  //
+  // Чиним атомарным flip status ACTIVE → REDEEMED через updateMany.
+  // Кто первый дошёл — забрал код. Остальным count=0, ответ "уже использован".
+  // Перенос подписки делаем уже ПОСЛЕ успешного claim — конкурентов больше нет.
+  const claim = await prisma.giftCode.updateMany({
+    where: { id: giftCode.id, status: "ACTIVE" },
+    data: {
+      status: "REDEEMED",
+      redeemedById: recipientRootClientId,
+      redeemedAt: new Date(),
+    },
+  });
+  if (claim.count === 0) {
+    return { ok: false, error: "Код уже использован", status: 400 };
+  }
+
+  // Теперь безопасно перепривязываем подписку — других претендентов нет.
+  try {
+    await prisma.secondarySubscription.update({
       where: { id: giftCode.secondarySubscriptionId },
       data: {
         ownerId: recipientRootClientId,
@@ -601,8 +629,16 @@ export async function redeemGiftCode(
         giftStatus: "GIFTED",
         giftedToClientId: recipientRootClientId,
       },
-    }),
-  ]);
+    });
+  } catch (err) {
+    // Что-то пошло не так после claim — возвращаем код в ACTIVE,
+    // чтобы юзер мог ретраить.
+    await prisma.giftCode.update({
+      where: { id: giftCode.id },
+      data: { status: "ACTIVE", redeemedById: null, redeemedAt: null },
+    }).catch(() => {});
+    throw err;
+  }
 
   // Логируем для обеих сторон
   await logGiftEvent(giftCode.creatorId, "GIFT_SENT", giftCode.secondarySubscriptionId, {

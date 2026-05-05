@@ -99,6 +99,8 @@ const SYSTEM_CONFIG_KEYS = [
   "default_referral_percent", "referral_percent_level_2", "referral_percent_level_3",
   "trial_days", "trial_squad_uuid", "trial_device_limit", "trial_traffic_limit",
   "service_name", "logo", "logo_bot", "favicon", "remna_client_url",
+  // UI design selector for client cabinet/mini app: "classic" (default) | "stealth"
+  "cabinet_design",
   "smtp_host", "smtp_port", "smtp_secure", "smtp_user", "smtp_password",
   "smtp_from_email", "smtp_from_name", "public_app_url",
   "telegram_bot_token", "telegram_bot_username", "bot_admin_telegram_ids",
@@ -107,9 +109,13 @@ const SYSTEM_CONFIG_KEYS = [
   "notification_topic_payments",
   "notification_topic_tickets",
   "platega_merchant_id", "platega_secret", "platega_methods", "payment_providers_config",
+  // Webhook secret для проверки HMAC-подписи от Platega (security fix против форджинга платежей).
+  "platega_webhook_secret",
   "gramads_api_key", // Gramads.net — ключ для рекламного кабинета "Продвижение VPN"
   "yoomoney_client_id", "yoomoney_client_secret", "yoomoney_receiver_wallet", "yoomoney_notification_secret",
   "yookassa_shop_id", "yookassa_secret_key", "yookassa_recurring_enabled",
+  // Basic-auth credentials для webhook YooKassa (security fix против форджинга платежей).
+  "yookassa_webhook_basic_user", "yookassa_webhook_basic_password",
   "cryptopay_api_token", "cryptopay_testnet",
   "heleket_merchant_id", "heleket_api_key",
   "lava_shop_id", "lava_secret_key", "lava_additional_key",
@@ -492,6 +498,7 @@ export async function getSystemConfig() {
     logo: map.logo || null,
     logoBot: map.logo_bot || null,
     favicon: map.favicon || null,
+    cabinetDesign: (map.cabinet_design === "stealth" ? "stealth" : "classic") as "classic" | "stealth",
     remnaClientUrl: map.remna_client_url || null,
     smtpHost: map.smtp_host || null,
     smtpPort: map.smtp_port != null && map.smtp_port !== "" ? parseInt(map.smtp_port, 10) : 587,
@@ -512,6 +519,7 @@ export async function getSystemConfig() {
     autoBackupEnabled: map.auto_backup_enabled === "true" || map.auto_backup_enabled === "1",
     autoBackupCron: (map.auto_backup_cron ?? "").trim() || null,
     plategaMerchantId: map.platega_merchant_id || null,
+    plategaWebhookSecret: map.platega_webhook_secret || null,
     plategaSecret: map.platega_secret || null,
     plategaMethods: parsePlategaMethods(map.platega_methods),
     paymentProviders: parsePaymentProviders(map.payment_providers_config),
@@ -522,6 +530,8 @@ export async function getSystemConfig() {
     yoomoneyNotificationSecret: map.yoomoney_notification_secret || null,
     yookassaShopId: map.yookassa_shop_id || null,
     yookassaSecretKey: map.yookassa_secret_key || null,
+    yookassaWebhookBasicUser: map.yookassa_webhook_basic_user || null,
+    yookassaWebhookBasicPassword: map.yookassa_webhook_basic_password || null,
     cryptopayApiToken: (map.cryptopay_api_token ?? "").trim() || null,
     cryptopayTestnet: map.cryptopay_testnet === "true" || map.cryptopay_testnet === "1",
     heleketMerchantId: (map.heleket_merchant_id ?? "").trim() || null,
@@ -760,7 +770,7 @@ function parseCategoryEmojis(raw: string | undefined): CategoryEmojis {
 
 export type PlategaMethodConfig = { id: number; enabled: boolean; label: string };
 const DEFAULT_PLATEGA_METHODS: PlategaMethodConfig[] = [
-  { id: 2, enabled: true, label: "СПБ" },
+  { id: 2, enabled: true, label: "СБП" },
   { id: 11, enabled: false, label: "Карты" },
   { id: 12, enabled: false, label: "Международный" },
   { id: 13, enabled: false, label: "Криптовалюта" },
@@ -807,10 +817,14 @@ function parsePlategaMethods(raw: string | undefined): PlategaMethodConfig[] {
     if (!Array.isArray(parsed)) return DEFAULT_PLATEGA_METHODS;
     return parsed.map((m: unknown) => {
       const x = m as Record<string, unknown>;
+      let label = typeof x.label === "string" ? x.label : String(x.id);
+      // Backward-compat: исправляем legacy опечатку СПБ → СБП (Система Быстрых Платежей).
+      // СПБ в этом контексте — ошибка; стандартное название — СБП.
+      if (label.trim() === "СПБ") label = "СБП";
       return {
         id: typeof x.id === "number" ? x.id : Number(x.id) || 2,
         enabled: Boolean(x.enabled),
-        label: typeof x.label === "string" ? x.label : String(x.id),
+        label,
       };
     });
   } catch {
@@ -998,6 +1012,7 @@ export async function getPublicConfig(forCloneBot?: Pick<Bot, "markupPercent" | 
     logo: full.logo,
     logoBot: full.logoBot ?? null,
     favicon: full.favicon,
+    cabinetDesign: full.cabinetDesign,
     remnaClientUrl: full.remnaClientUrl,
     publicAppUrl: full.publicAppUrl,
     telegramBotUsername: (forCloneBot?.username?.trim() || full.telegramBotUsername) ?? null,

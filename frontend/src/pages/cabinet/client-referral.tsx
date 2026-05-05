@@ -6,6 +6,8 @@ import { useCabinetConfig } from "@/contexts/cabinet-config";
 import { api } from "@/lib/api";
 import type { ClientReferralStats } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { useCabinetDesign } from "@/lib/use-cabinet-design";
+import { StealthReferral } from "@/pages/cabinet/stealth/stealth-referral";
 function formatMoney(amount: number, currency: string = "usd") {
   return new Intl.NumberFormat("ru-RU", {
     style: "currency",
@@ -16,6 +18,12 @@ function formatMoney(amount: number, currency: string = "usd") {
 }
 
 export function ClientReferralPage() {
+  const design = useCabinetDesign();
+  if (design === "stealth") return <StealthReferral />;
+  return <ClassicReferralPage />;
+}
+
+function ClassicReferralPage() {
   const { state } = useClientAuth();
   const config = useCabinetConfig();
   const token = state.token ?? null;

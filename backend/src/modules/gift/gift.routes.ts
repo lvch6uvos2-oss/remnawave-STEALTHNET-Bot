@@ -146,23 +146,19 @@ giftRouter.post("/buy", async (req: Request, res: Response) => {
   const basePrice = unitPrice + extrasTotal;
   const paySnap = await paymentSnapshotProduct(clientId, basePrice);
 
-  // Проверяем баланс
-  const client = await prisma.client.findUnique({
-    where: { id: clientId },
-    select: { balance: true },
-  });
-  if (!client) {
-    return res.status(404).json({ message: "Клиент не найден" });
-  }
-  if (client.balance < paySnap.amount) {
-    return res.status(400).json({ message: "Недостаточно средств на балансе" });
-  }
-
-  // Списываем баланс
-  await prisma.client.update({
-    where: { id: clientId },
+  // Реальный пиздец был тут: read balance=100 → check → 5 параллельных /gift/buy
+  // прокатили все 5 (баланс уехал на -400, гифтов на 500₽). Старая последовательность
+  // findUnique + if balance < x + update — TOCTOU как в учебнике.
+  //
+  // Атомик debit на SQL-уровне: либо ты единственный кто прошёл (count=1),
+  // либо count=0 и нет тебе гифта. Никаких параллельных побед.
+  const debit = await prisma.client.updateMany({
+    where: { id: clientId, balance: { gte: paySnap.amount } },
     data: { balance: { decrement: paySnap.amount } },
   });
+  if (debit.count === 0) {
+    return res.status(400).json({ message: "Недостаточно средств на балансе" });
+  }
 
   // Создаём дополнительную подписку с новой моделью устройств.
   const result = await createAdditionalSubscription(clientId, {

@@ -102,6 +102,8 @@ export async function getPublicConfig(): Promise<{
   yoomoneyEnabled?: boolean;
   yookassaEnabled?: boolean;
   cryptopayEnabled?: boolean;
+  heleketEnabled?: boolean;
+  lavaEnabled?: boolean;
   botButtons?: { id: string; visible: boolean; label: string; order: number; style?: string; iconCustomEmojiId?: string; onePerRow?: boolean; emojiKey?: string }[] | null;
   /** Кнопок в ряд в главном меню: 1 или 2 */
   botButtonsPerRow?: 1 | 2;
@@ -315,6 +317,22 @@ export async function createCryptopayPayment(
 ): Promise<{ paymentId: string; payUrl: string }> {
   const res = await fetchJson<{ paymentId: string; payUrl: string }>("/api/client/cryptopay/create-payment", { method: "POST", body, token });
   return { paymentId: res.paymentId, payUrl: res.payUrl };
+}
+
+/** Heleket — создать инвойс на крипту, вернуть ссылку на оплату */
+export async function createHeleketPayment(
+  token: string,
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string } }
+): Promise<{ paymentId: string; payUrl: string }> {
+  return fetchJson("/api/client/heleket/create-payment", { method: "POST", body, token });
+}
+
+/** LAVA Business — создать счёт (RUB: СБП / Карты / СберPay) */
+export async function createLavaPayment(
+  token: string,
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string } }
+): Promise<{ paymentId: string; payUrl: string }> {
+  return fetchJson("/api/client/lava/create-payment", { method: "POST", body, token });
 }
 
 /** Обновить профиль (язык, валюта) */

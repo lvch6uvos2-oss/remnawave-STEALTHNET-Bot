@@ -1400,6 +1400,7 @@ const updateSettingsSchema = z.object({
   logo: z.string().max(5_500_000).nullable().optional(),
   logoBot: z.string().max(5_500_000).nullable().optional(),
   favicon: z.string().max(5_500_000).nullable().optional(),
+  cabinetDesign: z.enum(["classic", "stealth"]).optional(),
   remnaClientUrl: z.string().max(2000).nullable().optional(),
   smtpHost: z.string().max(255).nullable().optional(),
   smtpPort: z.number().int().min(1).max(65535).optional(),
@@ -1422,6 +1423,8 @@ const updateSettingsSchema = z.object({
   plategaMerchantId: z.string().max(200).nullable().optional(),
   plategaSecret: z.string().max(500).nullable().optional(),
   plategaMethods: z.string().max(2000).nullable().optional(),
+  /** HMAC секрет для проверки подписи webhook'ов Platega — security fix против форджинга платежей. */
+  plategaWebhookSecret: z.string().max(500).nullable().optional(),
   paymentProvidersConfig: z.string().max(5000).nullable().optional(),
   gramadsApiKey: z.string().max(1000).nullable().optional(),
   yoomoneyClientId: z.string().max(200).nullable().optional(),
@@ -1430,6 +1433,10 @@ const updateSettingsSchema = z.object({
   yoomoneyNotificationSecret: z.string().max(500).nullable().optional(),
   yookassaShopId: z.string().max(200).nullable().optional(),
   yookassaSecretKey: z.string().max(500).nullable().optional(),
+  /** Basic-auth username для webhook ЮKassa — security fix против форджинга платежей. */
+  yookassaWebhookBasicUser: z.string().max(200).nullable().optional(),
+  /** Basic-auth password для webhook ЮKassa — security fix против форджинга платежей. */
+  yookassaWebhookBasicPassword: z.string().max(500).nullable().optional(),
   cryptopayApiToken: z.string().max(500).nullable().optional(),
   cryptopayTestnet: z.boolean().optional(),
   heleketMerchantId: z.string().max(500).nullable().optional(),
@@ -1767,6 +1774,13 @@ adminRouter.patch("/settings", async (req, res) => {
       update: { value: val },
     });
   }
+  if (updates.cabinetDesign !== undefined) {
+    await prisma.systemSetting.upsert({
+      where: { key: "cabinet_design" },
+      create: { key: "cabinet_design", value: updates.cabinetDesign },
+      update: { value: updates.cabinetDesign },
+    });
+  }
   if (updates.remnaClientUrl !== undefined) {
     const val = updates.remnaClientUrl ?? "";
     await prisma.systemSetting.upsert({
@@ -1863,6 +1877,10 @@ adminRouter.patch("/settings", async (req, res) => {
     const val = updates.plategaMethods ?? "";
     await prisma.systemSetting.upsert({ where: { key: "platega_methods" }, create: { key: "platega_methods", value: val }, update: { value: val } });
   }
+  if (updates.plategaWebhookSecret !== undefined) {
+    const val = updates.plategaWebhookSecret ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "platega_webhook_secret" }, create: { key: "platega_webhook_secret", value: val }, update: { value: val } });
+  }
   if (updates.paymentProvidersConfig !== undefined) {
     const val = updates.paymentProvidersConfig ?? "";
     await prisma.systemSetting.upsert({ where: { key: "payment_providers_config" }, create: { key: "payment_providers_config", value: val }, update: { value: val } });
@@ -1896,6 +1914,14 @@ adminRouter.patch("/settings", async (req, res) => {
   if (updates.yookassaSecretKey !== undefined) {
     const val = updates.yookassaSecretKey ?? "";
     await prisma.systemSetting.upsert({ where: { key: "yookassa_secret_key" }, create: { key: "yookassa_secret_key", value: val }, update: { value: val } });
+  }
+  if (updates.yookassaWebhookBasicUser !== undefined) {
+    const val = updates.yookassaWebhookBasicUser ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "yookassa_webhook_basic_user" }, create: { key: "yookassa_webhook_basic_user", value: val }, update: { value: val } });
+  }
+  if (updates.yookassaWebhookBasicPassword !== undefined) {
+    const val = updates.yookassaWebhookBasicPassword ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "yookassa_webhook_basic_password" }, create: { key: "yookassa_webhook_basic_password", value: val }, update: { value: val } });
   }
   if (updates.cryptopayApiToken !== undefined) {
     const val = updates.cryptopayApiToken ?? "";

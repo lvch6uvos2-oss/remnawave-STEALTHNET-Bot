@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
+import { useCabinetDesign } from "@/lib/use-cabinet-design";
+import { StealthSubscribe } from "@/pages/cabinet/stealth/stealth-subscribe";
 import {
   Wifi,
   Copy,
@@ -189,7 +191,17 @@ function getText(map: Record<string, string> | undefined, locale: string): strin
   return map[locale] || map.ru || map.en || Object.values(map)[0] || "";
 }
 
+/**
+ * Switcher: Stealth-design wizard или Classic. Хуки в каждой ветке вызываются
+ * только в соответствующем компоненте, поэтому правила хуков не нарушены.
+ */
 export function ClientSubscribePage() {
+  const design = useCabinetDesign();
+  if (design === "stealth") return <StealthSubscribe />;
+  return <ClassicSubscribePage />;
+}
+
+function ClassicSubscribePage() {
   const { state } = useClientAuth();
   const isMiniapp = useCabinetMiniapp();
   const token = state.token ?? null;

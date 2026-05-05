@@ -2373,6 +2373,7 @@ export type UpdateSettingsPayload = {
   logo?: string | null;
   logoBot?: string | null;
   favicon?: string | null;
+  cabinetDesign?: "classic" | "stealth";
   remnaClientUrl?: string | null;
   smtpHost?: string | null;
   smtpPort?: number;
@@ -2395,12 +2396,15 @@ export type UpdateSettingsPayload = {
   plategaMerchantId?: string | null;
   plategaSecret?: string | null;
   plategaMethods?: string | null;
+  plategaWebhookSecret?: string | null;
   yoomoneyClientId?: string | null;
   yoomoneyClientSecret?: string | null;
   yoomoneyReceiverWallet?: string | null;
   yoomoneyNotificationSecret?: string | null;
   yookassaShopId?: string | null;
   yookassaSecretKey?: string | null;
+  yookassaWebhookBasicUser?: string | null;
+  yookassaWebhookBasicPassword?: string | null;
   cryptopayApiToken?: string | null;
   cryptopayTestnet?: boolean;
   heleketMerchantId?: string | null;
@@ -2721,6 +2725,7 @@ export interface AdminSettings {
   logo?: string | null;
   logoBot?: string | null;
   favicon?: string | null;
+  cabinetDesign?: "classic" | "stealth";
   remnaClientUrl?: string | null;
   smtpHost?: string | null;
   smtpPort?: number;
@@ -3828,6 +3833,7 @@ export interface PublicConfig {
   serviceName: string;
   logo?: string | null;
   favicon?: string | null;
+  cabinetDesign?: "classic" | "stealth";
   remnaClientUrl?: string | null;
   publicAppUrl?: string | null;
   telegramBotUsername?: string | null;

@@ -7,9 +7,10 @@ import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
 import {
   Download, DollarSign, ShoppingCart, TrendingUp, Search, CalendarDays,
-  RefreshCw, CreditCard, User, Package, Hash, X, Receipt, Trash2,
+  RefreshCw, CreditCard, User, Package, Hash, X, Receipt, Trash2, MoreVertical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PaymentActionsDrawer } from "@/components/payment-actions-drawer";
 
 function fmtDate(s: string | null) {
   if (!s) return "—";
@@ -96,6 +97,7 @@ export function SalesReportPage() {
   const [searchApplied, setSearchApplied] = useState("");
   const [page, setPage] = useState(1);
   const [activePreset, setActivePreset] = useState<number | null>(null);
+  const [actionsPaymentId, setActionsPaymentId] = useState<string | null>(null);
   const limit = 50;
 
   const load = useCallback(async () => {
@@ -441,7 +443,15 @@ export function SalesReportPage() {
                   </div>
                 </div>
 
-                <div className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button
+                    variant="ghost" size="icon"
+                    className="h-8 w-8 rounded-full hover:bg-foreground/10"
+                    onClick={() => setActionsPaymentId(r.id)}
+                    title="Действия (refund / mark-failed / retry)"
+                  >
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
                   <Button
                     variant="ghost" size="icon"
                     className="h-8 w-8 rounded-full text-red-500 dark:text-red-400 hover:bg-red-500/10"
@@ -471,6 +481,13 @@ export function SalesReportPage() {
           </div>
         </Card>
       )}
+
+      {/* Payment actions drawer (refund / mark-failed / retry) */}
+      <PaymentActionsDrawer
+        paymentId={actionsPaymentId}
+        onClose={() => setActionsPaymentId(null)}
+        onRefreshList={() => load()}
+      />
     </div>
   );
 }

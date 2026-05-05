@@ -56,21 +56,27 @@ export async function markPaymentPaid(paymentId: string): Promise<MarkPaymentPai
     !payment.proxyTariffId &&
     !payment.singboxTariffId &&
     !isExtraOption;
+
+  // Idempotent flip: PENDING → PAID. Если параллельный webhook (или повторный
+  // ретрай провайдера) уже зафлипнул — count=0, сюда не лезем второй раз.
+  // Без этой проверки: 2 webhook'а на один payment → 2 раза +balance.increment
+  // (двойной топап). На бесподписном webhook'е (см. отчёт) — атакер мог фигачить
+  // /webhooks/platega с одним paymentId сколько хочет.
+  const flip = await prisma.payment.updateMany({
+    where: { id: paymentId, status: "PENDING" },
+    data: { status: "PAID", paidAt: now },
+  });
+  if (flip.count === 0) {
+    // Уже PAID параллельным запросом — выходим как идемпотент.
+    const updated = await prisma.payment.findUnique({ where: { id: paymentId } });
+    const result = await distributeReferralRewards(paymentId);
+    return { ok: true, payment: updated ?? payment, referral: result };
+  }
   if (isTopUp) {
-    await prisma.$transaction([
-      prisma.payment.update({
-        where: { id: paymentId },
-        data: { status: "PAID", paidAt: now },
-      }),
-      prisma.client.update({
-        where: { id: payment.clientId },
-        data: { balance: { increment: payment.amount } },
-      }),
-    ]);
-  } else {
-    await prisma.payment.update({
-      where: { id: paymentId },
-      data: { status: "PAID", paidAt: now },
+    // Списание баланса делаем ТОЛЬКО если flip нам "достался" (count=1).
+    await prisma.client.update({
+      where: { id: payment.clientId },
+      data: { balance: { increment: payment.amount } },
     });
   }
 

@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { FloatingChat } from "@/components/floating-chat";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DashboardTour } from "@/components/tour/dashboard-tour";
+import { useCabinetDesign } from "@/lib/use-cabinet-design";
+import { StealthLayout } from "@/pages/cabinet/stealth/stealth-layout";
 
 function formatMoney(amount: number, currency: string) {
   return new Intl.NumberFormat("ru-RU", {
@@ -726,6 +728,19 @@ export function CabinetLayout() {
   const isAuthPage = location.pathname === "/cabinet/login" || location.pathname === "/cabinet/register";
   const isLoggedIn = Boolean(state.token);
   const needs2FA = !isLoggedIn && Boolean(state.pending2FAToken);
+
+  // Чтение нового дизайна происходит асинхронно, чтобы не задерживать первый
+  // рендер. Первое мгновение — classic (или то что в localStorage-кэше),
+  // потом пере-рендер если в БД задано "stealth".
+  const design = useCabinetDesign();
+
+  // Если выбран Stealth — отдаём управление новому layout'у. Он сам рендерит
+  // chrome (network фон + bottom-tabs + header) и Outlet.
+  // ВАЖНО: для auth/2fa-страниц используем classic — их Stealth-дизайн пока
+  // не оформлен (Phase 2/3).
+  if (design === "stealth" && isLoggedIn && !needs2FA && !isAuthPage) {
+    return <StealthLayout />;
+  }
 
   return (
     <>

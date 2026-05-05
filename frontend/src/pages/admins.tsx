@@ -7,8 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { motion } from "framer-motion";
-import { UserCog, Plus, Pencil, Trash2, Loader2, Crown, X, Shield } from "lucide-react";
+import { UserCog, Plus, Pencil, Trash2, Loader2, Crown, X, Shield, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AdminPermissionsDialog } from "@/components/admin-permissions-dialog";
 
 export function AdminsPage() {
   const { state } = useAuth();
@@ -23,6 +24,7 @@ export function AdminsPage() {
   const [allowedSections, setAllowedSections] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [permsDialog, setPermsDialog] = useState<{ id: string; email: string } | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -209,6 +211,9 @@ export function AdminsPage() {
                   <td className="px-4 py-3">
                     {item.role === "MANAGER" && (
                       <div className="flex gap-1 justify-end">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => setPermsDialog({ id: item.id, email: item.email })} title="Granular permissions">
+                          <Lock className="h-3.5 w-3.5" />
+                        </Button>
                         <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => openEdit(item)} title="Изменить">
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
@@ -381,6 +386,13 @@ export function AdminsPage() {
           </Card>
         </motion.div>
       )}
+
+      <AdminPermissionsDialog
+        open={permsDialog !== null}
+        adminId={permsDialog?.id ?? null}
+        adminEmail={permsDialog?.email}
+        onClose={() => setPermsDialog(null)}
+      />
     </div>
   );
 }

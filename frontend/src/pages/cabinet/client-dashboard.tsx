@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
+import { useCabinetDesign } from "@/lib/use-cabinet-design";
+import { StealthDashboard } from "@/pages/cabinet/stealth/stealth-dashboard";
 import {
   
   Package,
@@ -110,7 +112,18 @@ function parseSubscription(sub: unknown): {
   };
 }
 
+/**
+ * Wrapper: switcher между Classic-версией главной и новым Stealth-дизайном.
+ * Делается тонким wrapper'ом, чтобы не нарушать правила хуков (хуки реальной
+ * страницы вызываются только в той ветке которую рендерим).
+ */
 export function ClientDashboardPage() {
+  const design = useCabinetDesign();
+  if (design === "stealth") return <StealthDashboard />;
+  return <ClassicDashboardPage />;
+}
+
+function ClassicDashboardPage() {
   const { t } = useTranslation();
   const { state, refreshProfile } = useClientAuth();
   const config = useCabinetConfig();

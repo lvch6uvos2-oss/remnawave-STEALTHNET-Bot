@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/auth";
 import { api, type ContestListItem, type ContestDetail, type ContestFormPayload, type ContestPrizeType, type ContestDrawType } from "@/lib/api";
+import { contestExtrasApi } from "@/lib/contest-extras-api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -278,6 +279,44 @@ export function ContestsPage() {
       setError(e instanceof Error ? e.message : "Ошибка розыгрыша");
     } finally {
       setDrawingId(null);
+    }
+  };
+
+  const undoDraw = async (id: string) => {
+    if (!confirm("Отменить розыгрыш? Balance-призы будут возвращены клиентам, vpn_days и custom призы остаются — отзывайте вручную.")) return;
+    setDrawingId(id);
+    try {
+      const r = await contestExtrasApi.undoDraw(token, id);
+      await load();
+      const d = await api.getContest(token, id);
+      setDetail(d);
+      alert(r.message + (r.refunded > 0 ? ` (возвращено ${r.refunded})` : ""));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка отмены розыгрыша");
+    } finally {
+      setDrawingId(null);
+    }
+  };
+
+  const applyPrize = async (contestId: string, winnerId: string) => {
+    try {
+      const r = await contestExtrasApi.applyPrize(token, contestId, winnerId);
+      const d = await api.getContest(token, contestId);
+      setDetail(d);
+      alert(r.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка применения приза");
+    }
+  };
+
+  const removeWinner = async (contestId: string, winnerId: string) => {
+    if (!confirm("Удалить победителя? Balance-приз (если был применён) будет возвращён.")) return;
+    try {
+      await contestExtrasApi.removeWinner(token, contestId, winnerId);
+      const d = await api.getContest(token, contestId);
+      setDetail(d);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Ошибка удаления победителя");
     }
   };
 
@@ -786,24 +825,63 @@ export function ContestsPage() {
               )}
               {detail?.winners && detail.winners.length > 0 && (
                 <div className="rounded-2xl border border-violet-500/20 bg-violet-500/5 backdrop-blur-md p-4">
-                  <p className="text-sm font-medium text-violet-500 dark:text-violet-400 mb-2 flex items-center gap-1.5">
-                    <Award className="h-4 w-4" /> Победители
-                  </p>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-sm font-medium text-violet-500 dark:text-violet-400 flex items-center gap-1.5">
+                      <Award className="h-4 w-4" /> Победители
+                    </p>
+                    {detail.status === "drawn" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => undoDraw(detail.id)}
+                        disabled={drawingId === detail.id}
+                        className="h-7 gap-1.5 text-xs text-orange-600 dark:text-orange-400 border-orange-500/30 hover:bg-orange-500/10"
+                      >
+                        <X className="h-3 w-3" /> Отменить розыгрыш
+                      </Button>
+                    )}
+                  </div>
                   <ul className="text-sm space-y-1.5">
-                    {detail.winners.map((w) => (
-                      <li key={w.place} className="rounded-lg bg-foreground/[0.04] dark:bg-white/[0.04] border border-white/5 px-3 py-2 flex flex-wrap items-center gap-2">
-                        <span className="inline-flex items-center rounded-full bg-violet-500/10 text-violet-500 dark:text-violet-400 border border-violet-500/20 px-2 py-0.5 text-[11px] font-semibold">
-                          {w.place} место
-                        </span>
-                        <span className="font-medium">{w.client?.telegramUsername ?? w.client?.email ?? w.client?.id}</span>
-                        <span className="text-muted-foreground">— {w.prizeType}: {w.prizeValue}</span>
-                        {w.appliedAt && (
-                          <span className="inline-flex items-center rounded-full bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium">
-                            начислено
+                    {detail.winners.map((w) => {
+                      const winnerObj = w as typeof w & { id?: string };
+                      const wId = winnerObj.id;
+                      return (
+                        <li key={w.place} className="rounded-lg bg-foreground/[0.04] dark:bg-white/[0.04] border border-white/5 px-3 py-2 flex flex-wrap items-center gap-2">
+                          <span className="inline-flex items-center rounded-full bg-violet-500/10 text-violet-500 dark:text-violet-400 border border-violet-500/20 px-2 py-0.5 text-[11px] font-semibold">
+                            {w.place} место
                           </span>
-                        )}
-                      </li>
-                    ))}
+                          <span className="font-medium">{w.client?.telegramUsername ?? w.client?.email ?? w.client?.id}</span>
+                          <span className="text-muted-foreground">— {w.prizeType}: {w.prizeValue}</span>
+                          {w.appliedAt ? (
+                            <span className="inline-flex items-center rounded-full bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-[10px] font-medium">
+                              начислено
+                            </span>
+                          ) : (
+                            wId && (
+                              <Button
+                                size="sm"
+                                onClick={() => applyPrize(detail.id, wId)}
+                                className="h-6 ml-auto gap-1 px-2 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white"
+                              >
+                                <Sparkles className="h-3 w-3" />
+                                Применить
+                              </Button>
+                            )
+                          )}
+                          {wId && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => removeWinner(detail.id, wId)}
+                              className="h-6 w-6 p-0 text-red-500 hover:bg-red-500/10 hover:text-red-600"
+                              title="Удалить победителя"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               )}

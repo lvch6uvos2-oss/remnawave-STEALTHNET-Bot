@@ -17,6 +17,17 @@ import { DashboardPage } from "@/pages/dashboard";
 import { ClientsPage } from "@/pages/clients";
 import { TariffsPage } from "@/pages/tariffs";
 import { SettingsPage } from "@/pages/settings";
+import { LandingEditorPage } from "@/pages/landing-editor";
+import { LandingPreviewPage } from "@/pages/landing-preview";
+import { AdminAuditPage } from "@/pages/admin-audit";
+import { AdminWebhookInboxPage } from "@/pages/admin-webhook-inbox";
+import { AdminDiagnosticsPage } from "@/pages/admin-diagnostics";
+import { AdminBusinessAnalyticsPage } from "@/pages/admin-business-analytics";
+import { AdminAntiFraudPage } from "@/pages/admin-anti-fraud";
+import { AdminEmailTemplatesPage } from "@/pages/admin-email-templates";
+import { AdminBotMessagesPage } from "@/pages/admin-bot-messages";
+import { AdminBotConversationsPage } from "@/pages/admin-bot-conversations";
+import { CmdKPalette } from "@/components/cmd-k-palette";
 import { PromoPage } from "@/pages/promo";
 import { PromoCodesPage } from "@/pages/promo-codes";
 import { AnalyticsPage } from "@/pages/analytics";
@@ -159,7 +170,7 @@ function RootRoute() {
     );
   }
 
-  if (config?.landingEnabled && config?.landingConfig) {
+  if (config?.landingEnabled) {
     return <LandingPage config={config} />;
   }
 
@@ -194,7 +205,10 @@ function AppRoutes() {
         path="/admin"
         element={
           <RequireAuth>
-            <DashboardLayout />
+            <>
+              <CmdKPalette />
+              <DashboardLayout />
+            </>
           </RequireAuth>
         }
       >
@@ -209,6 +223,16 @@ function AppRoutes() {
         <Route path="clients" element={<ForceChangePassword><ClientsPage /></ForceChangePassword>} />
         <Route path="tariffs" element={<ForceChangePassword><TariffsPage /></ForceChangePassword>} />
         <Route path="settings" element={<ForceChangePassword><SettingsPage /></ForceChangePassword>} />
+        <Route path="landing-editor" element={<ForceChangePassword><LandingEditorPage /></ForceChangePassword>} />
+        <Route path="landing-preview" element={<ForceChangePassword><LandingPreviewPage /></ForceChangePassword>} />
+        <Route path="audit" element={<ForceChangePassword><AdminAuditPage /></ForceChangePassword>} />
+        <Route path="webhook-inbox" element={<ForceChangePassword><AdminWebhookInboxPage /></ForceChangePassword>} />
+        <Route path="diagnostics" element={<ForceChangePassword><AdminDiagnosticsPage /></ForceChangePassword>} />
+        <Route path="business-analytics" element={<ForceChangePassword><AdminBusinessAnalyticsPage /></ForceChangePassword>} />
+        <Route path="anti-fraud" element={<ForceChangePassword><AdminAntiFraudPage /></ForceChangePassword>} />
+        <Route path="email-templates" element={<ForceChangePassword><AdminEmailTemplatesPage /></ForceChangePassword>} />
+        <Route path="bot-messages" element={<ForceChangePassword><AdminBotMessagesPage /></ForceChangePassword>} />
+        <Route path="bot-conversations" element={<ForceChangePassword><AdminBotConversationsPage /></ForceChangePassword>} />
         <Route path="promo" element={<ForceChangePassword><PromoPage /></ForceChangePassword>} />
         <Route path="promo-codes" element={<ForceChangePassword><PromoCodesPage /></ForceChangePassword>} />
         <Route path="analytics" element={<ForceChangePassword><AnalyticsPage /></ForceChangePassword>} />
@@ -411,21 +435,79 @@ function TitleAndThemeSync() {
     else if (location.pathname.startsWith("/cabinet")) suffix = " — Кабинет";
     document.title = (base + suffix).trim() || suffix.replace(/^ — /, "").trim();
 
+    // Custom favicon: убираем все статические <link rel="icon"> из index.html
+    // (svg, 32px, 16px, apple-touch и иконки PWA-манифеста), потому что
+    // браузер выбирает «лучший» по размеру, и PWA-иконка может перебить
+    // пользовательский favicon. Помечаем добавленные нами линки атрибутом
+    // data-custom-favicon, чтобы при обновлении не плодить дубли.
+    //
+    // Также подменяем <link rel="manifest"> на динамический эндпоинт
+    // /api/public/manifest.webmanifest когда есть custom favicon — иначе
+    // PWA install/Add-to-home-screen покажет дефолтную иконку сборки.
     const favicon = config?.favicon ?? null;
-    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    const existingCustom = document.querySelectorAll<HTMLLinkElement>('link[data-custom-favicon="1"]');
+    const builtin = document.querySelectorAll<HTMLLinkElement>(
+      'link[rel="icon"]:not([data-custom-favicon]), link[rel="apple-touch-icon"]:not([data-custom-favicon]), link[rel="shortcut icon"]:not([data-custom-favicon]), link[rel="mask-icon"]:not([data-custom-favicon])'
+    );
+
     if (favicon) {
-      if (!link) {
-        link = document.createElement("link");
-        link.rel = "icon";
-        document.head.appendChild(link);
+      // Убираем дефолтные иконки сборки (favicon-16/32, apple-touch, svg).
+      builtin.forEach((el) => el.remove());
+      existingCustom.forEach((el) => el.remove());
+
+      const detectType = (src: string): string => {
+        if (src.startsWith("data:image/")) {
+          const m = src.match(/data:image\/(\w+)/);
+          return m ? `image/${m[1].toLowerCase()}` : "image/png";
+        }
+        if (/\.svg(\?|$)/i.test(src)) return "image/svg+xml";
+        if (/\.png(\?|$)/i.test(src)) return "image/png";
+        if (/\.(jpg|jpeg)(\?|$)/i.test(src)) return "image/jpeg";
+        if (/\.webp(\?|$)/i.test(src)) return "image/webp";
+        if (/\.ico(\?|$)/i.test(src)) return "image/x-icon";
+        return "image/png";
+      };
+      const type = detectType(favicon);
+
+      // Главный favicon — без sizes, чтобы браузер не пытался выбрать «другой подходящий»
+      const main = document.createElement("link");
+      main.rel = "icon";
+      main.type = type;
+      main.href = favicon;
+      main.setAttribute("data-custom-favicon", "1");
+      document.head.appendChild(main);
+
+      // apple-touch-icon — отдельной иконкой, чтобы home-screen на iOS тоже взял пользовательский favicon
+      const apple = document.createElement("link");
+      apple.rel = "apple-touch-icon";
+      apple.href = favicon;
+      apple.setAttribute("data-custom-favicon", "1");
+      document.head.appendChild(apple);
+    } else {
+      // Сбросили favicon в админке — возвращаем дефолтные если их вдруг убрали custom-логикой раньше
+      existingCustom.forEach((el) => el.remove());
+      if (document.querySelectorAll('link[rel="icon"]').length === 0) {
+        const def = document.createElement("link");
+        def.rel = "icon";
+        def.type = "image/svg+xml";
+        def.href = "/favicon.svg";
+        document.head.appendChild(def);
       }
-      link.href = favicon;
-      if (favicon.startsWith("data:image/")) {
-        const m = favicon.match(/data:image\/(\w+)/);
-        link.type = m ? `image/${m[1]}` : "image/png";
-      } else {
-        link.type = "image/png";
-      }
+    }
+
+    // Манифест: при custom favicon переключаем на динамический эндпоинт.
+    // Когда favicon пустой — оставляем статический манифест (дефолтное брендирование).
+    const manifestLink = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    const dynamicManifestUrl = "/api/public/manifest.webmanifest";
+    const staticManifestUrl = "/manifest.webmanifest";
+    const wantUrl = favicon ? dynamicManifestUrl : staticManifestUrl;
+    if (manifestLink && manifestLink.getAttribute("href") !== wantUrl) {
+      manifestLink.href = wantUrl;
+    } else if (!manifestLink) {
+      const ml = document.createElement("link");
+      ml.rel = "manifest";
+      ml.href = wantUrl;
+      document.head.appendChild(ml);
     }
   }, [location.pathname, config]);
 

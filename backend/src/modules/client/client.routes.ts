@@ -1546,6 +1546,23 @@ clientRouter.post("/trial", async (req, res) => {
       });
     }
 
+    // Тут была дыра: middleware подсасывает trialUsed=false и кладёт его в req.client.
+    // Между проверкой `if (client.trialUsed)` сверху и финальным update'ом флага
+    // на самом дне хендлера — сотни мс на Remna API. За это время второй запрос
+    // успевает влезть с тем же стейтом и сделать ещё один триал. Юзеры так
+    // активировали по 2 триала параллельно (см. отчёт о баге).
+    //
+    // Фикс — атомик flip на уровне SQL: UPDATE ... WHERE trialUsed = false.
+    // PG лочит строку и сериализует — кому повезло, у того count = 1, остальные
+    // получают 0 и идут лесом с 409.
+    const trialGuardA = await prisma.client.updateMany({
+      where: { id: client.id, trialUsed: false },
+      data: { trialUsed: true },
+    });
+    if (trialGuardA.count === 0) {
+      return res.status(409).json({ message: "Бесплатный тест уже активирован" });
+    }
+
     const expireAt = calculateExpireAt(currentExpireAt, trialDays);
 
     const updateRes = await remnaUpdateUser({
@@ -1556,6 +1573,9 @@ clientRouter.post("/trial", async (req, res) => {
       activeInternalSquads: [trialSquadUuid],
     });
     if (updateRes.error) {
+      // Remna кинула — откатываем флаг, пусть юзер ретраит. Иначе мы у него
+      // отняли триал, а активации не сделали — на ровном месте обидится.
+      await prisma.client.update({ where: { id: client.id }, data: { trialUsed: false } }).catch(() => {});
       return res.status(updateRes.status >= 400 ? updateRes.status : 500).json({ message: updateRes.error });
     }
   } else {
@@ -1583,6 +1603,16 @@ clientRouter.post("/trial", async (req, res) => {
       if (existingUuid) currentExpireAt = extractCurrentExpireAt(byUsernameRes.data);
     }
 
+    // Та же история, что в ветке выше — флипаем флаг ДО любого побочного
+    // эффекта в Remna. Без этого 2 параллельных запроса оба создавали юзера.
+    const trialGuardB = await prisma.client.updateMany({
+      where: { id: client.id, trialUsed: false },
+      data: { trialUsed: true },
+    });
+    if (trialGuardB.count === 0) {
+      return res.status(409).json({ message: "Бесплатный тест уже активирован" });
+    }
+
     const expireAt = calculateExpireAt(currentExpireAt, trialDays);
 
     if (!existingUuid) {
@@ -1600,6 +1630,8 @@ clientRouter.post("/trial", async (req, res) => {
     }
 
     if (!existingUuid) {
+      // Remna create обосрался — откатываем флаг, юзер ретраит.
+      await prisma.client.update({ where: { id: client.id }, data: { trialUsed: false } }).catch(() => {});
       return res.status(502).json({ message: "Ошибка создания пользователя" });
     }
 
@@ -1613,16 +1645,14 @@ clientRouter.post("/trial", async (req, res) => {
     workingUuid = existingUuid;
     await prisma.client.update({
       where: { id: client.id },
-      data: { remnawaveUuid: existingUuid, trialUsed: true },
+      data: { remnawaveUuid: existingUuid }, // trialUsed already set by atomic guard
     });
     const updated = await prisma.client.findUnique({ where: { id: client.id }, select: { id: true, email: true, telegramId: true, telegramUsername: true, preferredLang: true, preferredCurrency: true, balance: true, referralCode: true, remnawaveUuid: true, trialUsed: true, isBlocked: true, autoRenewEnabled: true, autoRenewTariffId: true, createdAt: true, onboardingCompleted: true } });
     return res.json({ message: "Бесплатный тест активирован", client: updated ? toClientShape(updated) : null });
   }
 
-  await prisma.client.update({
-    where: { id: client.id },
-    data: { trialUsed: true },
-  });
+  // Финальный update trialUsed убран — атомик guard выше уже всё сделал.
+  // Отдельный write был чисто легаси-страховкой.
   const updated = await prisma.client.findUnique({ where: { id: client.id }, select: { id: true, email: true, telegramId: true, telegramUsername: true, preferredLang: true, preferredCurrency: true, balance: true, referralCode: true, remnawaveUuid: true, trialUsed: true, isBlocked: true, autoRenewEnabled: true, autoRenewTariffId: true, createdAt: true, onboardingCompleted: true } });
   return res.json({ message: "Бесплатный тест активирован", client: updated ? toClientShape(updated) : null });
 });
@@ -1636,19 +1666,66 @@ clientRouter.post("/promo/activate", async (req, res) => {
   const group = await prisma.promoGroup.findUnique({ where: { code: code.trim() } });
   if (!group || !group.isActive) return res.status(404).json({ message: "Промокод не найден или неактивен" });
 
-  // Проверяем, не активировал ли уже этот клиент эту промо-группу
-  const existing = await prisma.promoActivation.findUnique({
-    where: { promoGroupId_clientId: { promoGroupId: group.id, clientId: client.id } },
-  });
-  if (existing) return res.status(400).json({ message: "Вы уже активировали этот промокод" });
-
-  // Проверяем лимит активаций
-  if (group.maxActivations > 0) {
-    const count = await prisma.promoActivation.count({ where: { promoGroupId: group.id } });
-    if (count >= group.maxActivations) return res.status(400).json({ message: "Лимит активаций промокода исчерпан" });
+  // Раньше было: existing-check + count(maxActivations) + потом Remna API + потом
+  // promoActivation.create в самом конце. Между чтением count и create — секунды
+  // на Remna. Параллельные /promo/activate от разных юзеров пробивали maxActivations
+  // (все видели count<max → все активировали → группа уехала за лимит).
+  //
+  // Фикс — резервируем активацию атомарно ПЕРЕД Remna, через Serializable
+  // транзакцию: count → если ок → create. PG сериализует — лишние конкуренты
+  // получат serialization_failure и нашу 400. Существующая activation для того
+  // же юзера ловится @@unique(promoGroupId, clientId) → P2002 → 400.
+  let activationCreated = false;
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Дубль той же связки (юзер уже активировал этот промокод) — DB словит
+      // P2002 на create ниже. Тут — отдельная ранняя проверка ради вменяемого
+      // сообщения.
+      const existing = await tx.promoActivation.findUnique({
+        where: { promoGroupId_clientId: { promoGroupId: group.id, clientId: client.id } },
+      });
+      if (existing) {
+        throw new Error("DUPLICATE_USER_ACTIVATION");
+      }
+      if (group.maxActivations > 0) {
+        const count = await tx.promoActivation.count({ where: { promoGroupId: group.id } });
+        if (count >= group.maxActivations) {
+          throw new Error("MAX_ACTIVATIONS_EXCEEDED");
+        }
+      }
+      await tx.promoActivation.create({
+        data: { promoGroupId: group.id, clientId: client.id },
+      });
+      activationCreated = true;
+    }, { isolationLevel: "Serializable" });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg === "DUPLICATE_USER_ACTIVATION") {
+      return res.status(400).json({ message: "Вы уже активировали этот промокод" });
+    }
+    if (msg === "MAX_ACTIVATIONS_EXCEEDED") {
+      return res.status(400).json({ message: "Лимит активаций промокода исчерпан" });
+    }
+    // P2002 (уник нарушен), serialization_failure, или что-то ещё — трактуем как
+    // конкурент уже занял место.
+    if ((e as { code?: string })?.code === "P2002") {
+      return res.status(400).json({ message: "Вы уже активировали этот промокод" });
+    }
+    if ((e as { code?: string })?.code === "P2034") {
+      return res.status(409).json({ message: "Слишком много одновременных запросов, попробуйте ещё раз" });
+    }
+    throw e;
   }
 
-  if (!isRemnaConfigured()) return res.status(503).json({ message: "Сервис временно недоступен" });
+  if (!isRemnaConfigured()) {
+    // Откатываем резервацию: Remna не настроен, активацию делать нечем.
+    if (activationCreated) {
+      await prisma.promoActivation.delete({
+        where: { promoGroupId_clientId: { promoGroupId: group.id, clientId: client.id } },
+      }).catch(() => {});
+    }
+    return res.status(503).json({ message: "Сервис временно недоступен" });
+  }
 
   const trafficLimitBytes = Number(group.trafficLimitBytes);
   const hwidDeviceLimit = group.deviceLimit ?? null;
@@ -1722,10 +1799,8 @@ clientRouter.post("/promo/activate", async (req, res) => {
     });
   }
 
-  // Записываем активацию
-  await prisma.promoActivation.create({
-    data: { promoGroupId: group.id, clientId: client.id },
-  });
+  // Запись об активации уже создана выше в Serializable-транзакции до Remna —
+  // повторный create тут НЕ нужен.
 
   return res.json({ message: "Промокод активирован! Подписка подключена." });
 });
@@ -2491,7 +2566,17 @@ clientRouter.post("/payments/balance", async (req, res) => {
     const pd = await applyPersonalDiscount(tariff.price, clientRaw.id);
     const finalProxyPrice = pd.amount;
     const snap = await paymentSnapshotProduct(clientRaw.id, finalProxyPrice);
-    if (clientDb.balance < snap.amount) {
+    // Тут была классика: read balance → если хватает → списываем → создаём payment+слоты.
+    // Между read и UPDATE — несколько мс. Юзеры угоняли до 30 параллельных запросов
+    // и баланс уезжал глубоко в минус (на проде 100₽ → -2900₽ за подписку, см. отчёт).
+    //
+    // Чиним SQL'ной атомарностью: WHERE balance >= amount. Либо UPDATE прошёл (count=1)
+    // и ты списан корректно, либо count=0 — иди говори что денег нет.
+    const debit = await prisma.client.updateMany({
+      where: { id: clientRaw.id, balance: { gte: snap.amount } },
+      data: { balance: { decrement: snap.amount } },
+    });
+    if (debit.count === 0) {
       return res.status(400).json({ message: `Недостаточно средств. Баланс: ${clientDb.balance.toFixed(2)}, нужно: ${snap.amount.toFixed(2)}` });
     }
     const payment = await createPayment({
@@ -2513,18 +2598,19 @@ clientRouter.post("/payments/balance", async (req, res) => {
       }),
     });
     const proxyResult = await createProxySlotsByPaymentId(payment.id);
-    if (!proxyResult.ok) return res.status(proxyResult.status).json({ message: proxyResult.error });
-    await prisma.client.update({
-      where: { id: clientRaw.id },
-      data: { balance: { decrement: snap.amount } },
-    });
+    if (!proxyResult.ok) {
+      // Слоты не вылетели — возвращаем бабки на баланс.
+      await prisma.client.update({ where: { id: clientRaw.id }, data: { balance: { increment: snap.amount } } }).catch(() => {});
+      return res.status(proxyResult.status).json({ message: proxyResult.error });
+    }
     const { distributeReferralRewards } = await import("../referral/referral.service.js");
     await distributeReferralRewards(payment.id).catch((e) => console.error("[referral] Error:", e));
     const { notifyProxySlotsCreated } = await import("../notification/telegram-notify.service.js");
     await notifyProxySlotsCreated(clientRaw.id, proxyResult.slotIds, tariff.name).catch(() => {});
+    const after = await prisma.client.findUnique({ where: { id: clientRaw.id }, select: { balance: true } });
     return res.json({
       message: `Прокси «${tariff.name}» оплачены! Списано ${snap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`,
-      newBalance: clientDb.balance - snap.amount,
+      newBalance: after?.balance ?? clientDb.balance - snap.amount,
     });
   }
 
@@ -2536,7 +2622,12 @@ clientRouter.post("/payments/balance", async (req, res) => {
     const pd = await applyPersonalDiscount(tariff.price, clientRaw.id);
     const finalSingboxPrice = pd.amount;
     const singSnap = await paymentSnapshotProduct(clientRaw.id, finalSingboxPrice);
-    if (clientDb.balance < singSnap.amount) {
+    // Та же история, что в proxy-ветке: атомик debit вместо read+check+write.
+    const debit = await prisma.client.updateMany({
+      where: { id: clientRaw.id, balance: { gte: singSnap.amount } },
+      data: { balance: { decrement: singSnap.amount } },
+    });
+    if (debit.count === 0) {
       return res.status(400).json({ message: `Недостаточно средств. Баланс: ${clientDb.balance.toFixed(2)}, нужно: ${singSnap.amount.toFixed(2)}` });
     }
     const payment = await createPayment({
@@ -2558,18 +2649,19 @@ clientRouter.post("/payments/balance", async (req, res) => {
       }),
     });
     const singboxResult = await createSingboxSlotsByPaymentId(payment.id);
-    if (!singboxResult.ok) return res.status(singboxResult.status).json({ message: singboxResult.error });
-    await prisma.client.update({
-      where: { id: clientRaw.id },
-      data: { balance: { decrement: singSnap.amount } },
-    });
+    if (!singboxResult.ok) {
+      // Слоты Sing-box не вылетели — деньги обратно на баланс.
+      await prisma.client.update({ where: { id: clientRaw.id }, data: { balance: { increment: singSnap.amount } } }).catch(() => {});
+      return res.status(singboxResult.status).json({ message: singboxResult.error });
+    }
     const { distributeReferralRewards } = await import("../referral/referral.service.js");
     await distributeReferralRewards(payment.id).catch((e) => console.error("[referral] Error:", e));
     const { notifySingboxSlotsCreated } = await import("../notification/telegram-notify.service.js");
     await notifySingboxSlotsCreated(clientRaw.id, singboxResult.slotIds, tariff.name).catch(() => {});
+    const after = await prisma.client.findUnique({ where: { id: clientRaw.id }, select: { balance: true } });
     return res.json({
       message: `Доступы «${tariff.name}» оплачены! Списано ${singSnap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`,
-      newBalance: clientDb.balance - singSnap.amount,
+      newBalance: after?.balance ?? clientDb.balance - singSnap.amount,
     });
   }
 
@@ -2635,7 +2727,16 @@ clientRouter.post("/payments/balance", async (req, res) => {
   const clientDb = await prisma.client.findUnique({ where: { id: clientRaw.id } });
   if (!clientDb) return res.status(401).json({ message: "Unauthorized" });
   const tariffPaySnap = await paymentSnapshotProduct(clientRaw.id, finalPrice);
-  if (clientDb.balance < tariffPaySnap.amount) {
+
+  // Атомик debit ДО активации в Remna. Раньше было: проверили баланс, активировали
+  // тариф, потом списали. Между check и debit юзер мог нажать "купить" 30 раз —
+  // получал 30 продлений за 100₽. Теперь сначала списываем, и если Remna откажет —
+  // откатываем взад.
+  const debit = await prisma.client.updateMany({
+    where: { id: clientRaw.id, balance: { gte: tariffPaySnap.amount } },
+    data: { balance: { decrement: tariffPaySnap.amount } },
+  });
+  if (debit.count === 0) {
     return res.status(400).json({ message: `Недостаточно средств. Баланс: ${clientDb.balance.toFixed(2)}, нужно: ${tariffPaySnap.amount.toFixed(2)}` });
   }
 
@@ -2646,13 +2747,12 @@ clientRouter.post("/payments/balance", async (req, res) => {
     selectedOption ? { id: selectedOption.id, durationDays: selectedOption.durationDays, price: selectedOption.price } : undefined,
     requestedExtras,
   );
-  if (!activateResult.ok) return res.status(activateResult.status).json({ message: activateResult.error });
-
-  // Списываем баланс
-  await prisma.client.update({
-    where: { id: clientRaw.id },
-    data: { balance: { decrement: tariffPaySnap.amount } },
-  });
+  if (!activateResult.ok) {
+    // Remna послала — возвращаем бабки.
+    await prisma.client.update({ where: { id: clientRaw.id }, data: { balance: { increment: tariffPaySnap.amount } } }).catch(() => {});
+    return res.status(activateResult.status).json({ message: activateResult.error });
+  }
+  // NB: списание уже сделано атомарно выше — повторного decrement тут НЕ надо.
 
   // Создаём запись об оплате
   const orderId = randomUUID();
@@ -2779,7 +2879,16 @@ clientRouter.post("/custom-build/pay-balance", async (req, res) => {
   const clientDb = await prisma.client.findUnique({ where: { id: clientRaw.id } });
   if (!clientDb) return res.status(401).json({ message: "Unauthorized" });
   const customSnap = await paymentSnapshotProduct(clientRaw.id, finalPrice);
-  if (clientDb.balance < customSnap.amount) {
+
+  // Тот же TOCTOU, что в /payments/balance: read balance → check → activate (Remna,
+  // сотни мс) → write decrement. Параллельные запросы все проходят check со стейтом
+  // ДО первого debit'а — баланс уезжал в минус. Чиним атомарным debit'ом ДО
+  // activate; при ошибке активации — refund.
+  const debit = await prisma.client.updateMany({
+    where: { id: clientRaw.id, balance: { gte: customSnap.amount } },
+    data: { balance: { decrement: customSnap.amount } },
+  });
+  if (debit.count === 0) {
     return res.status(400).json({
       message: `Недостаточно средств. Баланс: ${clientDb.balance.toFixed(2)}, нужно: ${customSnap.amount.toFixed(2)} ${cfg.currency.toUpperCase()}`,
     });
@@ -2815,24 +2924,24 @@ clientRouter.post("/custom-build/pay-balance", async (req, res) => {
 
   const activation = await activateTariffByPaymentId(payment.id);
   if (!activation.ok) {
+    // Активация провалилась — возвращаем бабки на баланс.
+    await prisma.client.update({ where: { id: clientRaw.id }, data: { balance: { increment: customSnap.amount } } }).catch(() => {});
     await prisma.payment.update({ where: { id: payment.id }, data: { status: "FAILED" } });
     return res.status(activation.status).json({ message: activation.error });
   }
 
-  await prisma.client.update({
-    where: { id: clientRaw.id },
-    data: { balance: { decrement: customSnap.amount } },
-  });
+  // NB: списание уже сделано атомарно выше — повторного decrement тут НЕ надо.
   if (promoCodeRecord) {
     await prisma.promoCodeUsage.create({ data: { promoCodeId: promoCodeRecord.id, clientId: clientRaw.id } });
   }
   const { distributeReferralRewards } = await import("../referral/referral.service.js");
   await distributeReferralRewards(payment.id).catch((e) => console.error("[referral] Error:", e));
 
+  const after = await prisma.client.findUnique({ where: { id: clientRaw.id }, select: { balance: true } });
   return res.json({
     message: `Подписка на ${days} дн., ${devices} ${devices === 1 ? "устройство" : "устройства"} активирована. Списано ${customSnap.amount.toFixed(2)} ${cfg.currency.toUpperCase()}.`,
     paymentId: payment.id,
-    newBalance: clientDb.balance - customSnap.amount,
+    newBalance: after?.balance ?? clientDb.balance - customSnap.amount,
   });
 });
 
@@ -2892,7 +3001,16 @@ clientRouter.post("/payments/balance/option", async (req, res) => {
   const pdOption = await applyPersonalDiscount(price, clientDb.id);
   const finalOptionPrice = pdOption.amount;
   const optSnap = await paymentSnapshotProduct(clientDb.id, finalOptionPrice);
-  if (clientDb.balance < optSnap.amount) {
+
+  // Та же дыра, что в остальных balance-эндпоинтах: read balance → check →
+  // applyExtraOptionByPaymentId (Remna API, сотни мс) → write decrement.
+  // Между read и write 5+ параллельных запросов проходили check одинаково и
+  // получали несколько опций за одну стоимость. Чиним атомарным debit'ом.
+  const debit = await prisma.client.updateMany({
+    where: { id: clientDb.id, balance: { gte: optSnap.amount } },
+    data: { balance: { decrement: optSnap.amount } },
+  });
+  if (debit.count === 0) {
     return res.status(400).json({ message: `Недостаточно средств. Баланс: ${clientDb.balance.toFixed(2)}, нужно: ${optSnap.amount.toFixed(2)}` });
   }
   if (pdOption.personalDiscountPercent > 0) {
@@ -2919,23 +3037,22 @@ clientRouter.post("/payments/balance/option", async (req, res) => {
 
   const applyResult = await applyExtraOptionByPaymentId(payment.id);
   if (!applyResult.ok) {
+    // Применение опции в Remna провалилось — возвращаем баланс.
+    await prisma.client.update({ where: { id: clientDb.id }, data: { balance: { increment: optSnap.amount } } }).catch(() => {});
     await prisma.payment.update({ where: { id: payment.id }, data: { status: "FAILED" } });
     return res.status(applyResult.status).json({ message: (applyResult as { error?: string }).error || "Ошибка применения опции" });
   }
 
-  await prisma.client.update({
-    where: { id: clientDb.id },
-    data: { balance: { decrement: optSnap.amount } },
-  });
+  // NB: списание уже сделано атомарно выше — повторного decrement тут НЕ надо.
 
   const { distributeReferralRewards } = await import("../referral/referral.service.js");
   await distributeReferralRewards(payment.id).catch(() => {});
 
-  const newBalance = clientDb.balance - optSnap.amount;
+  const after = await prisma.client.findUnique({ where: { id: clientDb.id }, select: { balance: true } });
   return res.json({
     message: "Опция применена. Списано с баланса.",
     paymentId: payment.id,
-    newBalance,
+    newBalance: after?.balance ?? clientDb.balance - optSnap.amount,
   });
 });
 
@@ -4757,6 +4874,64 @@ publicConfigRouter.get("/config", async (req, res) => {
   const bot = (req as Request & Partial<ReqWithBot>).bot;
   const config = await getPublicConfig(bot ?? null);
   return res.json(config);
+});
+
+/**
+ * Динамический PWA-манифест.
+ *
+ * Статический /manifest.webmanifest содержит дефолтные иконки и имя
+ * «STEALTHNET». Этот эндпоинт строит манифест на лету с пользовательским
+ * serviceName и favicon. Frontend в App.tsx переключает <link rel="manifest">
+ * на /api/public/manifest.webmanifest когда custom favicon задан.
+ *
+ * Кэш 60 сек — баланс между актуальностью после save и нагрузкой
+ * (Chrome дёргает URL каждый раз при show install banner).
+ */
+publicConfigRouter.get("/manifest.webmanifest", async (_req, res) => {
+  try {
+    const cfg = (await getSystemConfig().catch(() => null)) as { serviceName?: string | null; favicon?: string | null } | null;
+    const brand = (cfg?.serviceName ?? "").trim() || "STEALTHNET";
+    const favicon = (cfg?.favicon ?? "").trim() || null;
+
+    const icons = favicon
+      ? [
+          { src: favicon, sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: favicon, sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: favicon, sizes: "512x512", type: "image/png", purpose: "maskable" },
+        ]
+      : [
+          { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+        ];
+    const shortcutIcon = favicon ?? "/icon-192.png";
+
+    const manifest = {
+      name: brand,
+      short_name: brand.length <= 12 ? brand : brand.slice(0, 12),
+      description: `${brand} — личный кабинет и админка VPN`,
+      lang: "ru",
+      start_url: "/cabinet",
+      scope: "/",
+      display: "standalone",
+      orientation: "portrait",
+      background_color: "#0f172a",
+      theme_color: "#0f172a",
+      categories: ["productivity", "utilities"],
+      icons,
+      shortcuts: [
+        { name: "Кабинет", short_name: "Кабинет", description: "Личный кабинет: тарифы, подписки, подключения", url: "/cabinet", icons: [{ src: shortcutIcon, sizes: "192x192" }] },
+        { name: "Админка", short_name: "Админ", description: "Управление клиентами и тарифами", url: "/admin", icons: [{ src: shortcutIcon, sizes: "192x192" }] },
+      ],
+    };
+
+    res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=60");
+    return res.json(manifest);
+  } catch (e) {
+    console.error("[manifest] render failed:", e);
+    return res.status(500).type("text/plain").send("Failed to render manifest");
+  }
 });
 
 /**
