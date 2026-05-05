@@ -241,7 +241,7 @@ export function DashboardLayout() {
       </div>
 
       {/* ═══ Desktop sidebar ═══ */}
-      <aside className="hidden md:flex flex-col shrink-0 fixed left-0 top-3 bottom-3 w-[290px] z-50 rounded-r-[2rem] border-y border-r border-white/20 dark:border-white/10 bg-white/10 dark:bg-white/5 backdrop-blur-xl shadow-[20px_0_40px_-10px_rgba(0,0,0,0.5)] dark:shadow-[inset_-1px_1px_0_rgba(255,255,255,0.15)] transition-all overflow-hidden">
+      <aside className="hidden md:flex flex-col shrink-0 fixed left-0 top-3 bottom-3 w-[290px] z-[70] rounded-r-[2rem] border-y border-r border-white/20 dark:border-white/10 bg-white/10 dark:bg-white/5 backdrop-blur-xl shadow-[20px_0_40px_-10px_rgba(0,0,0,0.5)] dark:shadow-[inset_-1px_1px_0_rgba(255,255,255,0.15)] transition-all overflow-hidden">
         <div className="flex h-16 items-center justify-center gap-3 px-4 relative z-10">
           <div className="absolute bottom-0 left-6 right-6 h-[1px] bg-gradient-to-r from-transparent via-white/20 dark:via-white/10 to-transparent"></div>
           {brand.logo ? (
@@ -286,11 +286,11 @@ export function DashboardLayout() {
         {mobileMenuOpen && (
           <>
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-              className="fixed inset-0 z-40 bg-background/50 backdrop-blur-sm md:hidden" onClick={() => setMobileMenuOpen(false)} />
+              className="fixed inset-0 z-[69] bg-background/50 backdrop-blur-sm md:hidden" onClick={() => setMobileMenuOpen(false)} />
             <motion.aside
               initial={{ x: -290 }} animate={{ x: 0 }} exit={{ x: -290 }}
               transition={{ type: "spring", damping: 25, stiffness: 300 }}
-              className="fixed left-0 top-0 bottom-0 z-50 w-[290px] flex flex-col md:hidden bg-primary/20 dark:bg-primary/30 backdrop-blur-xl border-r border-white/30 dark:border-primary/40 shadow-[20px_0_40px_-10px_rgba(0,0,0,0.5)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.2),inset_0_0_40px_hsl(var(--primary)/0.2),0_0_40px_hsl(var(--primary)/0.2)] overflow-hidden"
+              className="fixed left-0 top-0 bottom-0 z-[70] w-[290px] flex flex-col md:hidden bg-primary/20 dark:bg-primary/30 backdrop-blur-xl border-r border-white/30 dark:border-primary/40 shadow-[20px_0_40px_-10px_rgba(0,0,0,0.5)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.2),inset_0_0_40px_hsl(var(--primary)/0.2),0_0_40px_hsl(var(--primary)/0.2)] overflow-hidden"
             >
               <div className="flex h-16 items-center justify-center px-4 relative z-10">
                 <div className="absolute bottom-0 left-6 right-6 h-[1px] bg-gradient-to-r from-transparent via-white/20 dark:via-white/10 to-transparent"></div>
@@ -337,7 +337,7 @@ export function DashboardLayout() {
 
       {/* ═══ Main content ═══ */}
       <main className="flex-1 min-w-0 flex flex-col md:pl-[290px] w-full relative z-10">
-        <header className="sticky top-3 z-40 mx-3 sm:mx-4 mt-3 flex h-16 shrink-0 items-center justify-between gap-3 px-4 md:px-5 rounded-[1.35rem] bg-white/10 dark:bg-white/5 backdrop-blur-2xl border border-white/20 dark:border-white/10 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.3)] dark:shadow-[0_8px_32px_-8px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.1)] transition-all">
+        <header className="sticky top-3 z-[70] mx-3 sm:mx-4 mt-3 flex h-16 shrink-0 items-center justify-between gap-3 px-4 md:px-5 rounded-[1.35rem] bg-white/10 dark:bg-white/5 backdrop-blur-2xl border border-white/20 dark:border-white/10 shadow-[0_8px_32px_-8px_rgba(0,0,0,0.3)] dark:shadow-[0_8px_32px_-8px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.1)] transition-all">
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <Button variant="ghost" size="icon" className="md:hidden shrink-0 rounded-xl" onClick={() => setMobileMenuOpen(true)}>
               <Menu className="h-5 w-5" />

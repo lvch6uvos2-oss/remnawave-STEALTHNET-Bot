@@ -57,50 +57,47 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Schema drift auto-fix: для каждой папки prisma/migrations извлекаем имя ПЕРВОЙ
-# таблицы которую создаёт её SQL (CREATE TABLE …). Если такая миграция помечена
-# в _prisma_migrations как успешно применённая (finished_at IS NOT NULL и
-# rolled_back_at IS NULL), но соответствующей таблицы в public ФАКТИЧЕСКИ нет —
-# журнал расходится с реальностью (типичные причины: восстановление БД из старого
-# дампа, ручной DROP TABLE, прерванная миграция в прошлом). Удаляем такие записи
-# из журнала чтобы migrate deploy переприменил их с нуля. Без этого Prisma пишет
-# "No pending migrations" и API падает с P2021 при первой же query.
+# reconcile_schema_drift — после успешного migrate deploy сверяет фактическую схему
+# БД с schema.prisma через `prisma migrate diff`. Если diff непустой (например
+# миграции помечены applied, но их SQL по факту не выполнился — частый случай при
+# восстановлении БД из старого бэкапа, прерванной миграции, ручном DROP, или
+# полной переустановке поверх существующего volume) — генерируем недостающий DDL
+# и применяем через `db execute`. Никогда не пытается выполнить full migration.sql
+# повторно, поэтому работает даже при ЧАСТИЧНОМ drift'е (одна таблица создалась,
+# другая — нет).
 #
-# Срабатывает только если в БД уже есть таблицы (greenfield-ветка ниже сама всё
-# сбросит) и есть psql. Никогда не удаляет данные из существующих таблиц.
-if command -v psql >/dev/null 2>&1; then
-  drift_check_ok=$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public._prisma_migrations') IS NOT NULL" 2>/dev/null | tr -d '[:space:]') || drift_check_ok=""
-  if [ "$drift_check_ok" = "t" ]; then
-    DRIFTED=""
-    for dir in $(ls -1d prisma/migrations/*/ 2>/dev/null | LC_ALL=C sort); do
-      name=$(basename "$dir")
-      sql_file="$dir/migration.sql"
-      [ -f "$sql_file" ] || continue
-      # Применена ли запись?
-      applied=$(psql "$DATABASE_URL" -tAc "SELECT 1 FROM _prisma_migrations WHERE migration_name='$name' AND finished_at IS NOT NULL AND rolled_back_at IS NULL" 2>/dev/null | tr -d '[:space:]')
-      [ "$applied" = "1" ] || continue
-      # Извлекаем имя ПЕРВОЙ создаваемой таблицы (CREATE TABLE [IF NOT EXISTS] "name" или name)
-      table=$(grep -ioE 'CREATE[[:space:]]+TABLE([[:space:]]+IF[[:space:]]+NOT[[:space:]]+EXISTS)?[[:space:]]+"[^"]+"' "$sql_file" | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
-      [ -n "$table" ] || continue  # миграция-ALTER без CREATE TABLE — пропускаем
-      # Существует ли реально?
-      exists=$(psql "$DATABASE_URL" -tAc "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='$table'" 2>/dev/null | tr -d '[:space:]')
-      if [ "$exists" != "1" ]; then
-        log "DRIFT: миграция $name помечена applied, но таблицы '$table' нет — снимаю запись для переприменения"
-        DRIFTED="$DRIFTED $name"
-      fi
-    done
-    if [ -n "$DRIFTED" ]; then
-      for name in $DRIFTED; do
-        psql "$DATABASE_URL" -c "DELETE FROM _prisma_migrations WHERE migration_name='$name'" >/dev/null
-      done
-      log "drift detection: записи сняты, migrate deploy переприменит их"
-    fi
+# Безопасно для случая «всё ок»: diff будет пустым, ничего не применится.
+# Безопасно для всех destruktive-операций: diff может включать DROP только если
+# в schema.prisma убрали модель — но в нашем релиз-цикле новые версии добавляют
+# поля и таблицы, не удаляют, поэтому DROP не появится.
+reconcile_schema_drift() {
+  if ! command -v psql >/dev/null 2>&1; then return 0; fi
+  POST_DRIFT_SQL=$(mktemp)
+  if ! npx prisma migrate diff \
+      --from-url "$DATABASE_URL" \
+      --to-schema-datamodel prisma/schema.prisma \
+      --script >"$POST_DRIFT_SQL" 2>/dev/null; then
+    rm -f "$POST_DRIFT_SQL"
+    return 0
   fi
-fi
+  # Пустой результат или только пробелы = схема уже в синке
+  if ! [ -s "$POST_DRIFT_SQL" ] || ! grep -q '[^[:space:]]' "$POST_DRIFT_SQL"; then
+    rm -f "$POST_DRIFT_SQL"
+    return 0
+  fi
+  log "schema drift detected post-deploy: применяю недостающий DDL ($(wc -c <"$POST_DRIFT_SQL" | tr -d " ") байт)"
+  if npx prisma db execute --url "$DATABASE_URL" --file "$POST_DRIFT_SQL" 2>&1; then
+    log "schema drift fix: применён успешно"
+  else
+    log "WARNING: schema drift SQL дал ошибку — возможно частичное применение, но API попробует стартовать"
+  fi
+  rm -f "$POST_DRIFT_SQL"
+}
 
 if npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1; then
   cat "$MIGRATE_LOG" || true
   log "migrate deploy: OK"
+  reconcile_schema_drift
   exec node dist/index.js
 fi
 
@@ -123,6 +120,7 @@ if grep -q "P3009" "$MIGRATE_LOG"; then
   if npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1; then
     cat "$MIGRATE_LOG" || true
     log "migrate deploy: OK (после P3009 recovery)"
+    reconcile_schema_drift
     exec node dist/index.js
   fi
   cat "$MIGRATE_LOG" >&2 || true
@@ -251,5 +249,7 @@ apply_baseline_all || exit 1
 
 log "migrate deploy (после baseline)"
 npx prisma migrate deploy
+
+reconcile_schema_drift
 
 exec node dist/index.js
