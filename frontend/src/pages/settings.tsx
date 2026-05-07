@@ -738,6 +738,13 @@ export function SettingsPage() {
         smtpFromEmail: settings.smtpFromEmail ?? null,
         smtpFromName: settings.smtpFromName ?? null,
         skipEmailVerification: settings.skipEmailVerification ?? false,
+        // Антибот-защита регистраций
+        signupProtectionEnabled: settings.signupProtectionEnabled !== false,
+        emailDomainBlocklist: settings.emailDomainBlocklist ?? "",
+        emailPatternBlocklist: settings.emailPatternBlocklist ?? "",
+        signupMaxPerIpPerHour: settings.signupMaxPerIpPerHour ?? 3,
+        // Happ Crypto Link (шифрование подписочных URL в happ://crypt4/...)
+        happCryptEnabled: settings.happCryptEnabled === true,
         defaultAutoRenewEnabled: settings.defaultAutoRenewEnabled ?? false,
         autoRenewDaysBeforeExpiry: settings.autoRenewDaysBeforeExpiry ?? 1,
         autoRenewNotifyDaysBefore: settings.autoRenewNotifyDaysBefore ?? 3,
