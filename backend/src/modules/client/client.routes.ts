@@ -24,7 +24,7 @@ import {
   notifyAdminsAboutNewTicket,
 } from "../notification/telegram-notify.service.js";
 import { requireClientAuth } from "./client.middleware.js";
-import { remnaCreateUser, remnaUpdateUser, isRemnaConfigured, remnaGetUser, remnaGetUserByUsername, remnaGetUserByEmail, remnaGetUserByTelegramId, extractRemnaUuid, remnaUsernameFromClient, remnaGetUserHwidDevices, remnaDeleteUserHwidDevice } from "../remna/remna.client.js";
+import { remnaCreateUser, remnaUpdateUser, isRemnaConfigured, remnaGetUser, remnaGetUserByUsername, remnaGetUserByEmail, remnaGetUserByTelegramId, extractRemnaUuid, remnaUsernameFromClient, remnaGetUserHwidDevices, remnaDeleteUserHwidDevice, encryptSubscriptionUrlInPlace } from "../remna/remna.client.js";
 import { sendVerificationEmail, sendLinkEmailVerification, isSmtpConfigured } from "../mail/mail.service.js";
 import { createPlategaTransaction, isPlategaConfigured } from "../platega/platega.service.js";
 import { activateTariffForClient, activateTariffByPaymentId } from "../tariff/tariff-activation.service.js";
@@ -50,6 +50,14 @@ import {
   parseAttachments,
   pickField,
 } from "../ticket/attachments.js";
+import { validateEmailForSignup } from "../signup-protection/email-blocklist.js";
+
+/** Извлекает реальный IP клиента (с учётом trust proxy). */
+function getRequestIp(req: Request): string | null {
+  const ip = req.ip || req.socket?.remoteAddress || null;
+  if (!ip) return null;
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
 
 /** Извлекает текущий expireAt из ответа Remna. Возвращает Date если в будущем, иначе null. */
 function extractCurrentExpireAt(data: unknown): Date | null {
@@ -143,6 +151,34 @@ clientAuthRouter.post("/register", async (req, res) => {
 
     const config = await getSystemConfig();
 
+    // ——— Антибот-защита: блок-лист доменов и паттернов ———
+    if (config.signupProtectionEnabled !== false) {
+      const check = validateEmailForSignup(data.email!, {
+        customDomainBlocklist: config.emailDomainBlocklist ?? "",
+        customPatternBlocklist: config.emailPatternBlocklist ?? "",
+      });
+      if (!check.ok) {
+        // Намеренно НЕ говорим конкретно «домен в блок-листе» —
+        // чтобы бот не мог попробовать другой домен из ответа.
+        return res.status(400).json({ message: "Этот email нельзя использовать для регистрации." });
+      }
+    }
+
+    // ——— Антибот-защита: лимит регистраций с одного IP ———
+    const clientIp = getRequestIp(req);
+    if (clientIp && config.signupProtectionEnabled !== false) {
+      const since = new Date(Date.now() - 60 * 60 * 1000); // 1 час
+      const recentFromIp = await prisma.client.count({
+        where: { registrationIp: clientIp, createdAt: { gte: since } },
+      });
+      const maxPerIp = config.signupMaxPerIpPerHour ?? 3;
+      if (recentFromIp >= maxPerIp) {
+        return res.status(429).json({
+          message: "Слишком много регистраций с этого адреса. Попробуйте позже.",
+        });
+      }
+    }
+
     // Режим без подтверждения почты — создаём клиента сразу
     if (config.skipEmailVerification) {
       const referralCode = generateReferralCode();
@@ -171,6 +207,9 @@ clientAuthRouter.post("/register", async (req, res) => {
           utmTerm: data.utm_term ?? null,
           autoRenewEnabled: config.defaultAutoRenewEnabled ?? false,
           onboardingCompleted: false,
+          registrationIp: clientIp,
+          registrationUa: (req.headers["user-agent"] as string)?.slice(0, 500) ?? null,
+          registrationSource: "web",
         }),
       });
       notifyAdminsAboutNewClient(client.id).catch(() => {});
@@ -223,6 +262,8 @@ clientAuthRouter.post("/register", async (req, res) => {
         expiresAt,
       },
     });
+    // IP/UA сохраним в Client при подтверждении письма (см. /verify-email)
+    void clientIp;
 
     const verificationLink = `${appUrl}/cabinet/verify-email?token=${verificationToken}`;
     const sendResult = await sendVerificationEmail(
@@ -271,6 +312,7 @@ clientAuthRouter.post("/register", async (req, res) => {
 
   const passwordHash = data.password ? await hashPassword(data.password) : null;
   const configForAutoRenew = await getSystemConfig();
+  const tgRegIp = getRequestIp(req);
   const client = await prisma.client.create({
     data: asClientUncheckedCreate({
       botId: requestBot.id,
@@ -289,6 +331,9 @@ clientAuthRouter.post("/register", async (req, res) => {
       utmContent: data.utm_content ?? null,
       utmTerm: data.utm_term ?? null,
       autoRenewEnabled: configForAutoRenew.defaultAutoRenewEnabled ?? false,
+      registrationIp: tgRegIp,
+      registrationUa: (req.headers["user-agent"] as string)?.slice(0, 500) ?? null,
+      registrationSource: data.telegramId ? "telegram" : "web",
     }),
   });
   notifyAdminsAboutNewClient(client.id).catch(() => {});
@@ -391,6 +436,11 @@ clientAuthRouter.post("/verify-email", async (req, res) => {
       utmTerm: pending.utmTerm,
       autoRenewEnabled: configForAutoRenew.defaultAutoRenewEnabled ?? false,
       onboardingCompleted: false,
+      // IP/UA на момент перехода по ссылке из письма (не на момент создания pending —
+      // боты обычно не ходят по ссылкам, а если ходят — это уже другой IP, ещё лучше)
+      registrationIp: getRequestIp(req),
+      registrationUa: (req.headers["user-agent"] as string)?.slice(0, 500) ?? null,
+      registrationSource: "web",
     }),
   });
 
@@ -2050,6 +2100,10 @@ clientRouter.get("/subscription", async (req, res) => {
     return res.json({ subscription: null, tariffDisplayName: null, currentPricePerDay: null, message: result.error });
   }
 
+  // Шифрование subscriptionUrl через Happ Crypto (тот же механизм, что встроенная sub-page Remnawave).
+  // При недоступности эндпоинта Remna — оставляется оригинальная ссылка (см. encryptSubscriptionUrlInPlace).
+  await encryptSubscriptionUrlInPlace(result.data);
+
   // Берём currentTariffId + currentPricePerDay (для UI отображения и для расчёта конвертации в warn-модалке)
   const dbClient = await prisma.client.findUnique({
     where: { id: client.id },
@@ -2176,6 +2230,7 @@ clientRouter.get("/subscription/by-uuid/:uuid", async (req, res) => {
   if (result.error) {
     return res.json({ subscription: null, tariffDisplayName: null, message: result.error });
   }
+  await encryptSubscriptionUrlInPlace(result.data);
   const tariffDisplayName = await resolveTariffDisplayName(result.data ?? null);
   return res.json({ subscription: result.data ?? null, tariffDisplayName });
 });
@@ -2202,6 +2257,7 @@ clientRouter.get("/subscription/all", async (req, res) => {
   // 1. Root подписка
   if (client.remnawaveUuid) {
     const rootResult = await remnaGetUser(client.remnawaveUuid);
+    await encryptSubscriptionUrlInPlace(rootResult.data);
     // Приоритет 1: currentTariffId из БД (Source of Truth)
     const dbClient = await prisma.client.findUnique({
       where: { id: clientId },
@@ -2250,6 +2306,7 @@ clientRouter.get("/subscription/all", async (req, res) => {
   for (const sec of secondaries) {
     if (!sec.remnawaveUuid) continue;
     const secResult = await remnaGetUser(sec.remnawaveUuid);
+    await encryptSubscriptionUrlInPlace(secResult.data);
     const secTariff = sec.tariff?.name ?? await resolveTariffDisplayName(secResult.data ?? null);
     items.push({
       type: "secondary",

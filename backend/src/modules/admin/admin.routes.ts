@@ -1364,6 +1364,11 @@ adminRouter.get("/settings", asyncRoute(async (_req, res) => {
   return res.json(config);
 }));
 
+/** Версия панели — для мониторинга. Под auth, чтобы не светить наружу. */
+adminRouter.get("/version", asyncRoute(async (_req, res) => {
+  return res.json({ version: "4.3.0" });
+}));
+
 /**
  * GET /api/admin/lavatop/products
  *
@@ -1442,28 +1447,61 @@ adminRouter.get("/lavatop/products", asyncRoute(async (_req, res) => {
   }
 }));
 
-/** Базовый конфиг страницы подписки (subpage-00000000-0000-0000-0000-000000000000.json) для визуального редактора */
-adminRouter.get("/default-subscription-page-config", asyncRoute(async (_req, res) => {
+/**
+ * Базовый конфиг страницы подписки (subpage-00000000-0000-0000-0000-000000000000.json)
+ * для визуального редактора. В Docker файл подмонтирован как volume
+ * (см. docker-compose.yml), поэтому изменения файла на хосте подхватываются
+ * без пересборки контейнера.
+ *
+ * Логика поиска (по убыванию приоритета):
+ *   1. /app/subpage-...json (volume-mount или COPY из образа) — primary
+ *   2. process.cwd()-варианты для dev-окружения (npm run dev из backend/)
+ *   3. /app/defaults/subpage-...json — fallback из образа, если primary
+ *      сломан (пустой каталог при отсутствии файла на хосте, битый JSON и т.п.)
+ *
+ * Кэш на 30 секунд в памяти, чтобы не читать файл при каждом GET.
+ * `?fresh=1` сбрасывает кэш — используется кнопкой «Перезагрузить с сервера» в UI.
+ */
+let _defaultSubpageCache: { data: unknown; ts: number } | null = null;
+const SUBPAGE_CACHE_TTL_MS = 30_000;
+
+async function tryReadJsonFile(filePath: string): Promise<unknown | null> {
+  try {
+    const raw = await readFile(filePath, "utf-8");
+    return JSON.parse(raw) as unknown;
+  } catch {
+    // ENOENT, EISDIR (volume на отсутствующий файл монтируется как пустой каталог),
+    // невалидный JSON — все случаи прозрачно скипаем и идём к следующему кандидату.
+    return null;
+  }
+}
+
+adminRouter.get("/default-subscription-page-config", asyncRoute(async (req, res) => {
+  // ?fresh=1 — принудительный сброс кэша (используется при ручной перезагрузке)
+  const fresh = req.query.fresh === "1" || req.query.fresh === "true";
+  if (!fresh && _defaultSubpageCache && Date.now() - _defaultSubpageCache.ts < SUBPAGE_CACHE_TTL_MS) {
+    return res.json(_defaultSubpageCache.data);
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const fileName = "subpage-00000000-0000-0000-0000-000000000000.json";
   const candidates = [
+    // 1. Primary: /app/subpage-...json (Docker volume-mount или COPY из образа)
     path.join(process.cwd(), fileName),
+    // 2. Dev: запуск из backend/ (npm run dev)
     path.join(process.cwd(), "..", fileName),
     path.join(__dirname, "..", "..", "..", "..", fileName),
     path.join(__dirname, "..", "..", "..", "..", "..", fileName),
+    // 3. Fallback из образа (всегда валидный snapshot версии на момент сборки)
+    path.join(process.cwd(), "defaults", fileName),
+    "/app/defaults/" + fileName,
   ];
-  let lastErr: unknown;
+
   for (const configPath of candidates) {
-    try {
-      const raw = await readFile(configPath, "utf-8");
-      const data = JSON.parse(raw) as unknown;
+    const data = await tryReadJsonFile(configPath);
+    if (data !== null) {
+      _defaultSubpageCache = { data, ts: Date.now() };
       return res.json(data);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
-        lastErr = e;
-        continue;
-      }
-      throw e;
     }
   }
   return res.status(404).json({ message: "Default config file not found" });
@@ -1581,6 +1619,10 @@ const updateSettingsSchema = z.object({
   autoBroadcastCron: z.string().max(100).nullable().optional(),
   adminFrontNotificationsEnabled: z.boolean().optional(),
   skipEmailVerification: z.boolean().optional(),
+  signupProtectionEnabled: z.boolean().optional(),
+  emailDomainBlocklist: z.string().max(10000).optional(),
+  emailPatternBlocklist: z.string().max(10000).optional(),
+  signupMaxPerIpPerHour: z.number().int().min(1).max(1000).optional(),
   useRemnaSubscriptionPage: z.boolean().optional(),
   aiChatEnabled: z.boolean().optional(),
   customBuildEnabled: z.boolean().optional(),
@@ -2311,6 +2353,37 @@ adminRouter.patch("/settings", async (req, res) => {
     await prisma.systemSetting.upsert({
       where: { key: "skip_email_verification" },
       create: { key: "skip_email_verification", value: val },
+      update: { value: val },
+    });
+  }
+  // Антибот-защита регистраций
+  if (updates.signupProtectionEnabled !== undefined) {
+    const val = updates.signupProtectionEnabled ? "true" : "false";
+    await prisma.systemSetting.upsert({
+      where: { key: "signup_protection_enabled" },
+      create: { key: "signup_protection_enabled", value: val },
+      update: { value: val },
+    });
+  }
+  if (updates.emailDomainBlocklist !== undefined) {
+    await prisma.systemSetting.upsert({
+      where: { key: "email_domain_blocklist" },
+      create: { key: "email_domain_blocklist", value: updates.emailDomainBlocklist ?? "" },
+      update: { value: updates.emailDomainBlocklist ?? "" },
+    });
+  }
+  if (updates.emailPatternBlocklist !== undefined) {
+    await prisma.systemSetting.upsert({
+      where: { key: "email_pattern_blocklist" },
+      create: { key: "email_pattern_blocklist", value: updates.emailPatternBlocklist ?? "" },
+      update: { value: updates.emailPatternBlocklist ?? "" },
+    });
+  }
+  if (updates.signupMaxPerIpPerHour !== undefined) {
+    const val = String(Math.max(1, updates.signupMaxPerIpPerHour));
+    await prisma.systemSetting.upsert({
+      where: { key: "signup_max_per_ip_per_hour" },
+      create: { key: "signup_max_per_ip_per_hour", value: val },
       update: { value: val },
     });
   }
@@ -3838,6 +3911,7 @@ export const ADMIN_ALLOWED_SECTIONS = [
   "settings",
   "languages",
   "api-keys",
+  "antibot",
 ] as const;
 
 /** Список админов и менеджеров (только ADMIN). */

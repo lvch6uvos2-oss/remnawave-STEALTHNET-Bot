@@ -145,6 +145,11 @@ const SYSTEM_CONFIG_KEYS = [
   "google_analytics_id", "yandex_metrika_id", // Маркетинг: счётчики для кабинета
   "auto_broadcast_cron", // Расписание авто-рассылки (cron, например "0 9 * * *" = 9:00 каждый день)
   "skip_email_verification", // Регистрация без подтверждения почты: true/false
+  // Антибот-защита регистраций
+  "signup_protection_enabled", // Master switch: включает email-фильтр и rate-limit по IP
+  "email_domain_blocklist", // Дополнительный список доменов через запятую (расширяет встроенный)
+  "email_pattern_blocklist", // Regex-паттерны (по строке на каждый), блокируют локалпарт email
+  "signup_max_per_ip_per_hour", // Сколько регистраций с одного IP в час разрешено (default: 3)
   "use_remna_subscription_page", // Кнопка VPN в боте ведёт на страницу подписки Remna вместо кабинета: true/false
   "ai_chat_enabled", // AI-чат в кабинете включён: true/false
   // Гибкий тариф (собери сам): цена за день, устройство, трафик или безлимит, сквад
@@ -567,6 +572,14 @@ export async function getSystemConfig() {
     groqFallback3: (map.groq_fallback_3 ?? "").trim() || null,
     aiSystemPrompt: map.ai_system_prompt || "Ты — лучший менеджер техподдержки VPN-сервиса. Твоя цель — вежливо, быстро и точно помогать пользователям с настройкой VPN, тарифами и решением технических проблем. Отвечай кратко и по делу.",
     skipEmailVerification: map.skip_email_verification === "true" || map.skip_email_verification === "1",
+    /** Master switch для антибот-фильтра. По умолчанию включён. */
+    signupProtectionEnabled: (map.signup_protection_enabled ?? "true").trim() !== "false",
+    /** Дополнительный список заблокированных доменов (через запятую) — расширяет встроенный */
+    emailDomainBlocklist: (map.email_domain_blocklist ?? "").trim(),
+    /** Regex-паттерны (по строке) для блокировки email-локалпартов */
+    emailPatternBlocklist: (map.email_pattern_blocklist ?? "").trim(),
+    /** Лимит регистраций с одного IP в час (default 3) */
+    signupMaxPerIpPerHour: Math.max(1, parseInt(map.signup_max_per_ip_per_hour ?? "3", 10) || 3),
     useRemnaSubscriptionPage: map.use_remna_subscription_page === "true" || map.use_remna_subscription_page === "1",
     aiChatEnabled: map.ai_chat_enabled !== "false" && map.ai_chat_enabled !== "0",
     customBuildEnabled: map.custom_build_enabled === "true" || map.custom_build_enabled === "1",

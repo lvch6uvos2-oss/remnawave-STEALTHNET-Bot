@@ -2396,7 +2396,8 @@ export function SettingsPage() {
                   currentConfigJson={settings?.subscriptionPageConfig ?? null}
                   defaultConfig={defaultSubpageConfig}
                   onFetchDefault={async () => {
-                    const c = await api.getDefaultSubscriptionPageConfig(token);
+                    // fresh=true чтобы перечитать файл с диска (а не отдать кэш)
+                    const c = await api.getDefaultSubscriptionPageConfig(token, true);
                     setDefaultSubpageConfig(c ?? null);
                     return c ?? null;
                   }}
@@ -3623,6 +3624,85 @@ export function SettingsPage() {
                 </div>
               </div>
               <CardContent className="space-y-5 p-4 sm:p-6">
+
+                {/* ───── Антибот-защита регистраций ───── */}
+                <div className="rounded-2xl border border-red-500/20 bg-gradient-to-br from-red-500/5 via-amber-500/5 to-orange-500/5 p-5 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="h-8 w-8 rounded-xl bg-red-500/20 flex items-center justify-center">
+                      <span className="text-sm">🛡️</span>
+                    </div>
+                    <h3 className="text-base font-semibold">Антибот-защита регистраций</h3>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Блокирует регистрации с одноразовых email-доменов (example.com, mailinator и др.),
+                    подозрительных паттернов (test_xxxxxxxx@) и массовых регистраций с одного IP.
+                    Просмотр и удаление уже накопленных ботов — на странице{" "}
+                    <a href="/admin/antibot" className="text-primary underline hover:no-underline">Антибот</a>.
+                  </p>
+                  <label className="flex items-center gap-3 p-3.5 rounded-xl bg-card/40 border border-white/5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.signupProtectionEnabled !== false}
+                      onChange={(e) => setSettings((s) => (s ? { ...s, signupProtectionEnabled: e.target.checked } : s))}
+                      className="rounded border w-4 h-4"
+                    />
+                    <div className="flex-1">
+                      <span className="text-sm font-medium">Включить защиту</span>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Master switch. Если выключить — никакие фильтры ниже не сработают.
+                      </p>
+                    </div>
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Лимит регистраций с одного IP в час</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={settings.signupMaxPerIpPerHour ?? 3}
+                        onChange={(e) =>
+                          setSettings((s) =>
+                            s ? { ...s, signupMaxPerIpPerHour: Math.max(1, parseInt(e.target.value, 10) || 3) } : s
+                          )
+                        }
+                      />
+                      <p className="text-[11px] text-muted-foreground">
+                        По умолчанию 3. Семья с одним IP не пострадает, ботнет — отсечётся.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Дополнительный список заблокированных доменов</Label>
+                    <textarea
+                      rows={3}
+                      value={settings.emailDomainBlocklist ?? ""}
+                      onChange={(e) => setSettings((s) => (s ? { ...s, emailDomainBlocklist: e.target.value } : s))}
+                      placeholder="badmail.ru, fake-domain.com"
+                      className="w-full rounded-xl border border-white/10 bg-card/40 px-3 py-2 text-sm font-mono"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      Через запятую или с новой строки. Расширяет встроенный список (example.com, mailinator,
+                      tempmail и др.).
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Regex-паттерны для блокировки email</Label>
+                    <textarea
+                      rows={3}
+                      value={settings.emailPatternBlocklist ?? ""}
+                      onChange={(e) => setSettings((s) => (s ? { ...s, emailPatternBlocklist: e.target.value } : s))}
+                      placeholder={"^junk\\d+@\n^fake_"}
+                      className="w-full rounded-xl border border-white/10 bg-card/40 px-3 py-2 text-sm font-mono"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      По одному regex на строку (без флагов, регистр игнорируется). Встроенные:{" "}
+                      <code className="text-xs">test_xxxxxxxx@</code>, <code className="text-xs">bot_NNN@</code>,
+                      последовательности цифр.
+                    </p>
+                  </div>
+                </div>
+
                 <div className="rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 via-teal-500/5 to-sky-500/5 p-5 space-y-4">
                   <div className="flex items-center gap-2.5">
                     <div className="h-8 w-8 rounded-xl bg-cyan-500/20 flex items-center justify-center"><Mail className="h-4 w-4 text-cyan-500" /></div>

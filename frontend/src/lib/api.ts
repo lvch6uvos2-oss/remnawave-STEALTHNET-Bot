@@ -772,14 +772,37 @@ export const api = {
   async getApiKeys(token: string): Promise<ApiKeyListItem[]> {
     return request("/admin/api-keys", { token });
   },
-  async createApiKey(token: string, data: { name: string; description?: string }): Promise<ApiKeyCreated> {
+  async createApiKey(
+    token: string,
+    data: {
+      name: string;
+      description?: string;
+      expiresAt?: string | null;
+      allowedIps?: string[] | null;
+    }
+  ): Promise<ApiKeyCreated> {
     return request("/admin/api-keys", { method: "POST", body: JSON.stringify(data), token });
+  },
+  async updateApiKey(
+    token: string,
+    id: string,
+    data: {
+      name?: string;
+      description?: string | null;
+      expiresAt?: string | null;
+      allowedIps?: string[] | null;
+    }
+  ): Promise<ApiKeyListItem> {
+    return request(`/admin/api-keys/${id}`, { method: "PATCH", body: JSON.stringify(data), token });
   },
   async toggleApiKey(token: string, id: string, isActive: boolean): Promise<void> {
     return request(`/admin/api-keys/${id}/toggle`, { method: "PATCH", body: JSON.stringify({ isActive }), token });
   },
   async deleteApiKey(token: string, id: string): Promise<void> {
     return request(`/admin/api-keys/${id}`, { method: "DELETE", token });
+  },
+  async getApiKeyUsage(token: string, id: string, limit = 100): Promise<ApiKeyUsageItem[]> {
+    return request(`/admin/api-keys/${id}/usage?limit=${limit}`, { token });
   },
 
   async getAdminBots(token: string): Promise<{ items: AdminBotListItem[] }> {
@@ -934,9 +957,13 @@ export const api = {
     return request(`/admin/contests/${id}`, { method: "DELETE", token });
   },
 
-  /** Базовый конфиг страницы подписки для визуального редактора (subpage-*.json) */
-  async getDefaultSubscriptionPageConfig(token: string): Promise<SubscriptionPageConfig | null> {
-    return request("/admin/default-subscription-page-config", { token });
+  /**
+   * Базовый конфиг страницы подписки для визуального редактора (subpage-*.json).
+   * @param fresh — true: бэкенд игнорирует in-memory кэш и читает файл заново
+   *                (используется при кнопке «Перезагрузить с сервера»).
+   */
+  async getDefaultSubscriptionPageConfig(token: string, fresh = false): Promise<SubscriptionPageConfig | null> {
+    return request(`/admin/default-subscription-page-config${fresh ? "?fresh=1" : ""}`, { token });
   },
 
   async updateSettings(token: string, data: UpdateSettingsPayload): Promise<AdminSettings> {
@@ -2486,6 +2513,10 @@ export type UpdateSettingsPayload = {
   autoBroadcastCron?: string | null;
   adminFrontNotificationsEnabled?: boolean;
   skipEmailVerification?: boolean;
+  signupProtectionEnabled?: boolean;
+  emailDomainBlocklist?: string;
+  emailPatternBlocklist?: string;
+  signupMaxPerIpPerHour?: number;
   useRemnaSubscriptionPage?: boolean;
   aiChatEnabled?: boolean;
   customBuildEnabled?: boolean;
@@ -2874,6 +2905,14 @@ export interface AdminSettings {
   adminFrontNotificationsEnabled?: boolean;
   /** Регистрация без подтверждения почты */
   skipEmailVerification?: boolean;
+  /** Master switch для антибот-защиты регистраций */
+  signupProtectionEnabled?: boolean;
+  /** Доп. список заблокированных email-доменов (через запятую) */
+  emailDomainBlocklist?: string;
+  /** Regex-паттерны для блокировки email (по строке на каждый) */
+  emailPatternBlocklist?: string;
+  /** Макс. регистраций с одного IP в час */
+  signupMaxPerIpPerHour?: number;
   /** Кнопка VPN в боте ведёт на страницу подписки Remna */
   useRemnaSubscriptionPage?: boolean;
   /** AI-чат в кабинете включён */
@@ -3110,12 +3149,27 @@ export interface ApiKeyListItem {
   prefix: string;
   isActive: boolean;
   lastUsedAt: string | null;
+  lastUsedIp: string | null;
+  expiresAt: string | null;
+  /** JSON-string of CIDR list, e.g. '["192.0.2.0/24"]' or null */
+  allowedIps: string | null;
   createdAt: string;
 }
 
 export interface ApiKeyCreated extends ApiKeyListItem {
   keyHash: string;
   rawKey: string;
+}
+
+export interface ApiKeyUsageItem {
+  id: string;
+  apiKeyId: string;
+  ts: string;
+  ip: string | null;
+  ua: string | null;
+  method: string;
+  path: string;
+  statusCode: number;
 }
 
 export interface TrafficAbuser {

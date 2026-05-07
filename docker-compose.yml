@@ -58,6 +58,12 @@ services:
       # Read-only frontend bundle: модуль branding/spa-html.ts читает index.html
       # отсюда чтобы инжектить per-bot брендинг в SPA-shell перед отдачей через nginx /_spa.
       - frontend_dist:/var/www/stealthnet:ro
+      # Базовый конфиг страницы подписки (приложения по платформам).
+      # Bind-mount с хоста: редактируешь файл — изменения видны контейнеру мгновенно
+      # (один inode). В админке Settings → Страница подписки жми «Перезагрузить
+      # с сервера» → «Подмёрж новые» → «Сохранить». Без перезапуска контейнера.
+      # Read-only: контейнер не должен модифицировать конфиг.
+      - ./backend/subpage-00000000-0000-0000-0000-000000000000.json:/app/subpage-00000000-0000-0000-0000-000000000000.json:ro
     pid: host
     depends_on:
       postgres:

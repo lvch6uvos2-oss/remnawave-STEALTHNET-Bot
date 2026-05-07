@@ -291,7 +291,64 @@ export const clientsBulkApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  /** Антибот: поиск подозрительных регистраций по фильтрам */
+  antibotFind: (token: string, filters: AntibotFindFilters) =>
+    req<AntibotFindResult>(token, `/clients/antibot/find`, {
+      method: "POST",
+      body: JSON.stringify(filters),
+    }),
+
+  /** Антибот: удалить выбранные ID. По умолчанию пропускает платящих и с активной подпиской. */
+  antibotPurge: (token: string, payload: { ids: string[]; force?: boolean }) =>
+    req<AntibotPurgeResult>(token, `/clients/antibot/purge`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
+
+export interface AntibotFindFilters {
+  emailDomain?: string;
+  emailDomainBuiltinList?: boolean;
+  emailPatternBuiltin?: boolean;
+  createdSinceMinutes?: number;
+  registrationIp?: string;
+  sameIpThreshold?: number;
+  neverConnected?: boolean;
+  hasNoPayments?: boolean;
+  registrationSource?: string;
+  botId?: string;
+  limit?: number;
+}
+
+export interface AntibotCandidate {
+  id: string;
+  email: string | null;
+  telegramId: string | null;
+  telegramUsername: string | null;
+  balance: number;
+  registrationIp: string | null;
+  registrationUa: string | null;
+  registrationSource: string | null;
+  remnawaveUuid: string | null;
+  trialUsed: boolean;
+  botId: string;
+  createdAt: string;
+}
+
+export interface AntibotFindResult {
+  total: number;
+  candidates: AntibotCandidate[];
+  ipGroups: Array<{ ip: string; count: number }>;
+  builtinBlocklistSize: number;
+}
+
+export interface AntibotPurgeResult {
+  requested: number;
+  deleted: number;
+  protected: string[];
+  errors: Array<{ id: string; error: string }>;
+}
 
 // ─── Business analytics ──────────────────────────────────────────────────
 

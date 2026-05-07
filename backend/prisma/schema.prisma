@@ -172,6 +172,14 @@ model Client {
   currentPricePerDay         Float?    @map("current_price_per_day")
   yookassaPaymentMethodId    String?   @map("yookassa_payment_method_id")
   yookassaPaymentMethodTitle String?   @map("yookassa_payment_method_title")
+  /// IP, с которого был создан аккаунт. Используется для антибот-фильтра
+  /// (массовое удаление подозрительных регистраций по IP).
+  registrationIp             String?   @map("registration_ip")
+  /// User-Agent на момент регистрации — помогает отличить headless-бота от настоящего браузера.
+  registrationUa             String?   @map("registration_ua") @db.Text
+  /// Источник регистрации: "web" | "telegram" | "google" | "apple" | "miniapp"
+  /// Полезно для фильтра "удалить всех веб-регистраций за час"
+  registrationSource         String?   @map("registration_source") @db.VarChar(20)
   createdAt                  DateTime  @default(now()) @map("created_at")
   updatedAt                  DateTime  @updatedAt @map("updated_at")
 
@@ -203,6 +211,8 @@ model Client {
   @@index([email])
   @@index([utmSource])
   @@index([botId])
+  @@index([registrationIp], map: "clients_registration_ip_idx")
+  @@index([createdAt(sort: Desc)], map: "clients_created_at_idx")
   @@map("clients")
 }
 
@@ -833,11 +843,35 @@ model ApiKey {
   prefix      String    @map("prefix")
   isActive    Boolean   @default(true) @map("is_active")
   lastUsedAt  DateTime? @map("last_used_at")
+  lastUsedIp  String?   @map("last_used_ip")
+  expiresAt   DateTime? @map("expires_at")
+  // JSON array of CIDR ranges, e.g. ["192.0.2.0/24","203.0.113.5/32"].
+  // null = no IP restriction.
+  allowedIps  String?   @map("allowed_ips")
   createdAt   DateTime  @default(now()) @map("created_at")
+
+  usage       ApiKeyUsage[]
 
   @@index([keyHash], map: "api_keys_key_hash_idx")
   @@index([prefix], map: "api_keys_prefix_idx")
   @@map("api_keys")
+}
+
+model ApiKeyUsage {
+  id         String   @id @default(cuid())
+  apiKeyId   String   @map("api_key_id")
+  ts         DateTime @default(now())
+  ip         String?
+  ua         String?  @db.Text
+  method     String   @db.VarChar(10)
+  path       String   @db.Text
+  statusCode Int      @map("status_code")
+
+  apiKey     ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([apiKeyId, ts(sort: Desc)], map: "api_key_usage_api_key_id_ts_idx")
+  @@index([ts(sort: Desc)], map: "api_key_usage_ts_idx")
+  @@map("api_key_usage")
 }
 
 model ContestWinner {

@@ -396,9 +396,15 @@ function ClassicSubscribePage() {
                     <div className="flex flex-wrap gap-2.5 pl-7 pt-1">
                       {block.buttons?.map((btn, btnIndex) => {
                         const isSubscription = btn.type === "subscriptionLink";
+                        // Бэкенд уже отдаёт зашифрованную (happ://crypt4/...) ссылку в subscriptionUrl,
+                        // поэтому шаблоны {{HAPP_CRYPT3_LINK}} и {{HAPP_CRYPT4_LINK}} разрешаются той
+                        // же строкой — это безопасно: если ссылка не зашифрована (старая Remna),
+                        // подставится обычный URL и Happ всё равно её примет.
                         const href = isSubscription
                           ? btn.link
                               .replace(/\{\{SUBSCRIPTION_LINK\}\}/g, subscriptionUrl || "")
+                              .replace(/\{\{HAPP_CRYPT3_LINK\}\}/g, subscriptionUrl || "")
+                              .replace(/\{\{HAPP_CRYPT4_LINK\}\}/g, subscriptionUrl || "")
                               .replace(/\{\{USERNAME\}\}/g, "")
                           : btn.link;
                         const label = getText(btn.text, locale);

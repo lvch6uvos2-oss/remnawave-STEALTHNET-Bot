@@ -65,8 +65,64 @@ app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
+/**
+ * CORS origins — динамический список:
+ *   1) Если в `.env CORS_ORIGIN` явно задан (не "*") — используется как whitelist
+ *      (несколько доменов через запятую).
+ *   2) Иначе — auto-derive из `system_settings.public_app_url` (то что админ задал
+ *      в настройках сервиса). Запрашивается один раз и кэшируется на 60 секунд.
+ *   3) Если ни в env, ни в settings ничего нет — fallback на `*` (для свежих
+ *      установок где админ ещё ничего не настроил).
+ *
+ * Это hardening: из коробки CORS защищён, нужно только публичный URL прописать
+ * в админке (что обычно делается в первую очередь для генерации платёжных URL).
+ */
+let _corsOriginsCache: string[] | null = null;
+let _corsOriginsCachedAt = 0;
+const CORS_CACHE_TTL_MS = 60_000;
+
+async function getAllowedOrigins(): Promise<string[] | null> {
+  // 1) Explicit env wins
+  if (env.CORS_ORIGIN && env.CORS_ORIGIN !== "*") {
+    return env.CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  // 2) Cached
+  if (_corsOriginsCache !== null && Date.now() - _corsOriginsCachedAt < CORS_CACHE_TTL_MS) {
+    return _corsOriginsCache.length > 0 ? _corsOriginsCache : null;
+  }
+  // 3) Read from system_settings.publicAppUrl
+  try {
+    const { getSystemConfig } = await import("./modules/client/client.service.js");
+    const cfg = await getSystemConfig();
+    const url = cfg.publicAppUrl?.trim();
+    if (url) {
+      try {
+        const u = new URL(url);
+        _corsOriginsCache = [`${u.protocol}//${u.host}`];
+      } catch {
+        _corsOriginsCache = [];
+      }
+    } else {
+      _corsOriginsCache = [];
+    }
+  } catch {
+    _corsOriginsCache = [];
+  }
+  _corsOriginsCachedAt = Date.now();
+  return _corsOriginsCache.length > 0 ? _corsOriginsCache : null;
+}
+
 app.use(cors({
-  origin: env.CORS_ORIGIN === "*" ? true : env.CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean),
+  origin: (origin, callback) => {
+    getAllowedOrigins().then((allowed) => {
+      // null = ничего не настроено → разрешаем всё (fallback для свежей установки)
+      if (allowed === null) return callback(null, true);
+      // Запрос без Origin (curl/Postman/server-to-server) — разрешаем
+      if (!origin) return callback(null, true);
+      // Whitelist — origin должен быть в списке
+      callback(null, allowed.includes(origin));
+    }).catch((err) => callback(err));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Api-Key"],
@@ -87,26 +143,45 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 // ——— Защита от накрутки аккаунтов и перебора ———
 const dev = process.env.NODE_ENV === "development";
 
-// Админка: логин и 2FA — жёсткий лимит по IP
+// Админка: логин и 2FA — жёсткий лимит по IP.
+// 20 попыток / 15 мин — достаточно для опечаток и менеджеров паролей,
+// но ломает любой brute-force. skipSuccessfulRequests: верный пароль
+// не уменьшает квоту, чтобы легитимный пользователь не блокировал
+// сам себя из-за ошибочных попыток.
 const authStrictLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: dev ? 1000 : 2000,
-  message: { message: "Too many login attempts" },
+  max: dev ? 1000 : 20,
+  skipSuccessfulRequests: true,
+  message: { message: "Слишком много попыток входа. Попробуйте через 15 минут." },
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use("/api/auth/login", authStrictLimiter);
 app.use("/api/auth/2fa-login", authStrictLimiter);
 
-// Клиент: регистрация — сильно ограничить с одного IP
+// Клиент: регистрация — 10/час/IP. NAT'ы не страдают,
+// потому что регистрация — редкое событие (1-2 раза в жизни клиента),
+// а большинство приходит через Telegram-miniapp (отдельный лимитер).
 const clientRegisterLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: dev ? 500 : 500,
-  message: { message: "Too many registration attempts. Try again later." },
+  max: dev ? 500 : 10,
+  message: { message: "Слишком много регистраций с этого IP. Попробуйте позже." },
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use("/api/client/auth/register", clientRegisterLimiter);
+
+// Клиент: логин по email/паролю — 20/15 мин/IP, как у админа
+const clientLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: dev ? 1000 : 20,
+  skipSuccessfulRequests: true,
+  message: { message: "Слишком много попыток входа. Попробуйте через 15 минут." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use("/api/client/auth/login", clientLoginLimiter);
+app.use("/api/client/auth/2fa-login", clientLoginLimiter);
 
 // Клиент: вход через Telegram Mini App (создание аккаунта или логин)
 const clientTelegramMiniappLimiter = rateLimit({
@@ -160,7 +235,9 @@ const giftPublicLimiter = rateLimit({
 app.use("/api/gift/public", giftPublicLimiter);
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", version: "4.2.1" });
+  // Версию не отдаём — fingerprint resistance. Внутренний мониторинг получает её
+  // через защищённый эндпоинт `/api/admin/version` (требует auth).
+  res.json({ status: "ok" });
 });
 
 // SSR-рендер index.html с подстановкой имени из брендинга (Telegram preview).

@@ -51,6 +51,8 @@ function getSectionFromPath(normalisedPath: string): string | null {
   if (first === "traffic-abuse") return "analytics";
   if (first === "api-keys") return "settings";
   if (first === "gramads") return "promo-vpn";
+  // Антибот: и фильтры регистраций, и bulk-purge — все работают через /api/admin/clients/...
+  if (first === "clients" && (segments[1] === "antibot" || segments[1] === "bulk")) return "clients";
   return first;
 }
 

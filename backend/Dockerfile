@@ -23,6 +23,12 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/subpage-00000000-0000-0000-0000-000000000000.json ./
+# Бэкап-копия в /app/defaults — используется бэкендом как fallback,
+# если основной файл /app/subpage-...json отсутствует/битый/перекрыт
+# битым volume-mount'ом. Не перекрывается volume и всегда содержит
+# версию из образа (т.е. с момента сборки).
+RUN mkdir -p /app/defaults && \
+    cp /app/subpage-00000000-0000-0000-0000-000000000000.json /app/defaults/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
 RUN npx prisma generate \

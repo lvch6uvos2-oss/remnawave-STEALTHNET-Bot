@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
 import { api, type AdminNotificationCounters } from "@/lib/api";
 import { InboxBell } from "@/components/inbox-bell";
 
-const PANEL_VERSION = "4.2.1";
+const PANEL_VERSION = "4.3.0";
 const GITHUB_URL = "https://github.com/systemmaster1200-eng/remnawave-STEALTHNET-Bot";
 
 type NavItem = { to: string; label: string; icon: typeof LayoutDashboard; section: string; category: string };
@@ -67,6 +67,7 @@ function useNavSections(): NavItem[] {
     { to: "/admin/bots", label: t("admin.nav.clone_bots"), icon: Bot, section: "bots", category: "settings" },
     { to: "/admin/admins", label: t("admin.nav.managers"), icon: UserCog, section: "admins", category: "settings" },
     { to: "/admin/api-keys", label: t("admin.nav.api_keys"), icon: Key, section: "api-keys", category: "settings" },
+    { to: "/admin/antibot", label: "Антибот", icon: Shield, section: "antibot", category: "settings" },
     { to: "/admin/diagnostics", label: "Диагностика", icon: Activity, section: "diagnostics", category: "settings" },
     { to: "/admin/email-templates", label: "Email-шаблоны", icon: Mail, section: "settings", category: "settings" },
     { to: "/admin/bot-messages", label: "Тексты бота", icon: Bot, section: "settings", category: "settings" },
