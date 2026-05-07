@@ -41,7 +41,6 @@
   <img src="https://github.com/user-attachments/assets/5c504c46-0b00-47d1-b767-7afed7f36983" width="830" alt="STEALTHNET screenshot 2" />
 </p>
 
-https://github.com/user-attachments/assets/94f46e23-f4f3-443c-b240-4177818599f2
 
 
 
