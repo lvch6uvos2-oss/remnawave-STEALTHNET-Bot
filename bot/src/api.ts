@@ -105,6 +105,10 @@ export async function getPublicConfig(): Promise<{
   heleketEnabled?: boolean;
   lavaEnabled?: boolean;
   lavatopEnabled?: boolean;
+  botWelcomeEnabled?: boolean;
+  botWelcomeText?: string | null;
+  botWelcomeImage?: string | null;
+  botWelcomeShowOnce?: boolean;
   botButtons?: { id: string; visible: boolean; label: string; order: number; style?: string; iconCustomEmojiId?: string; onePerRow?: boolean; emojiKey?: string }[] | null;
   /** Кнопок в ряд в главном меню: 1 или 2 */
   botButtonsPerRow?: 1 | 2;
@@ -170,7 +174,7 @@ export async function registerByTelegram(body: {
   utm_campaign?: string;
   utm_content?: string;
   utm_term?: string;
-}): Promise<{ token: string; client: { id: string; telegramUsername?: string | null; preferredLang?: string; preferredCurrency: string; balance: number; trialUsed?: boolean; referralCode?: string | null } }> {
+}): Promise<{ token: string; client: { id: string; telegramUsername?: string | null; preferredLang?: string; preferredCurrency: string; balance: number; trialUsed?: boolean; referralCode?: string | null; onboardingCompleted?: boolean } }> {
   return fetchJson("/api/client/auth/register", { method: "POST", body });
 }
 
@@ -334,6 +338,11 @@ export async function createLavaPayment(
   body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string } }
 ): Promise<{ paymentId: string; payUrl: string }> {
   return fetchJson("/api/client/lava/create-payment", { method: "POST", body, token });
+}
+
+/** Помечает что онбординг (приветствие в боте) завершён — `client.onboardingCompleted=true` */
+export async function completeOnboarding(token: string): Promise<{ message: string }> {
+  return fetchJson("/api/client/complete-onboarding", { method: "POST", token });
 }
 
 /** Lava.top — создать invoice через product/offer модель (RUB/USD/EUR) */

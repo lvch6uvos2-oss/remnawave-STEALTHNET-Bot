@@ -1,7 +1,7 @@
 {
   "name": "stealthnet-bot",
-  "version": "4.2.0",
-  "description": "STEALTHNET 4.2.0 — Telegram-бот для продажи подписок",
+  "version": "4.2.1",
+  "description": "STEALTHNET 4.2.1 — Telegram-бот для продажи подписок",
   "type": "module",
   "engines": {
     "node": ">=22"

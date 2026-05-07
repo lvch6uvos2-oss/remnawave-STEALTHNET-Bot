@@ -128,6 +128,10 @@ const SYSTEM_CONFIG_KEYS = [
   "category_emojis", // JSON: { "ordinary": "📦", "premium": "⭐" } — эмодзи категорий по коду
   "subscription_page_config",
   "support_link", "agreement_link", "offer_link", "instructions_link", // Поддержка: тех поддержка, соглашения, оферта, инструкции
+  // Приветственное сообщение бота (показывается при /start, до главного меню)
+  "bot_welcome_enabled", "bot_welcome_text", "bot_welcome_image", "bot_welcome_show_once",
+  // Применять выбранный дизайн (Stealth) и в обычном браузере, не только в Telegram Mini App
+  "cabinet_design_apply_in_browser",
   "tickets_enabled", // Тикет-система: true/false
   "admin_front_notifications_enabled", // Всплывающие уведомления в админке: true/false
   "theme_accent", // Глобальная цветовая тема: default, blue, violet, rose, orange, green, emerald, cyan, amber, red, pink, indigo
@@ -542,6 +546,16 @@ export async function getSystemConfig() {
     lavaAdditionalKey: (map.lava_additional_key ?? "").trim() || null,
     lavatopApiKey: (map.lavatop_api_key ?? "").trim() || null,
     lavatopDefaultOfferId: (map.lavatop_default_offer_id ?? "").trim() || null,
+    /** Приветственное сообщение бота: показывать ли */
+    botWelcomeEnabled: (map.bot_welcome_enabled ?? "").trim() === "true",
+    /** Текст приветствия (поддерживает эмодзи и простые HTML-теги, как остальные тексты бота) */
+    botWelcomeText: (map.bot_welcome_text ?? "") || null,
+    /** Картинка-баннер (data URL base64 PNG/JPG) */
+    botWelcomeImage: (map.bot_welcome_image ?? "") || null,
+    /** Показывать только при первом /start (по флагу client.onboardingCompleted) или каждый раз */
+    botWelcomeShowOnce: (map.bot_welcome_show_once ?? "true").trim() !== "false",
+    /** Применять выбранный дизайн кабинета (Stealth) также в обычном браузере, не только в Telegram Mini App */
+    cabinetDesignApplyInBrowser: (map.cabinet_design_apply_in_browser ?? "").trim() === "true",
     overpayApiUrl: (map.overpay_api_url ?? "").trim() || null,
     overpayProjectId: (map.overpay_project_id ?? "").trim() || null,
     overpayLogin: (map.overpay_login ?? "").trim() || null,
@@ -1017,6 +1031,7 @@ export async function getPublicConfig(forCloneBot?: Pick<Bot, "markupPercent" | 
     logoBot: full.logoBot ?? null,
     favicon: full.favicon,
     cabinetDesign: full.cabinetDesign,
+    cabinetDesignApplyInBrowser: (full as { cabinetDesignApplyInBrowser?: boolean }).cabinetDesignApplyInBrowser ?? false,
     remnaClientUrl: full.remnaClientUrl,
     publicAppUrl: full.publicAppUrl,
     telegramBotUsername: (forCloneBot?.username?.trim() || full.telegramBotUsername) ?? null,
@@ -1073,6 +1088,10 @@ export async function getPublicConfig(forCloneBot?: Pick<Bot, "markupPercent" | 
     forceSubscribeChannelId: full.forceSubscribeChannelId ?? null,
     forceSubscribeMessage: full.forceSubscribeMessage ?? null,
     blacklistEnabled: full.blacklistEnabled ?? false,
+    botWelcomeEnabled: (full as { botWelcomeEnabled?: boolean }).botWelcomeEnabled ?? false,
+    botWelcomeText: (full as { botWelcomeText?: string | null }).botWelcomeText ?? null,
+    botWelcomeImage: (full as { botWelcomeImage?: string | null }).botWelcomeImage ?? null,
+    botWelcomeShowOnce: (full as { botWelcomeShowOnce?: boolean }).botWelcomeShowOnce ?? true,
     showProxyEnabled: await prisma.proxyTariff.count({ where: { enabled: true } }).then((n) => n > 0),
     showSingboxEnabled: await prisma.singboxTariff.count({ where: { enabled: true } }).then((n) => n > 0),
     sellOptionsEnabled: (() => {

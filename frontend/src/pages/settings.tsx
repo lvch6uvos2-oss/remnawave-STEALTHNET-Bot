@@ -776,6 +776,11 @@ export function SettingsPage() {
         lavaAdditionalKey: settings.lavaAdditionalKey && settings.lavaAdditionalKey !== "********" ? settings.lavaAdditionalKey : undefined,
         lavatopApiKey: settings.lavatopApiKey && settings.lavatopApiKey !== "********" ? settings.lavatopApiKey : undefined,
         lavatopDefaultOfferId: settings.lavatopDefaultOfferId ?? null,
+        botWelcomeEnabled: settings.botWelcomeEnabled ?? false,
+        botWelcomeText: settings.botWelcomeText ?? null,
+        botWelcomeImage: settings.botWelcomeImage ?? null,
+        botWelcomeShowOnce: settings.botWelcomeShowOnce ?? true,
+        cabinetDesignApplyInBrowser: settings.cabinetDesignApplyInBrowser ?? false,
         overpayApiUrl: settings.overpayApiUrl ?? null,
         overpayProjectId: settings.overpayProjectId ?? null,
         overpayLogin: settings.overpayLogin ?? null,
@@ -1387,6 +1392,19 @@ export function SettingsPage() {
                   <p className="text-xs text-muted-foreground">
                     Выбранный дизайн применится ко всем клиентам при следующем открытии кабинета. Админ-панель не затрагивается.
                   </p>
+                  <label className="flex items-start gap-3 rounded-xl border border-white/10 bg-card/30 p-3 mt-2 cursor-pointer hover:bg-card/50 transition-colors">
+                    <Switch
+                      checked={settings.cabinetDesignApplyInBrowser ?? false}
+                      onCheckedChange={(checked: boolean) => setSettings((s) => (s ? { ...s, cabinetDesignApplyInBrowser: checked === true } : s))}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium">Применять также в обычном браузере</div>
+                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                        По умолчанию выбранный дизайн используется только в Telegram Mini App. В обычном браузере (web кабинет) клиенты видят Classic.
+                        Включи если хочешь чтобы Stealth применялся и на сайте.
+                      </p>
+                    </div>
+                  </label>
                 </div>
                 </div>
                 {/* === Локализация === */}
@@ -1828,6 +1846,82 @@ export function SettingsPage() {
 
                   {/* === ВКЛАДКА: ТЕКСТЫ === */}
                   <TabsContent value="texts" className="space-y-5 mt-5">
+                    {/* ═══ Приветственное сообщение при /start ═══ */}
+                    <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 p-5 space-y-4">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-2.5">
+                          <div className="h-8 w-8 rounded-xl bg-emerald-500/20 flex items-center justify-center">✨</div>
+                          <div>
+                            <h3 className="text-base font-semibold">Приветственное сообщение</h3>
+                            <p className="text-xs text-muted-foreground">Показывается клиенту при первом /start. Картинка-баннер + текст + кнопка «Войти».</p>
+                          </div>
+                        </div>
+                        <label className="inline-flex items-center gap-2 cursor-pointer">
+                          <Switch
+                            checked={settings.botWelcomeEnabled ?? false}
+                            onCheckedChange={(checked: boolean) => setSettings((s) => (s ? { ...s, botWelcomeEnabled: checked === true } : s))}
+                          />
+                          <span className="text-sm">Включить</span>
+                        </label>
+                      </div>
+                      <div className="rounded-xl border border-white/10 bg-card/40 p-4 space-y-3">
+                        <div className="space-y-2">
+                          <Label className="text-xs">Текст приветствия</Label>
+                          <textarea
+                            className="w-full min-h-[160px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            value={settings.botWelcomeText ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, botWelcomeText: e.target.value || null } : s))}
+                            placeholder={"Добро пожаловать в VPN!\n\n🚀 Высокая скорость\n🚫 Удаляем рекламу\n♾ Огромный запас трафика\n👥 Платим 30% с платежей друзей"}
+                            maxLength={4000}
+                          />
+                          <p className="text-[10px] text-muted-foreground">До 4000 символов. Эмодзи поддерживаются. Если задана картинка — текст идёт как caption (макс. 1024 символа в Telegram).</p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-xs">Картинка-баннер (PNG / JPG / GIF / WEBP, до 5 МБ)</Label>
+                          <div className="flex items-center gap-3 flex-wrap">
+                            {settings.botWelcomeImage && (
+                              <img
+                                src={settings.botWelcomeImage}
+                                alt="welcome"
+                                className="h-28 w-auto rounded-md border border-white/10 object-cover"
+                              />
+                            )}
+                            <input
+                              type="file"
+                              accept="image/png,image/jpeg,image/gif,image/webp"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (!f) return;
+                                if (f.size > 5_000_000) {
+                                  alert("Файл больше 5 МБ — попробуйте сжать.");
+                                  return;
+                                }
+                                const reader = new FileReader();
+                                reader.onload = () => {
+                                  const url = String(reader.result || "");
+                                  setSettings((s) => (s ? { ...s, botWelcomeImage: url } : s));
+                                };
+                                reader.readAsDataURL(f);
+                              }}
+                              className="text-xs"
+                            />
+                            {settings.botWelcomeImage && (
+                              <Button type="button" variant="outline" size="sm" onClick={() => setSettings((s) => (s ? { ...s, botWelcomeImage: null } : s))}>
+                                Убрать картинку
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        <label className="inline-flex items-center gap-2 cursor-pointer text-xs pt-2 border-t border-white/5">
+                          <Switch
+                            checked={settings.botWelcomeShowOnce ?? true}
+                            onCheckedChange={(checked: boolean) => setSettings((s) => (s ? { ...s, botWelcomeShowOnce: checked === true } : s))}
+                          />
+                          <span>Показывать только при первом /start (пока клиент не нажал «Войти в кабинет»)</span>
+                        </label>
+                      </div>
+                    </div>
+
                     <div className="rounded-2xl border border-violet-500/20 bg-gradient-to-br from-violet-500/5 via-purple-500/5 to-fuchsia-500/5 p-5 space-y-4">
                       <div className="flex items-center gap-2.5">
                         <div className="h-8 w-8 rounded-xl bg-violet-500/20 flex items-center justify-center"><MessageSquare className="h-4 w-4 text-violet-500" /></div>

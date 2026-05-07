@@ -1486,6 +1486,7 @@ const updateSettingsSchema = z.object({
   logoBot: z.string().max(5_500_000).nullable().optional(),
   favicon: z.string().max(5_500_000).nullable().optional(),
   cabinetDesign: z.enum(["classic", "stealth"]).optional(),
+  cabinetDesignApplyInBrowser: z.boolean().optional(),
   remnaClientUrl: z.string().max(2000).nullable().optional(),
   smtpHost: z.string().max(255).nullable().optional(),
   smtpPort: z.number().int().min(1).max(65535).optional(),
@@ -1531,6 +1532,11 @@ const updateSettingsSchema = z.object({
   lavaAdditionalKey: z.string().max(500).nullable().optional(),
   lavatopApiKey: z.string().max(500).nullable().optional(),
   lavatopDefaultOfferId: z.string().max(200).nullable().optional(),
+  // Приветствие в боте при /start
+  botWelcomeEnabled: z.boolean().optional(),
+  botWelcomeText: z.string().max(4000).nullable().optional(),
+  botWelcomeImage: z.string().max(5_500_000).nullable().optional(), // data URL base64
+  botWelcomeShowOnce: z.boolean().optional(),
   overpayApiUrl: z.string().max(500).nullable().optional(),
   overpayProjectId: z.string().max(100).nullable().optional(),
   overpayLogin: z.string().max(200).nullable().optional(),
@@ -1868,6 +1874,14 @@ adminRouter.patch("/settings", async (req, res) => {
       update: { value: updates.cabinetDesign },
     });
   }
+  if (updates.cabinetDesignApplyInBrowser !== undefined) {
+    const val = updates.cabinetDesignApplyInBrowser ? "true" : "false";
+    await prisma.systemSetting.upsert({
+      where: { key: "cabinet_design_apply_in_browser" },
+      create: { key: "cabinet_design_apply_in_browser", value: val },
+      update: { value: val },
+    });
+  }
   if (updates.remnaClientUrl !== undefined) {
     const val = updates.remnaClientUrl ?? "";
     await prisma.systemSetting.upsert({
@@ -2045,6 +2059,22 @@ adminRouter.patch("/settings", async (req, res) => {
   if (updates.lavatopDefaultOfferId !== undefined) {
     const val = updates.lavatopDefaultOfferId ?? "";
     await prisma.systemSetting.upsert({ where: { key: "lavatop_default_offer_id" }, create: { key: "lavatop_default_offer_id", value: val }, update: { value: val } });
+  }
+  if (updates.botWelcomeEnabled !== undefined) {
+    const val = updates.botWelcomeEnabled ? "true" : "false";
+    await prisma.systemSetting.upsert({ where: { key: "bot_welcome_enabled" }, create: { key: "bot_welcome_enabled", value: val }, update: { value: val } });
+  }
+  if (updates.botWelcomeText !== undefined) {
+    const val = updates.botWelcomeText ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "bot_welcome_text" }, create: { key: "bot_welcome_text", value: val }, update: { value: val } });
+  }
+  if (updates.botWelcomeImage !== undefined) {
+    const val = updates.botWelcomeImage ?? "";
+    await prisma.systemSetting.upsert({ where: { key: "bot_welcome_image" }, create: { key: "bot_welcome_image", value: val }, update: { value: val } });
+  }
+  if (updates.botWelcomeShowOnce !== undefined) {
+    const val = updates.botWelcomeShowOnce ? "true" : "false";
+    await prisma.systemSetting.upsert({ where: { key: "bot_welcome_show_once" }, create: { key: "bot_welcome_show_once", value: val }, update: { value: val } });
   }
   if (updates.overpayApiUrl !== undefined) {
     const val = updates.overpayApiUrl ?? "";

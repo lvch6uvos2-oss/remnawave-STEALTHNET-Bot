@@ -2435,6 +2435,11 @@ export type UpdateSettingsPayload = {
   lavaAdditionalKey?: string | null;
   lavatopApiKey?: string | null;
   lavatopDefaultOfferId?: string | null;
+  botWelcomeEnabled?: boolean;
+  botWelcomeText?: string | null;
+  botWelcomeImage?: string | null;
+  botWelcomeShowOnce?: boolean;
+  cabinetDesignApplyInBrowser?: boolean;
   overpayApiUrl?: string | null;
   overpayProjectId?: string | null;
   overpayLogin?: string | null;
@@ -2794,6 +2799,11 @@ export interface AdminSettings {
   lavaAdditionalKey?: string | null;
   lavatopApiKey?: string | null;
   lavatopDefaultOfferId?: string | null;
+  botWelcomeEnabled?: boolean;
+  botWelcomeText?: string | null;
+  botWelcomeImage?: string | null;
+  botWelcomeShowOnce?: boolean;
+  cabinetDesignApplyInBrowser?: boolean;
   overpayApiUrl?: string | null;
   overpayProjectId?: string | null;
   overpayLogin?: string | null;

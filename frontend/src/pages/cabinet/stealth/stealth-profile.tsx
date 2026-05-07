@@ -86,8 +86,14 @@ export function StealthProfile() {
   const langLabel = (state.client?.preferredLang ?? "ru") === "ru" ? "Русский" : (state.client?.preferredLang ?? "ru").toUpperCase();
 
   const sections: MenuSection[] = useMemo(() => {
-    const tgBot = config?.telegramBotUsername?.replace(/^@/, "");
-    const supportTgUrl = tgBot ? `https://t.me/${tgBot}` : null;
+    // Telegram-чат поддержки = admin's supportLink (поле «Поддержка» в админке).
+    // Если не задан — пункт меню не показываем (вместо ссылки на бота, как было раньше).
+    const supportTgUrl = (config as { supportLink?: string | null })?.supportLink?.trim() || null;
+    // Из админки: agreementLink → пользовательское соглашение, offerLink → оферта, instructionsLink → инструкции.
+    // Если ссылка пустая — пункт меню не показываем.
+    const agreementUrl = (config as { agreementLink?: string | null })?.agreementLink?.trim() || null;
+    const offerUrl = (config as { offerLink?: string | null })?.offerLink?.trim() || null;
+    const instructionsUrl = (config as { instructionsLink?: string | null })?.instructionsLink?.trim() || null;
     const out: MenuSection[] = [
       {
         title: "Приложение",
@@ -108,8 +114,24 @@ export function StealthProfile() {
             onClick: () => window.open(supportTgUrl, "_blank", "noopener,noreferrer"),
           }] : []),
           { id: "payments", label: "История платежей", icon: CreditCard, onClick: () => setShowPayments(true) },
-          { id: "tos", label: "Пользовательское соглашение", icon: FileText, to: "/legal/tos" },
-          { id: "privacy", label: "Политика конфиденциальности", icon: Lock, to: "/legal/privacy" },
+          ...(agreementUrl ? [{
+            id: "tos",
+            label: "Пользовательское соглашение",
+            icon: FileText,
+            onClick: () => window.open(agreementUrl, "_blank", "noopener,noreferrer"),
+          }] : []),
+          ...(offerUrl ? [{
+            id: "offer",
+            label: "Публичная оферта",
+            icon: Lock,
+            onClick: () => window.open(offerUrl, "_blank", "noopener,noreferrer"),
+          }] : []),
+          ...(instructionsUrl ? [{
+            id: "instructions",
+            label: "Инструкции по подключению",
+            icon: FileText,
+            onClick: () => window.open(instructionsUrl, "_blank", "noopener,noreferrer"),
+          }] : []),
         ],
       },
       {

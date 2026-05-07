@@ -1,5 +1,5 @@
 /**
- * STEALTHNET 4.2.0 — Telegram-бот
+ * STEALTHNET 4.2.1 — Telegram-бот
  * Полный функционал кабинета: главная, тарифы, профиль, пополнение, триал, реферальная ссылка, VPN.
  * Цветные кнопки: style primary / success / danger (Telegram Bot API).
  */
@@ -1082,6 +1082,41 @@ composer.command("start", async (ctx) => {
     // Проверка подписки на канал
     if (await enforceSubscription(ctx, config)) return;
 
+    // ─── Приветственное сообщение (если включено в админке) ───
+    // Показываем картинку + текст с кнопкой «Войти», которая ведёт в главное меню.
+    // Если showOnce=true — только при первом /start (когда client.onboardingCompleted=false).
+    const welcomeEnabled = Boolean((config as { botWelcomeEnabled?: boolean })?.botWelcomeEnabled);
+    if (welcomeEnabled) {
+      const showOnce = Boolean((config as { botWelcomeShowOnce?: boolean })?.botWelcomeShowOnce);
+      const alreadySeen = showOnce && client?.onboardingCompleted === true;
+      if (!alreadySeen) {
+        const welcomeText = ((config as { botWelcomeText?: string | null })?.botWelcomeText ?? "").trim();
+        const welcomeImage = ((config as { botWelcomeImage?: string | null })?.botWelcomeImage ?? "").trim();
+        if (welcomeText || welcomeImage) {
+          const continueMarkup = { inline_keyboard: [[{ text: "✨ Войти в кабинет", callback_data: "welcome:continue" }]] };
+          try {
+            const media = welcomeImage ? logoToMediaSource(welcomeImage) : null;
+            const captionMax = TELEGRAM_CAPTION_MAX;
+            const safeText = welcomeText.length > captionMax ? welcomeText.slice(0, captionMax - 3) + "..." : welcomeText;
+            if (media) {
+              if (media.isGif) {
+                await ctx.replyWithAnimation(media.source, { caption: safeText || undefined, reply_markup: continueMarkup });
+              } else {
+                await ctx.replyWithPhoto(media.source, { caption: safeText || undefined, reply_markup: continueMarkup });
+              }
+            } else {
+              await ctx.reply(welcomeText, { reply_markup: continueMarkup });
+            }
+            // Если showOnce — отметим что приветствие показано (сохранится после первого «Войти»)
+            return;
+          } catch (e) {
+            console.error("[/start welcome] failed:", e instanceof Error ? e.message : e);
+            // продолжаем как обычно — fallback на главное меню
+          }
+        }
+      }
+    }
+
     const [subRes, proxyRes, singboxRes] = await Promise.all([
       api.getSubscription(auth.token).catch(() => ({ subscription: null })),
       api.getPublicProxyTariffs().catch(() => ({ items: [] })),
@@ -1270,6 +1305,82 @@ composer.on("callback_query:data", async (ctx) => {
   const userId = ctx.from?.id;
   if (!userId) return;
   await ctx.answerCallbackQuery().catch(() => {});
+
+  // ─── Приветствие → «Войти в кабинет» — открывает главное меню ───
+  if (data === "welcome:continue") {
+    const token = getToken(userId);
+    if (!token) {
+      await ctx.reply("Сессия истекла. Отправьте /start ещё раз.");
+      return;
+    }
+    try {
+      // Помечаем что онбординг пройден (чтобы при showOnce=true приветствие больше не показывалось)
+      await api.completeOnboarding(token).catch(() => {});
+      const config = await api.getPublicConfig();
+      if (config?.translations) setTranslations(config.translations);
+      const me = await api.getMe(token);
+      const [subRes, proxyRes, singboxRes] = await Promise.all([
+        api.getSubscription(token).catch(() => ({ subscription: null })),
+        api.getPublicProxyTariffs().catch(() => ({ items: [] })),
+        api.getPublicSingboxTariffs().catch(() => ({ items: [] })),
+      ]);
+      const vpnUrl = getSubscriptionUrl(subRes.subscription);
+      const showTrial = Boolean(config?.trialEnabled && !me.trialUsed);
+      const showProxy = proxyRes.items?.some((c: { tariffs: unknown[] }) => c.tariffs?.length > 0) ?? false;
+      const showSingbox = singboxRes.items?.some((c: { tariffs: unknown[] }) => c.tariffs?.length > 0) ?? false;
+      const appUrl = config?.publicAppUrl?.replace(/\/$/, "") ?? null;
+      const { text, entities } = buildMainMenuText({
+        serviceName: config?.serviceName?.trim() || "Кабинет",
+        balance: me.balance ?? 0,
+        currency: me.preferredCurrency ?? config?.defaultCurrency ?? "usd",
+        subscription: subRes.subscription,
+        tariffDisplayName: (subRes as { tariffDisplayName?: string | null }).tariffDisplayName ?? null,
+        menuTexts: config?.botMenuTexts ?? config?.resolvedBotMenuTexts ?? null,
+        menuLineVisibility: config?.botMenuLineVisibility ?? null,
+        menuTextCustomEmojiIds: config?.menuTextCustomEmojiIds ?? null,
+        botEmojis: config?.botEmojis ?? null,
+        infoBlock: config?.botInfoBlock ?? null,
+      });
+      const hasVideoInstructions = config?.videoInstructionsEnabled && (config?.videoInstructions?.length ?? 0) > 0;
+      const hasSupportLinks = !!(config?.supportLink || config?.agreementLink || config?.offerLink || config?.instructionsLink || hasVideoInstructions);
+      const markup = mainMenu({
+        showTrial,
+        showVpn: Boolean(vpnUrl),
+        showProxy,
+        showSingbox,
+        showGift: config?.giftSubscriptionsEnabled === true,
+        appUrl,
+        botButtons: config?.botButtons ?? null,
+        botBackLabel: config?.botBackLabel ?? null,
+        hasSupportLinks,
+        showTickets: config?.ticketsEnabled === true,
+        showExtraOptions: config?.sellOptionsEnabled === true && (config?.sellOptions?.length ?? 0) > 0,
+        buttonsPerRow: config?.botButtonsPerRow ?? 1,
+        remnaSubscriptionUrl: config?.useRemnaSubscriptionPage ? vpnUrl : null,
+      });
+      const isBotAdmin = config?.botAdminTelegramIds?.includes(String(userId)) ?? false;
+      if (isBotAdmin) markup.inline_keyboard.push([{ text: "⚙️ Панель админа", callback_data: "admin:menu" }]);
+      // Нельзя editMessageContent у photo — отправляем новое сообщение и удаляем старое
+      const cbMsg = ctx.callbackQuery?.message;
+      const media = logoToMediaSource(config?.logoBot);
+      if (media) {
+        const caption = text.length > TELEGRAM_CAPTION_MAX ? text.slice(0, TELEGRAM_CAPTION_MAX - 3) + "..." : text;
+        const captionEntities = text.length > TELEGRAM_CAPTION_MAX && entities.length ? entities.filter((e) => e.offset + e.length <= TELEGRAM_CAPTION_MAX - 3) : entities;
+        const opts = { caption, caption_entities: captionEntities.length ? captionEntities : undefined, reply_markup: markup };
+        if (media.isGif) await ctx.replyWithAnimation(media.source, opts);
+        else await ctx.replyWithPhoto(media.source, opts);
+      } else {
+        await ctx.reply(text, { entities: entities.length ? entities : undefined, reply_markup: markup });
+      }
+      if (cbMsg?.message_id) {
+        await ctx.api.deleteMessage(cbMsg.chat.id, cbMsg.message_id).catch(() => {});
+      }
+    } catch (e) {
+      console.error("[welcome:continue]", e instanceof Error ? e.message : e);
+      await ctx.reply("Не удалось открыть меню. Попробуйте /start.");
+    }
+    return;
+  }
 
   // Админ-панель в боте (не требует токена пользователя)
   if (data.startsWith("admin:")) {

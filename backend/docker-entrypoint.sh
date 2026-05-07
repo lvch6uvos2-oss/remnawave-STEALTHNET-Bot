@@ -16,6 +16,14 @@
 #    говорит "no pending migrations", но физически таблицы (landing_theme,
 #    marketplace_categories, ...) отсутствуют. reconcile_schema_drift вызывается
 #    после КАЖДОГО успешного deploy'я и detect'ит этот рассинхрон по `migrate diff`.
+# 7) ⚠️ КЕЙС P3018 ПОСЛЕ P3009 RECOVERY: миграция X была применена частично
+#    (CREATE TABLE/ALTER успели), процесс упал → запись висит failed. После
+#    `resolve --rolled-back` повторный deploy пытается СНОВА выполнить SQL и
+#    падает на `column/relation X already exists` (P3018). Решение: detect
+#    P3018+already-exists → `resolve --applied` (объекты уже в БД, миграция
+#    фактически применена) → retry deploy. Итеративно для до 5 миграций
+#    подряд в том же состоянии.
+#
 # 6) ⚠️ КЕЙС clone_bots SILENT-CORRUPTION: миграция `20260502160000_clone_bots`
 #    помечена `applied` в `_prisma_migrations`, но физически SQL не выполнен
 #    (например, `migrate resolve --applied` без накатывания файла). В `clients`
@@ -329,6 +337,44 @@ if grep -q "P3009" "$MIGRATE_LOG"; then
     exec node dist/index.js
   fi
   cat "$MIGRATE_LOG" >&2 || true
+
+  # ─── Сценарий 7: P3018 «already exists» после rolled-back ────────────
+  # Случай: миграция X была частично применена (создала таблицы/колонки),
+  # но процесс завершился аварийно → запись осталась failed. resolve
+  # --rolled-back чистит запись, повторный deploy пытается ПРИМЕНИТЬ
+  # миграцию заново → падает на «relation/column already exists» (P3018).
+  # Лечение: пометить миграцию как applied (объекты УЖЕ в БД), потом
+  # продолжить deploy — следующие миграции применятся нормально.
+  if grep -q "P3018" "$MIGRATE_LOG" \
+     && grep -qiE "already exists|duplicate" "$MIGRATE_LOG"; then
+    log "P3018: миграция $STUCK падает на 'already exists' — её SQL фактически применён в прошлый раз"
+    log "  resolve --applied $STUCK (помечаю применённой, продолжаю deploy)"
+    npx prisma migrate resolve --applied "$STUCK" || true
+    if npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1; then
+      cat "$MIGRATE_LOG" || true
+      log "migrate deploy: OK (после P3009→P3018 adaptive recovery)"
+      reconcile_schema_drift
+      exec node dist/index.js
+    fi
+    cat "$MIGRATE_LOG" >&2 || true
+    # Возможно ещё одна миграция в том же состоянии — попробуем итеративно
+    log "после resolve --applied $STUCK всё ещё ошибка — возможно следующая миграция тоже частично применена"
+    for _i in 1 2 3 4 5; do
+      NEXT_STUCK=$(grep -oE "Migration name: [0-9]+_[A-Za-z0-9_]+" "$MIGRATE_LOG" | sed -E 's/Migration name: //' | head -1 || true)
+      if [ -z "$NEXT_STUCK" ]; then break; fi
+      if ! grep -qiE "already exists|duplicate" "$MIGRATE_LOG"; then break; fi
+      log "  resolve --applied $NEXT_STUCK (итеративно)"
+      npx prisma migrate resolve --applied "$NEXT_STUCK" || true
+      if npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1; then
+        cat "$MIGRATE_LOG" || true
+        log "migrate deploy: OK (после итеративного adaptive recovery)"
+        reconcile_schema_drift
+        exec node dist/index.js
+      fi
+      cat "$MIGRATE_LOG" >&2 || true
+    done
+  fi
+
   log "migrate deploy после P3009 recovery не прошёл — смотрю greenfield / другие ветки"
 fi
 

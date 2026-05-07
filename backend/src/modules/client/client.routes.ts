@@ -3282,12 +3282,19 @@ clientRouter.post("/yoomoney/create-form-payment", async (req, res) => {
       };
     }
   } else {
-    if (amountBody == null && !proxyTariffIdBody && !singboxTariffIdBody) return res.status(400).json({ message: "Укажите сумму" });
+    if (amountBody == null && !tariffIdBody && !proxyTariffIdBody && !singboxTariffIdBody) return res.status(400).json({ message: "Укажите сумму" });
     if (tariffIdBody) {
-      const tariff = await prisma.tariff.findUnique({ where: { id: tariffIdBody } });
+      const tariff = await prisma.tariff.findUnique({ where: { id: tariffIdBody }, include: { priceOptions: true } });
       if (!tariff) return res.status(400).json({ message: "Тариф не найден" });
       tariffIdToStore = tariffIdBody;
-      amountRounded = Math.round((amountBody ?? tariff.price) * 100) / 100;
+      // Цена: priceOption если выбран, иначе tariff.price
+      let unitPrice = tariff.price;
+      const optId = (parsed.data as { tariffPriceOptionId?: string }).tariffPriceOptionId;
+      if (optId) {
+        const opt = (tariff.priceOptions ?? []).find((p) => p.id === optId);
+        if (opt) unitPrice = opt.price;
+      }
+      amountRounded = Math.round((amountBody ?? unitPrice) * 100) / 100;
       if (promoCodeStr?.trim()) {
         const result = await validatePromoCode(promoCodeStr.trim(), clientId);
         if (result.ok && result.promo.type === "DISCOUNT") {
