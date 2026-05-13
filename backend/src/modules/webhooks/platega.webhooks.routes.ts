@@ -183,25 +183,48 @@ async function ensureTariffActivation(paymentId: string): Promise<void> {
     select: { tariffId: true, proxyTariffId: true, singboxTariffId: true, clientId: true, metadata: true },
   });
   const isExtraOption = row ? hasExtraOptionInMetadata(row.metadata) : false;
-  let activation: { ok: boolean; error?: string; slotIds?: string[] } = { ok: false };
+
+  // Retry-обёртка для сетевых ошибок при обращении к Remna API:
+  // "fetch failed", "ETIMEDOUT", "ECONNREFUSED", "socket hang up" и т.п.
+  // 3 попытки с экспонентой 2с/4с/8с. Бизнес-ошибки (тариф не найден, клиент
+  // заблокирован и т.п.) НЕ ретраим — они не сетевые.
+  type Activation = { ok: boolean; error?: string; slotIds?: string[] };
+  const isNetworkError = (e?: string): boolean =>
+    !!e && /fetch failed|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|socket hang up|abort|EAI_AGAIN/i.test(e);
+  const activateWithRetry = async (fn: () => Promise<Activation>, ctx: string): Promise<Activation> => {
+    let res = await fn();
+    for (let attempt = 1; attempt <= 3 && !res.ok && isNetworkError(res.error); attempt++) {
+      const delay = attempt * 2000;
+      console.warn(`[Platega Webhook] ${ctx}: network error "${res.error}", retry ${attempt}/3 in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+      res = await fn();
+    }
+    return res;
+  };
+
+  let activation: Activation = { ok: false };
   if (isExtraOption) {
-    activation = await applyExtraOptionByPaymentId(paymentId);
+    activation = await activateWithRetry(() => applyExtraOptionByPaymentId(paymentId), "extra-option");
   } else if (row?.proxyTariffId) {
-    const proxyResult = await createProxySlotsByPaymentId(paymentId);
-    activation = proxyResult.ok ? { ok: true, slotIds: proxyResult.slotIds } : { ok: false, error: proxyResult.error };
+    activation = await activateWithRetry(async () => {
+      const r = await createProxySlotsByPaymentId(paymentId);
+      return r.ok ? { ok: true, slotIds: r.slotIds } : { ok: false, error: r.error };
+    }, "proxy");
     if (activation.ok && activation.slotIds?.length && row.clientId) {
       const tariff = await prisma.proxyTariff.findUnique({ where: { id: row.proxyTariffId! }, select: { name: true } });
       await notifyProxySlotsCreated(row.clientId, activation.slotIds, tariff?.name ?? undefined).catch(() => {});
     }
   } else if (row?.singboxTariffId) {
-    const singboxResult = await createSingboxSlotsByPaymentId(paymentId);
-    activation = singboxResult.ok ? { ok: true, slotIds: singboxResult.slotIds } : { ok: false, error: singboxResult.error };
+    activation = await activateWithRetry(async () => {
+      const r = await createSingboxSlotsByPaymentId(paymentId);
+      return r.ok ? { ok: true, slotIds: r.slotIds } : { ok: false, error: r.error };
+    }, "singbox");
     if (activation.ok && activation.slotIds?.length && row.clientId) {
       const tariff = await prisma.singboxTariff.findUnique({ where: { id: row.singboxTariffId }, select: { name: true } });
       await notifySingboxSlotsCreated(row.clientId, activation.slotIds, tariff?.name ?? undefined).catch(() => {});
     }
   } else {
-    activation = await activateTariffByPaymentId(paymentId);
+    activation = await activateWithRetry(() => activateTariffByPaymentId(paymentId), "tariff");
   }
   await prisma.$transaction(async (tx) => {
     const row = await tx.payment.findUnique({

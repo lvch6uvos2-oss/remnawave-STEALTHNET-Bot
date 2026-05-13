@@ -225,12 +225,17 @@ export async function processAutoRenewals() {
 
         if (debitGuard.count > 0) {
           // Enough balance → RENEW (баланс уже списан атомарно выше).
-          // Если payment.create или активация упадут — нужно откатить debit,
-          // иначе бабки списали а тарифа не выдали.
+          // Шаги:
+          //   1. ТРАНЗАКЦИЯ: создаём payment + (опц.) promoCodeUsage (атомарно, идемпотентно)
+          //   2. ВНЕ транзакции: вызываем activateTariffByPaymentId — он использует
+          //      глобальный prisma client, и если активацию запустить ВНУТРИ tx — он
+          //      не видит только что созданный платёж (snapshot isolation):
+          //      → "Платёж не найден". Из-за этого auto-renew ломался каждый час.
+          //   3. Если шаг 1 или 2 упали — откатываем debit + помечаем payment FAILED.
           let renewalFailed = false;
-          try {
-            await prisma.$transaction(async (tx) => {
+          let createdPaymentId: string | null = null;
 
+          try {
             const metaObj: Record<string, unknown> = { autoRenew: true };
             if (autoRenewPromoCodeId) {
               metaObj.promoCodeId = autoRenewPromoCodeId;
@@ -241,46 +246,66 @@ export async function processAutoRenewals() {
               if (!metaObj.originalPrice) metaObj.originalPrice = baseTariffPrice;
             }
             const hasExtras = autoRenewPromoCodeId || personalPct > 0;
-            const payment = await tx.payment.create({
-              data: {
-                clientId: client.id,
-                orderId: randomUUID(),
-                amount: tariffPrice,
-                currency: client.autoRenewTariff!.currency.toUpperCase(),
-                status: "PAID",
-                provider: "balance",
-                tariffId: client.autoRenewTariff!.id,
-                tariffPriceOptionId: renewBase.priceOptionId,
-                deviceCount: renewBase.extras,
-                paidAt: new Date(),
-                metadata: hasExtras ? JSON.stringify(metaObj) : null,
-              },
+
+            // Шаг 1: транзакция только для записи (никаких внешних вызовов внутри).
+            createdPaymentId = await prisma.$transaction(async (tx) => {
+              const p = await tx.payment.create({
+                data: {
+                  clientId: client.id,
+                  orderId: randomUUID(),
+                  amount: tariffPrice,
+                  currency: client.autoRenewTariff!.currency.toUpperCase(),
+                  status: "PAID",
+                  provider: "balance",
+                  tariffId: client.autoRenewTariff!.id,
+                  tariffPriceOptionId: renewBase.priceOptionId,
+                  deviceCount: renewBase.extras,
+                  paidAt: new Date(),
+                  metadata: hasExtras ? JSON.stringify(metaObj) : null,
+                },
+              });
+              if (autoRenewPromoCodeId) {
+                await tx.promoCodeUsage.create({
+                  data: { promoCodeId: autoRenewPromoCodeId, clientId: client.id },
+                });
+              }
+              return p.id;
             });
 
-            if (autoRenewPromoCodeId) {
-              await tx.promoCodeUsage.create({
-                data: { promoCodeId: autoRenewPromoCodeId, clientId: client.id },
-              });
+            // Шаг 2: активация ВНЕ транзакции — теперь платёж виден глобальному prisma.
+            // С retry на сетевые ошибки Remna (3 попытки 2с/4с/8с) — иначе моргнувший
+            // Remna ставит rollback debit для нескольких юзеров одновременно.
+            const isNetErr = (e?: string) =>
+              !!e && /fetch failed|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|socket hang up|abort|EAI_AGAIN/i.test(e);
+            let activationRes = await activateTariffByPaymentId(createdPaymentId);
+            for (let attempt = 1; attempt <= 3 && !activationRes.ok && isNetErr(activationRes.error); attempt++) {
+              const delay = attempt * 2000;
+              console.warn(`[auto-renew] Client ${client.id}: network error "${activationRes.error}", retry ${attempt}/3 in ${delay}ms...`);
+              await new Promise((r) => setTimeout(r, delay));
+              activationRes = await activateTariffByPaymentId(createdPaymentId);
             }
-
-            const activationRes = await activateTariffByPaymentId(payment.id);
             if (!activationRes.ok) {
               throw new Error(`Activation failed: ${activationRes.error}`);
             }
 
-            // Distribute referral rewards asynchronously
+            // Шаг 3: реферальные награды — fire-and-forget после успешной активации.
             import("../referral/referral.service.js")
-              .then((m) => m.distributeReferralRewards(payment.id))
+              .then((m) => m.distributeReferralRewards(createdPaymentId!))
               .catch((e) => console.error("[auto-renew] Referral reward error:", e));
-            });
           } catch (err) {
-            // Транзакция упала — откатываем атомарный debit, чтобы юзер не остался
-            // без денег и без тарифа.
+            // Шаг 1 или 2 упали — откатываем debit (юзеру возврат денег),
+            // если платёж был создан — помечаем FAILED (чтобы не висел PAID без активации).
             renewalFailed = true;
             await prisma.client.update({
               where: { id: client.id },
               data: { balance: { increment: tariffPrice } },
             }).catch((e) => console.error("[auto-renew] Rollback debit failed:", e));
+            if (createdPaymentId) {
+              await prisma.payment.update({
+                where: { id: createdPaymentId },
+                data: { status: "FAILED" },
+              }).catch((e) => console.error("[auto-renew] Mark payment FAILED failed:", e));
+            }
             console.error(`[auto-renew] Client ${client.id} renewal failed, debit rolled back:`, err);
           }
           if (renewalFailed) continue;

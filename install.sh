@@ -274,7 +274,11 @@ obtain_ssl() {
   generate_nginx_initial
 
   info "Запуск nginx (HTTP-only) для ACME-challenge..."
-  docker compose --profile builtin-nginx up -d nginx 2>&1 | tail -5
+  # --no-deps ОЧЕНЬ важно: в docker-compose.yml nginx имеет depends_on=frontend+api.
+  # Без --no-deps команда подтягивает api (build занимает 1-3 мин на медленной VPS)
+  # и frontend (одноразовый билд). Юзер видит "висит" и пугается. Для ACME-challenge
+  # nginx нужен сам по себе — он отдаёт static из /var/www/certbot, без бэкенда.
+  docker compose --profile builtin-nginx up -d --no-deps nginx 2>&1 | tail -5
 
   # ── Ожидание готовности nginx ──
   # Раньше было `sleep 3` — на медленных VPS этого мало, certbot стартовал
