@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Loader2, Search, RefreshCw, ShieldAlert, ChevronRight } from "lucide-react";
 import { auditApi, type AdminEvent, type AuditFacets } from "@/lib/admin-extras-api";
+import { fmtMsk } from "@/lib/datetime";
 
 const KIND_COLOR: Record<string, string> = {
   block: "text-red-600 dark:text-red-400",
@@ -165,7 +166,7 @@ export function AdminAuditPage() {
                   className="flex w-full items-center gap-3 p-3 text-left transition-colors hover:bg-accent"
                 >
                   <div className="text-xs text-muted-foreground font-mono w-32 shrink-0">
-                    {new Date(ev.createdAt).toLocaleString("ru")}
+                    {fmtMsk(ev.createdAt)}
                   </div>
                   <div className={`text-sm font-semibold w-48 shrink-0 ${colorOfKind(ev.kind)}`}>
                     {ev.kind}
@@ -204,7 +205,7 @@ export function AdminAuditPage() {
             <div className="space-y-3 text-sm">
               <div className="grid grid-cols-[120px_1fr] gap-2">
                 <span className="text-muted-foreground">Время:</span>
-                <span className="font-mono">{new Date(selected.createdAt).toLocaleString("ru")}</span>
+                <span className="font-mono">{fmtMsk(selected.createdAt)}</span>
                 <span className="text-muted-foreground">Админ:</span>
                 <span>{selected.actorId ?? <span className="text-muted-foreground italic">system</span>}</span>
                 <span className="text-muted-foreground">IP:</span>

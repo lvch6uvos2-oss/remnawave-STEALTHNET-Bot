@@ -81,6 +81,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { SchemaForm } from "@/components/landing-editor/schema-form";
 import { getBlockSchema, BLOCK_SCHEMAS, VARIANT_DESCRIPTIONS } from "@/components/landing-editor/block-schemas";
 import { ThemeDialog } from "@/components/landing-editor/theme-dialog";
+import { fmtMsk } from "@/lib/datetime";
 
 /** Маппинг имени иконки в schema.icon → компонент. */
 const ICON_MAP: Record<string, LucideIcon> = {
@@ -999,7 +1000,7 @@ function SnapshotsDialog({ open, onClose, token, onRestored, onError }: Snapshot
                 <div className="min-w-0 flex-1">
                   <div className="font-medium truncate">{s.label ?? "(без названия)"}</div>
                   <div className="text-xs text-muted-foreground">
-                    {new Date(s.createdAt).toLocaleString("ru-RU")}{s.createdBy ? ` · ${s.createdBy}` : ""}
+                    {fmtMsk(s.createdAt)}{s.createdBy ? ` · ${s.createdBy}` : ""}
                   </div>
                 </div>
                 <div className="flex shrink-0 gap-2">

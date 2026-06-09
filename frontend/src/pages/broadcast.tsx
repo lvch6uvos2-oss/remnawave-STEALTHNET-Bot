@@ -10,15 +10,19 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Paperclip, X, MousePointerClick, Mail, MessageSquare, Loader2, AlertTriangle, CheckCircle2,
-  History as HistoryIcon, Eye, RefreshCw, Sparkles, Megaphone, Users, Image as ImageIcon, FileText,
+  History as HistoryIcon, Eye, RefreshCw, Sparkles, Megaphone, Users, Image as ImageIcon, FileText, Film,
   Zap, Activity,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { fmtMsk } from "@/lib/datetime";
 
-const MAX_ATTACHMENT_MB = 20;
+// подняли с 20 до 50 МБ ради видео-вложений (sendVideo
+// через основной bot API лимит ~50 МБ). Совпадает с лимитом multer на бэке.
+const MAX_ATTACHMENT_MB = 50;
 
 const BUTTON_ACTIONS = [
   { value: "", label: "Без кнопки" },
+  { value: "menu:my_subs", label: "📋 Мои подписки" },
   { value: "menu:tariffs", label: "📦 Тарифы" },
   { value: "menu:topup", label: "💳 Пополнить баланс" },
   { value: "menu:profile", label: "👤 Профиль" },
@@ -73,6 +77,8 @@ export function BroadcastPage() {
   const token = state.accessToken ?? "";
   const [broadcastRecipients, setBroadcastRecipients] = useState<{ withTelegram: number; withEmail: number } | null>(null);
   const [broadcastChannel, setBroadcastChannel] = useState<ChannelKey>("telegram");
+  // целевая группа получателей.
+  const [broadcastTargetGroup, setBroadcastTargetGroup] = useState<string>("all");
   const [broadcastSubject, setBroadcastSubject] = useState("");
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [broadcastAttachment, setBroadcastAttachment] = useState<File | null>(null);
@@ -82,9 +88,25 @@ export function BroadcastPage() {
   const [broadcastLoading, setBroadcastLoading] = useState(false);
   const [broadcastResult, setBroadcastResult] = useState<BroadcastResult | null>(null);
   const [broadcastProgress, setBroadcastProgress] = useState<BroadcastProgress | null>(null);
+  // jobId активной рассылки + флаг «отмена запрошена».
+  const [broadcastJobId, setBroadcastJobId] = useState<string | null>(null);
+  const [broadcastCancelRequested, setBroadcastCancelRequested] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [activeTab, setActiveTab] = useState<"compose" | "history">("compose");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function handleBroadcastCancel() {
+    if (!broadcastJobId || broadcastCancelRequested) return;
+    if (!confirm("Прервать рассылку? Уже отправленные сообщения останутся.")) return;
+    setBroadcastCancelRequested(true);
+    try {
+      await api.cancelBroadcast(token, broadcastJobId);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Ошибка";
+      alert(`Не удалось отменить: ${msg}`);
+      setBroadcastCancelRequested(false);
+    }
+  }
 
   useEffect(() => {
     if (token) {
@@ -117,6 +139,8 @@ export function BroadcastPage() {
     setBroadcastLoading(true);
     setBroadcastResult(null);
     setBroadcastProgress(null);
+    setBroadcastJobId(null);
+    setBroadcastCancelRequested(false);
     try {
       const resolvedAction = broadcastButtonAction === "__custom_url__" ? broadcastButtonCustomUrl.trim() : broadcastButtonAction;
       const { jobId } = await api.broadcast(
@@ -127,9 +151,11 @@ export function BroadcastPage() {
           message: text,
           buttonText: broadcastButtonText.trim() || undefined,
           buttonUrl: resolvedAction || undefined,
+          targetGroup: broadcastTargetGroup === "all" ? undefined : broadcastTargetGroup,
         },
         broadcastAttachment ?? undefined
       );
+      setBroadcastJobId(jobId);
       const finalResult = await pollBroadcastJob(jobId);
       setBroadcastResult(finalResult);
       if (finalResult.ok) {
@@ -162,7 +188,20 @@ export function BroadcastPage() {
       try {
         const s = await api.broadcastStatus(token, jobId);
         if (s.progress) setBroadcastProgress(s.progress);
+        if (s.cancelRequested) setBroadcastCancelRequested(true);
         if (s.status === "completed" && s.result) return s.result;
+        if (s.status === "cancelled") {
+          // рассылка прервана админом, возвращаем то что успели.
+          return {
+            ok: true,
+            sentTelegram: s.progress?.sentTelegram ?? 0,
+            sentEmail: s.progress?.sentEmail ?? 0,
+            failedTelegram: s.progress?.failedTelegram ?? 0,
+            failedEmail: s.progress?.failedEmail ?? 0,
+            errors: s.result?.errors ?? [],
+            cancelled: true,
+          };
+        }
         if (s.status === "error") {
           return {
             ok: false,
@@ -311,6 +350,30 @@ export function BroadcastPage() {
                 </div>
               </section>
 
+              {/* селектор целевой группы получателей */}
+              <section>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-3 block">
+                  <Zap className="inline h-3 w-3 mr-1" /> Кому отправлять
+                </Label>
+                <select
+                  value={broadcastTargetGroup}
+                  onChange={(e) => setBroadcastTargetGroup(e.target.value)}
+                  className="w-full rounded-2xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.04] px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="all">📣 Все клиенты</option>
+                  <option value="with_any_subs">📋 С любыми подписками</option>
+                  <option value="without_subs">🚫 Без подписок</option>
+                  <option value="active_subs">✅ С активными подписками</option>
+                  <option value="expired_subs">⛔ С истёкшими подписками</option>
+                  <option value="standard_subs">🌐 Со Стандартной подпиской</option>
+                  <option value="unblock_subs">🔒 С Unblock-подпиской</option>
+                  <option value="unblock_unlimited">♾️🔒 С Безлимитным Unblock</option>
+                </select>
+                <p className="text-[11px] text-muted-foreground mt-2">
+                  Фильтр по тарифам — через menu_emoji (🌐 / 🔒 / ♾️🔒). Активные/Истёкшие — точный фильтр по expireAt подписок.
+                </p>
+              </section>
+
               {/* SUBJECT (email only) */}
               <AnimatePresence>
                 {(broadcastChannel === "email" || broadcastChannel === "both") && (
@@ -368,7 +431,8 @@ export function BroadcastPage() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*,.pdf,.doc,.docx,.txt"
+                  /* добавили video/* (mp4, mov, webm и т.д.) */
+                  accept="image/*,video/*,.pdf,.doc,.docx,.txt"
                   className="hidden"
                   onChange={(e) => setBroadcastAttachment(e.target.files?.[0] ?? null)}
                 />
@@ -387,7 +451,8 @@ export function BroadcastPage() {
                   >
                     <ImageIcon className={cn("h-8 w-8 mx-auto mb-2", dragOver ? "text-primary" : "text-muted-foreground")} />
                     <p className="text-sm font-medium">Перетащи файл сюда или <span className="text-primary underline">выбери</span></p>
-                    <p className="text-[11px] text-muted-foreground mt-1">Картинки → как фото с подписью. Документы → как файл.</p>
+                    {/* добавили видео в список форматов. */}
+                    <p className="text-[11px] text-muted-foreground mt-1">Картинки → как фото с подписью. Видео → как плеер с подписью. Документы → как файл.</p>
                   </div>
                 ) : (
                   <motion.div
@@ -396,7 +461,12 @@ export function BroadcastPage() {
                     className="flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 p-4"
                   >
                     <div className="h-12 w-12 rounded-xl bg-primary/20 flex items-center justify-center shrink-0">
-                      {broadcastAttachment.type.startsWith("image/") ? <ImageIcon className="h-6 w-6 text-primary" /> : <FileText className="h-6 w-6 text-primary" />}
+                      {/* отдельная иконка Film для видео. */}
+                      {broadcastAttachment.type.startsWith("image/")
+                        ? <ImageIcon className="h-6 w-6 text-primary" />
+                        : broadcastAttachment.type.startsWith("video/")
+                          ? <Film className="h-6 w-6 text-primary" />
+                          : <FileText className="h-6 w-6 text-primary" />}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{broadcastAttachment.name}</p>
@@ -493,7 +563,11 @@ export function BroadcastPage() {
               </div>
 
               {broadcastLoading && broadcastProgress && !broadcastResult && (
-                <BroadcastProgressPanel progress={broadcastProgress} />
+                <BroadcastProgressPanel
+                  progress={broadcastProgress}
+                  cancelRequested={broadcastCancelRequested}
+                  onCancel={broadcastJobId ? handleBroadcastCancel : undefined}
+                />
               )}
 
               {broadcastResult && (
@@ -570,7 +644,15 @@ function StatPill({ icon: Icon, label, value, colorClass }: { icon: typeof Send;
   );
 }
 
-function BroadcastProgressPanel({ progress }: { progress: BroadcastProgress }) {
+function BroadcastProgressPanel({
+  progress,
+  onCancel,
+  cancelRequested,
+}: {
+  progress: BroadcastProgress;
+  onCancel?: () => void;
+  cancelRequested?: boolean;
+}) {
   const tgDone = progress.sentTelegram + progress.failedTelegram;
   const emailDone = progress.sentEmail + progress.failedEmail;
   const tgPct = progress.totalTelegram > 0 ? Math.min(100, Math.round((tgDone / progress.totalTelegram) * 100)) : 0;
@@ -581,17 +663,37 @@ function BroadcastProgressPanel({ progress }: { progress: BroadcastProgress }) {
       animate={{ opacity: 1, y: 0 }}
       className="rounded-2xl border border-primary/30 bg-gradient-to-br from-primary/10 via-fuchsia-500/5 to-purple-500/10 p-5 text-sm backdrop-blur-md space-y-4"
     >
-      <div className="flex items-center gap-2.5">
-        <div className="relative h-9 w-9 rounded-xl bg-primary/20 flex items-center justify-center">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          <div className="absolute inset-0 rounded-xl ring-2 ring-primary/30 animate-pulse" />
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="relative h-9 w-9 rounded-xl bg-primary/20 flex items-center justify-center shrink-0">
+            <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            <div className="absolute inset-0 rounded-xl ring-2 ring-primary/30 animate-pulse" />
+          </div>
+          <div className="min-w-0">
+            <p className="font-semibold truncate">
+              {cancelRequested
+                ? "⏳ Останавливаем рассылку…"
+                : `Рассылка идёт${progress.currentChannel === "telegram" ? " — Telegram" : progress.currentChannel === "email" ? " — Email" : ""}…`}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              {cancelRequested
+                ? "Прервёмся между сообщениями (≤ 1 сек)"
+                : "Не закрывай вкладку до завершения"}
+            </p>
+          </div>
         </div>
-        <div>
-          <p className="font-semibold">
-            Рассылка идёт{progress.currentChannel === "telegram" ? " — Telegram" : progress.currentChannel === "email" ? " — Email" : ""}…
-          </p>
-          <p className="text-[11px] text-muted-foreground">Не закрывай вкладку до завершения</p>
-        </div>
+        {onCancel && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onCancel}
+            disabled={cancelRequested}
+            className="shrink-0 border-rose-500/40 text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
+          >
+            <X className="mr-1.5 h-3.5 w-3.5" />
+            {cancelRequested ? "Отменяю…" : "Отменить"}
+          </Button>
+        )}
       </div>
       {progress.totalTelegram > 0 && (
         <ProgressBar
@@ -670,6 +772,65 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
   const [detail, setDetail] = useState<BroadcastHistoryItem | null>(null);
+  // state для функции «Возобновить рассылку».
+  const resumeFileInputRef = useRef<HTMLInputElement>(null);
+  const [resumeLoading, setResumeLoading] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  // state для «Остановить» из истории (живой cancel либо zombie cleanup).
+  const [stopLoading, setStopLoading] = useState(false);
+  const [stopError, setStopError] = useState<string | null>(null);
+  // скачивание CSV получателей.
+  const [recipientsLoading, setRecipientsLoading] = useState(false);
+
+  const handleDownloadRecipients = async () => {
+    if (!detail) return;
+    setRecipientsLoading(true);
+    try {
+      await api.downloadBroadcastRecipientsCsv(token, detail.id);
+    } catch (e) {
+      alert(`Не удалось скачать: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRecipientsLoading(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!detail) return;
+    if (!window.confirm("Остановить эту рассылку? Если она ещё идёт — прервётся между сообщениями. Если зависла — будет помечена как cancelled.")) return;
+    setStopLoading(true);
+    setStopError(null);
+    try {
+      await api.cancelBroadcast(token, detail.id);
+      setDetail(null);
+      await load();
+    } catch (e) {
+      setStopError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStopLoading(false);
+    }
+  };
+
+  const handleResume = async (file: File | null) => {
+    if (!detail) return;
+    setResumeError(null);
+    if (detail.attachmentName && !file) {
+      setResumeError(`Нужно переаплоадить файл "${detail.attachmentName}"`);
+      return;
+    }
+    setResumeLoading(true);
+    try {
+      const res = await api.resumeBroadcast(token, detail.id, file ?? undefined);
+      if (!res.jobId) throw new Error("сервер не вернул jobId");
+      setDetail(null);
+      await load();
+      alert(`Рассылка возобновлена (jobId=${res.jobId}). Уже отправленные ${detail.sentTelegram} получателей будут пропущены.`);
+    } catch (e) {
+      setResumeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResumeLoading(false);
+      if (resumeFileInputRef.current) resumeFileInputRef.current.value = "";
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -766,7 +927,7 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
                       </span>
                       <span className="text-[11px] text-muted-foreground">{channelLabel(it.channel)}</span>
                       <span className="text-[11px] text-muted-foreground">·</span>
-                      <span className="text-[11px] text-muted-foreground whitespace-nowrap">{new Date(it.startedAt).toLocaleString("ru-RU")}</span>
+                      <span className="text-[11px] text-muted-foreground whitespace-nowrap">{fmtMsk(it.startedAt)}</span>
                     </div>
                     <p className="text-sm text-foreground/90 line-clamp-2 break-words pr-2">{preview}</p>
                     <div className="flex flex-wrap gap-2 text-[11px] font-mono">
@@ -805,7 +966,7 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
           </DialogHeader>
           {detail && (
             <div className="space-y-4 text-sm">
-              <p className="text-xs text-muted-foreground">Запущена: {new Date(detail.startedAt).toLocaleString("ru-RU")}{detail.finishedAt ? ` · завершена: ${new Date(detail.finishedAt).toLocaleString("ru-RU")}` : ""}</p>
+              <p className="text-xs text-muted-foreground">Запущена: {fmtMsk(detail.startedAt)}{detail.finishedAt ? ` · завершена: ${fmtMsk(detail.finishedAt)}` : ""}</p>
 
               <div className="grid grid-cols-2 gap-3">
                 <DetailTile label="Канал" value={channelLabel(detail.channel)} />
@@ -861,6 +1022,102 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
                 <div>
                   <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Ошибки доставки ({detail.errors.length})</p>
                   <pre className="whitespace-pre-wrap text-xs p-3 rounded-2xl border bg-red-500/5 border-red-500/20 max-h-48 overflow-y-auto text-red-600 dark:text-red-400">{detail.errors.join("\n")}</pre>
+                </div>
+              )}
+
+              {/* скачать CSV всех получателей этой рассылки. */}
+              {detail.sentTelegram > 0 && (
+                <div className="flex justify-start">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDownloadRecipients}
+                    disabled={recipientsLoading}
+                    className="rounded-xl"
+                  >
+                    {recipientsLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <FileText className="h-4 w-4 mr-2" />}
+                    Скачать получателей ({detail.sentTelegram.toLocaleString("ru-RU")}) — CSV
+                  </Button>
+                </div>
+              )}
+
+              {/* кнопка «Остановить» для running рассылок прямо из истории.
+                  Если job живой в памяти api — graceful cancel. Если зомби после рестарта —
+                  бэк помечает как cancelled в DB (zombie_cleanup). */}
+              {detail.status === "running" && (
+                <div className="p-4 rounded-2xl border border-red-500/30 bg-red-500/[0.05] space-y-3">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-red-500" />
+                    <p className="text-sm font-semibold text-red-600 dark:text-red-400">Остановить рассылку</p>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Прервёт активную рассылку между сообщениями. Если рассылка зависла после рестарта api («зомби») — будет помечена как cancelled.
+                    После остановки её можно <b>возобновить</b> с того же места через кнопку ниже (появится).
+                  </p>
+                  <Button
+                    onClick={handleStop}
+                    disabled={stopLoading}
+                    variant="destructive"
+                    className="rounded-xl"
+                  >
+                    {stopLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <AlertTriangle className="h-4 w-4 mr-2" />}
+                    Остановить
+                  </Button>
+                  {stopError && (
+                    <p className="text-xs text-red-500 mt-2 flex gap-1.5 items-start">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {stopError}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* кнопка «Возобновить» для cancelled/error.
+                  Skip уже отправленных через broadcast_sent_log → почти 0 дублей. */}
+              {(detail.status === "cancelled" || detail.status === "error") && detail.channel !== "email" && (
+                <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.05] space-y-3">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="h-4 w-4 text-emerald-500" />
+                    <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">Возобновить рассылку</p>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Продолжит с того места где остановилась — {detail.sentTelegram} уже отправленных {detail.totalTelegram > 0 ? `из ${detail.totalTelegram}` : ""} получателей будут пропущены автоматически.
+                    {detail.attachmentName && (
+                      <span className="block mt-1">⚠️ Файл-вложение нужно переаплоадить (бинарь не хранится в БД): <code className="text-foreground">{detail.attachmentName}</code></span>
+                    )}
+                  </p>
+                  <input
+                    ref={resumeFileInputRef}
+                    type="file"
+                    accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+                    className="hidden"
+                    onChange={(e) => handleResume(e.target.files?.[0] ?? null)}
+                  />
+                  <div className="flex gap-2">
+                    {detail.attachmentName ? (
+                      <Button
+                        onClick={() => resumeFileInputRef.current?.click()}
+                        disabled={resumeLoading}
+                        className="rounded-xl bg-emerald-500 hover:bg-emerald-600"
+                      >
+                        {resumeLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Paperclip className="h-4 w-4 mr-2" />}
+                        Загрузить файл и возобновить
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={() => handleResume(null)}
+                        disabled={resumeLoading}
+                        className="rounded-xl bg-emerald-500 hover:bg-emerald-600"
+                      >
+                        {resumeLoading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                        Возобновить
+                      </Button>
+                    )}
+                  </div>
+                  {resumeError && (
+                    <p className="text-xs text-red-500 mt-2 flex gap-1.5 items-start">
+                      <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" /> {resumeError}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

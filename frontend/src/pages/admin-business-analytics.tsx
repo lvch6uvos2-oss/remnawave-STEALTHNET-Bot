@@ -19,6 +19,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { businessAnalyticsApi, type BusinessAnalyticsResponse, type CohortRow } from "@/lib/admin-extras-api";
+import { fmtMsk } from "@/lib/datetime";
 
 const PERIOD_OPTIONS = [
   { value: 7, label: "7д" },
@@ -351,7 +352,7 @@ export function AdminBusinessAnalyticsPage() {
           </Card>
 
           <p className="text-[11px] text-muted-foreground text-center pt-2">
-            Сгенерировано: {new Date(data.generatedAt).toLocaleString("ru-RU")}
+            Сгенерировано: {fmtMsk(data.generatedAt)}
           </p>
         </>
       ) : null}

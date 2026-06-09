@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { fmtMsk } from "@/lib/datetime";
 
 interface Squad {
   uuid: string;
@@ -352,7 +353,7 @@ export function PromoPage() {
                       <td className="px-4 py-3 font-medium">{a.client.email || a.client.id.slice(0, 8)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{a.client.telegramUsername ? `@${a.client.telegramUsername}` : a.client.telegramId || "—"}</td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{a.client.remnawaveUuid?.slice(0, 12) || "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{new Date(a.createdAt).toLocaleString("ru-RU")}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{fmtMsk(a.createdAt)}</td>
                     </tr>
                   ))}
                 </tbody>

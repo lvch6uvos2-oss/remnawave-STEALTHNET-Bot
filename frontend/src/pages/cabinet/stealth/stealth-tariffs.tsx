@@ -62,6 +62,12 @@ function fmtPrice(n: number, currency: string) {
   return `${Math.round(n)}${sym}`;
 }
 
+// Цена за день — всегда с копейками (2 знака), в отличие от полной цены.
+function fmtPricePerDay(n: number, currency: string) {
+  const sym = currency === "rub" || currency === "RUB" ? "₽" : currency === "usd" || currency === "USD" ? "$" : currency.toUpperCase();
+  return `${n.toFixed(2)}${sym}`;
+}
+
 export function StealthTariffs() {
   const { state, refreshProfile } = useClientAuth();
   const navigate = useNavigate();
@@ -308,7 +314,7 @@ export function StealthTariffs() {
             <div className="text-xs text-zinc-500 mt-1.5">дн.</div>
           </div>
           <div className="text-right">
-            <div className="text-2xl font-bold tabular-nums">{fmtPrice(pricePerDay, currency)}</div>
+            <div className="text-2xl font-bold tabular-nums">{fmtPricePerDay(pricePerDay, currency)}</div>
             <div className="text-xs text-zinc-500">/день</div>
           </div>
         </div>

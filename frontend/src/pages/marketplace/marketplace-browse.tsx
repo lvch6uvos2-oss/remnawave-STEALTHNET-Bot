@@ -10,6 +10,7 @@ import { GlassSelect } from "@/components/ui/glass-select";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { flagEmoji, formatPrice, priceUnitKey, safeUrl } from "./marketplace-helpers";
+import { fmtMskDate } from "@/lib/datetime";
 
 type SortValue = "new" | "cheap" | "expensive";
 const COUNTRY_OPTIONS: { value: string; labelKey?: string; label?: string }[] = [
@@ -354,7 +355,7 @@ function ListingDialog({ open, item, lang, onClose }: { open: boolean; item: Mar
                 </div>
               </div>
               <div className="text-xs text-muted-foreground">
-                {t("admin.marketplace.card.since", { date: new Date(item.seller.memberSince).toLocaleDateString() })}
+                {t("admin.marketplace.card.since", { date: fmtMskDate(item.seller.memberSince) })}
               </div>
               <Button asChild size="sm" className="w-full mt-2">
                 <a href={tgUrl} target="_blank" rel="noopener noreferrer">

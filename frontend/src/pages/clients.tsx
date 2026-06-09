@@ -6,9 +6,8 @@ import {
   type UpdateClientPayload,
   type UpdateClientRemnaPayload,
   type RemnaUserFull,
-  type RemnaHwidDevice,
   type RemnaUserUsageResponse,
-  type AdminSecondarySubscription,
+  type AdminClientSubscriptionItem,
   type TariffCategoryWithTariffs,
   type TariffRecord,
 } from "@/lib/api";
@@ -26,13 +25,15 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Pencil, Trash2, Ban, ShieldCheck, Wifi, Ticket, KeyRound, Search,
-  Copy, Check, Smartphone, Activity, User, Users, Settings, HardDrive, Link, Unlink,
+  Copy, Check, Smartphone, Activity, User, Users, HardDrive, Link,
   RefreshCw, Loader2, Package, Gift, Coins, MailX, MailCheck, RotateCw,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { clientsBulkApi, type BulkClientAction } from "@/lib/admin-extras-api";
+import { ClientSubscriptionsTab } from "@/components/admin/client-subscriptions-tab";
+import { fmtMsk, fmtMskDate } from "@/lib/datetime";
 
 function formatTrafficBytes(bytes: number | null | undefined): string {
   if (bytes == null || bytes <= 0) return "0 B";
@@ -65,14 +66,6 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   EXPIRED: { label: "Истёк", color: "bg-gray-500/15 text-gray-400 border-gray-500/20" },
 };
 
-const STRATEGY_LABELS: Record<string, string> = {
-  NO_RESET: "Без сброса",
-  DAY: "Ежедневно",
-  WEEK: "Еженедельно",
-  MONTH: "Ежемесячно",
-  MONTH_ROLLING: "Скользящий месяц",
-};
-
 function getOnlineStatus(onlineAt: string | null): { isOnline: boolean; label: string } {
   if (!onlineAt) return { isOnline: false, label: "Не подключался" };
   const diff = Date.now() - new Date(onlineAt).getTime();
@@ -89,8 +82,6 @@ export function ClientsPage() {
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState<ClientRecord | null>(null);
   const [editForm, setEditForm] = useState<UpdateClientPayload & Partial<UpdateClientRemnaPayload>>({});
-  const [remnaData, setRemnaData] = useState<{ squads: { uuid: string; name?: string }[] }>({ squads: [] });
-  const [clientRemnaSquads, setClientRemnaSquads] = useState<string[]>([]);
   const [settings, setSettings] = useState<{ activeLanguages: string[]; activeCurrencies: string[] } | null>(null);
   const [saving, setSaving] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -215,25 +206,6 @@ export function ClientsPage() {
     setPage(1);
   };
 
-  useEffect(() => {
-    if (editing?.remnawaveUuid) {
-      api.getRemnaSquadsInternal(token).then((raw: unknown) => {
-        const res = raw as { response?: { internalSquads?: { uuid: string; name?: string }[] } };
-        const items = res?.response?.internalSquads ?? (Array.isArray(res) ? res : []);
-        setRemnaData({ squads: Array.isArray(items) ? items : [] });
-      }).catch(() => setRemnaData({ squads: [] }));
-      api.getClientRemna(token, editing.id).then((raw: unknown) => {
-        const res = raw as { response?: { activeInternalSquads?: Array<{ uuid?: string } | string> } };
-        const arr = res?.response?.activeInternalSquads ?? [];
-        const uuids = Array.isArray(arr) ? arr.map((s) => (typeof s === "string" ? s : s?.uuid)).filter((u): u is string => Boolean(u)) : [];
-        setClientRemnaSquads(uuids);
-      }).catch(() => setClientRemnaSquads([]));
-    } else {
-      setRemnaData({ squads: [] });
-      setClientRemnaSquads([]);
-    }
-  }, [token, editing?.id, editing?.remnawaveUuid]);
-
   function openEdit(c: ClientRecord) {
     setEditing(c);
     setEditForm({
@@ -245,6 +217,7 @@ export function ClientsPage() {
       blockReason: c.blockReason ?? undefined,
       referralPercent: c.referralPercent ?? undefined,
       personalDiscountPercent: c.personalDiscountPercent ?? undefined,
+      personalDiscountIsOneTime: c.personalDiscountIsOneTime ?? false,
     });
     setActionMessage(null);
   }
@@ -263,6 +236,7 @@ export function ClientsPage() {
         blockReason: editForm.blockReason ?? null,
         referralPercent: editForm.referralPercent ?? null,
         personalDiscountPercent: editForm.personalDiscountPercent ?? null,
+        personalDiscountIsOneTime: editForm.personalDiscountIsOneTime ?? false,
       });
       setEditing(updated);
       // Пересоздаём форму из обновлённых данных, иначе input'ы (привязанные к editForm)
@@ -276,28 +250,10 @@ export function ClientsPage() {
         blockReason: updated.blockReason ?? undefined,
         referralPercent: updated.referralPercent ?? undefined,
         personalDiscountPercent: updated.personalDiscountPercent ?? undefined,
+        personalDiscountIsOneTime: updated.personalDiscountIsOneTime ?? false,
       });
       setActionMessage(t("admin.clients.saved"));
       loadClients();
-    } catch (e) {
-      setActionMessage(e instanceof Error ? e.message : t("admin.clients.error"));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function saveRemnaLimits() {
-    if (!editing?.remnawaveUuid) return;
-    setSaving(true);
-    setActionMessage(null);
-    try {
-      const payload: UpdateClientRemnaPayload = {};
-      if (editForm.trafficLimitBytes !== undefined) payload.trafficLimitBytes = editForm.trafficLimitBytes;
-      if (editForm.trafficLimitStrategy) payload.trafficLimitStrategy = editForm.trafficLimitStrategy;
-      if (editForm.hwidDeviceLimit !== undefined) payload.hwidDeviceLimit = editForm.hwidDeviceLimit;
-      if (editForm.expireAt) payload.expireAt = editForm.expireAt;
-      await api.updateClientRemna(token, editing.id, payload);
-      setActionMessage(t("admin.clients.remna_limits_updated"));
     } catch (e) {
       setActionMessage(e instanceof Error ? e.message : t("admin.clients.error"));
     } finally {
@@ -313,20 +269,6 @@ export function ClientsPage() {
       loadClients();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Ошибка удаления");
-    }
-  }
-
-  async function remnaAction(
-    name: string,
-    fn: () => Promise<unknown>
-  ) {
-    setActionMessage(null);
-    try {
-      await fn();
-      setActionMessage(name + " — ок");
-      loadClients();
-    } catch (e) {
-      setActionMessage(name + ": " + (e instanceof Error ? e.message : "ошибка"));
     }
   }
 
@@ -351,18 +293,6 @@ export function ClientsPage() {
     } finally {
       setSavingPassword(false);
     }
-  }
-
-  async function squadAdd(squadUuid: string) {
-    if (!editing) return;
-    await remnaAction(t("admin.clients.squad_added"), () => api.clientRemnaSquadAdd(token, editing.id, squadUuid));
-    setClientRemnaSquads((prev) => (prev.includes(squadUuid) ? prev : [...prev, squadUuid]));
-  }
-
-  async function squadRemove(squadUuid: string) {
-    if (!editing) return;
-    await remnaAction(t("admin.clients.squad_removed"), () => api.clientRemnaSquadRemove(token, editing.id, squadUuid));
-    setClientRemnaSquads((prev) => prev.filter((u) => u !== squadUuid));
   }
 
   const totalPages = data ? Math.ceil(data.total / 20) : 0;
@@ -665,7 +595,7 @@ export function ClientsPage() {
                           <span className="inline-flex items-center gap-1 rounded-md bg-white/5 px-2 py-1 font-medium text-xs border border-white/5 max-w-fit">
                             {c.balance.toFixed(2)} {c.preferredCurrency.toUpperCase()}
                           </span>
-                          <span className="text-[11px] text-muted-foreground">{new Date(c.createdAt).toLocaleDateString("ru")}</span>
+                          <span className="text-[11px] text-muted-foreground">{fmtMskDate(c.createdAt)}</span>
                         </div>
                       </td>
                       <td className="px-6 py-4">
@@ -733,8 +663,6 @@ export function ClientsPage() {
           setEditForm={setEditForm}
           saving={saving}
           actionMessage={actionMessage}
-          remnaData={remnaData}
-          clientRemnaSquads={clientRemnaSquads}
           activeLanguages={settings?.activeLanguages ?? []}
           activeCurrencies={settings?.activeCurrencies ?? []}
           onClose={() => {
@@ -743,10 +671,6 @@ export function ClientsPage() {
             setPasswordMessage(null);
           }}
           onSave={saveClient}
-          onSaveRemnaLimits={saveRemnaLimits}
-          onRemnaAction={remnaAction}
-          onSquadAdd={squadAdd}
-          onSquadRemove={squadRemove}
           onSetPassword={saveClientPassword}
           passwordForm={passwordForm}
           setPasswordForm={setPasswordForm}
@@ -765,13 +689,8 @@ function ClientEditModal({
   setEditForm,
   saving,
   actionMessage,
-  remnaData,
   onClose,
   onSave,
-  onSaveRemnaLimits,
-  onRemnaAction,
-  onSquadAdd,
-  onSquadRemove,
   onSetPassword,
   passwordForm,
   setPasswordForm,
@@ -780,23 +699,16 @@ function ClientEditModal({
   token,
   activeLanguages,
   activeCurrencies,
-  clientRemnaSquads,
 }: {
   client: ClientRecord;
   editForm: UpdateClientPayload & Partial<UpdateClientRemnaPayload>;
   setEditForm: React.Dispatch<React.SetStateAction<UpdateClientPayload & Partial<UpdateClientRemnaPayload>>>;
   saving: boolean;
   actionMessage: string | null;
-  remnaData: { squads: { uuid: string; name?: string }[] };
-  clientRemnaSquads: string[];
   activeLanguages: string[];
   activeCurrencies: string[];
   onClose: () => void;
   onSave: () => Promise<void>;
-  onSaveRemnaLimits: () => Promise<void>;
-  onRemnaAction: (name: string, fn: () => Promise<unknown>) => Promise<void>;
-  onSquadAdd: (squadUuid: string) => Promise<void>;
-  onSquadRemove: (squadUuid: string) => Promise<void>;
   onSetPassword: () => Promise<void>;
   passwordForm: { newPassword: string; confirm: string };
   setPasswordForm: React.Dispatch<React.SetStateAction<{ newPassword: string; confirm: string }>>;
@@ -807,18 +719,36 @@ function ClientEditModal({
   const { t } = useTranslation();
   const [tab, setTab] = useState("profile");
   const [remnaUser, setRemnaUser] = useState<RemnaUserFull | null>(null);
-  const [remnaLoading, setRemnaLoading] = useState(false);
-  const [devices, setDevices] = useState<RemnaHwidDevice[]>([]);
+  const [, setRemnaLoading] = useState(false);
+  // devices-список теперь во вложенном <ClientAllDevicesTab>.
+  // Здесь оставляем только total — для бейджа на вкладке.
   const [devicesTotal, setDevicesTotal] = useState(0);
-  const [devicesLoading, setDevicesLoading] = useState(false);
+  // inline-редактор реферера (кто привёл клиента).
+  const [referrerInfo, setReferrerInfo] = useState<ClientRecord["referrer"]>(undefined);
+  const [referrerInput, setReferrerInput] = useState("");
+  const [referrerLookupBy, setReferrerLookupBy] = useState<"referralCode" | "username" | "tgid" | "id">("referralCode");
+  const [referrerSaving, setReferrerSaving] = useState(false);
+  const [referrerMessage, setReferrerMessage] = useState<string | null>(null);
   const [usageData, setUsageData] = useState<RemnaUserUsageResponse["response"] | null>(null);
-  const [secondarySubs, setSecondarySubs] = useState<AdminSecondarySubscription[]>([]);
+  // раньше тут грузили через getSecondarySubscriptions(search=clientId).
+  // Этот endpoint был для глобальной страницы /admin/secondary-subscriptions и работал
+  // через text-search по нескольким полям — для мигрированных клиентов случались
+  // false-negatives (показывало «У клиента ещё нет подписок» когда subs в DB были).
+  // Теперь используем дедикатед /admin/clients/:id/subscriptions — точный фильтр по
+  // ownerId + giftedToClientId, возвращает ВСЕ subs клиента (включая root index=0).
+  const [secondarySubs, setSecondarySubs] = useState<AdminClientSubscriptionItem[]>([]);
   const [secondarySubsLoading, setSecondarySubsLoading] = useState(false);
 
   const [tariffCategories, setTariffCategories] = useState<TariffCategoryWithTariffs[]>([]);
   const [selectedGrantTariffId, setSelectedGrantTariffId] = useState<string>("");
   // Выбранная опция длительности из priceOptions выбранного тарифа
   const [selectedGrantOptionId, setSelectedGrantOptionId] = useState<string>("");
+  // кастомный лимит трафика в GB (override тарифа).
+  // Пустая строка → используется лимит тарифа. Поле показывается только для НЕ-безлимитных тарифов.
+  const [grantTrafficGb, setGrantTrafficGb] = useState<string>("");
+  // override длительности в днях. Пустая строка → используется
+  // длительность выбранной опции / тарифа по умолчанию.
+  const [grantCustomDays, setGrantCustomDays] = useState<string>("");
   const [grantNote, setGrantNote] = useState<string>("");
   const [grantLoading, setGrantLoading] = useState(false);
   const [grantMessage, setGrantMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
@@ -832,14 +762,12 @@ function ClientEditModal({
     }).catch(() => {}).finally(() => setRemnaLoading(false));
   }, [token, editing.id, editing.remnawaveUuid]);
 
+  // Тут только обновляем total для бейджа — сам список рендерится в ClientAllDevicesTab.
   const loadDevices = useCallback(() => {
-    if (!editing.remnawaveUuid) return;
-    setDevicesLoading(true);
-    api.getClientRemnaDevices(token, editing.id).then((d) => {
-      setDevices(d.response?.devices ?? []);
-      setDevicesTotal(d.response?.total ?? 0);
-    }).catch(() => {}).finally(() => setDevicesLoading(false));
-  }, [token, editing.id, editing.remnawaveUuid]);
+    api.getClientAllDevices(token, editing.id).then((r) => {
+      setDevicesTotal(r.total);
+    }).catch(() => {});
+  }, [token, editing.id]);
 
   const loadUsage = useCallback(() => {
     if (!editing.remnawaveUuid) return;
@@ -850,23 +778,56 @@ function ClientEditModal({
 
   const loadSecondarySubs = useCallback(() => {
     setSecondarySubsLoading(true);
-    api.getSecondarySubscriptions(token, { page: 1, limit: 100, search: editing.id })
-      .then((r) => {
-        const items = (r.items ?? []).filter(
-          (s) => s.owner?.id === editing.id || s.giftedToClient?.id === editing.id
-        );
-        setSecondarySubs(items);
-      })
+    api.getClientSubscriptionsList(token, editing.id)
+      .then((r) => setSecondarySubs(r.items ?? []))
       .catch(() => setSecondarySubs([]))
       .finally(() => setSecondarySubsLoading(false));
   }, [token, editing.id]);
+
+  // догружаем реферера (список клиентов его не отдаёт).
+  const loadReferrer = useCallback(() => {
+    api.getClientDetail(token, editing.id)
+      .then((full) => setReferrerInfo(full.referrer ?? null))
+      .catch(() => setReferrerInfo(null));
+  }, [token, editing.id]);
+
+  async function attachReferrer() {
+    if (!referrerInput.trim()) return;
+    setReferrerSaving(true);
+    setReferrerMessage(null);
+    try {
+      const res = await api.setReferralReferrer(token, editing.id, referrerInput.trim(), referrerLookupBy);
+      loadReferrer();
+      setReferrerInput("");
+      setReferrerMessage(res.referrerId ? "✅ Реферер привязан" : "Реферер убран");
+    } catch (e) {
+      setReferrerMessage(e instanceof Error ? e.message : "Ошибка привязки");
+    } finally {
+      setReferrerSaving(false);
+    }
+  }
+
+  async function detachReferrer() {
+    setReferrerSaving(true);
+    setReferrerMessage(null);
+    try {
+      await api.setReferralReferrer(token, editing.id, null);
+      setReferrerInfo(null);
+      setReferrerMessage("Реферер убран");
+    } catch (e) {
+      setReferrerMessage(e instanceof Error ? e.message : "Ошибка");
+    } finally {
+      setReferrerSaving(false);
+    }
+  }
 
   useEffect(() => {
     loadRemnaUser();
     loadDevices();
     loadUsage();
     loadSecondarySubs();
-  }, [loadRemnaUser, loadDevices, loadUsage, loadSecondarySubs]);
+    loadReferrer();
+  }, [loadRemnaUser, loadDevices, loadUsage, loadSecondarySubs, loadReferrer]);
 
   useEffect(() => {
     let cancelled = false;
@@ -883,10 +844,31 @@ function ClientEditModal({
     setGrantLoading(true);
     setGrantMessage(null);
     try {
+      // парсим override трафика — GB → bytes.
+      // Пустая строка / некорректное число → null (используется лимит тарифа).
+      let trafficLimitBytesOverride: number | null | undefined;
+      const trimmed = grantTrafficGb.trim();
+      if (trimmed !== "") {
+        const gb = parseFloat(trimmed.replace(",", "."));
+        if (Number.isFinite(gb) && gb >= 0) {
+          trafficLimitBytesOverride = Math.round(gb * 1024 ** 3);
+        }
+      }
+      // парсим override длительности. Пустая строка / не-число → не шлём.
+      let customDurationDaysOverride: number | undefined;
+      const daysTrimmed = grantCustomDays.trim();
+      if (daysTrimmed !== "") {
+        const days = parseInt(daysTrimmed, 10);
+        if (Number.isFinite(days) && days >= 1 && days <= 3650) {
+          customDurationDaysOverride = days;
+        }
+      }
       const res = await api.grantClientTariff(token, editing.id, {
         tariffId: selectedGrantTariffId,
         tariffPriceOptionId: selectedGrantOptionId || undefined,
         note: grantNote.trim() || undefined,
+        ...(trafficLimitBytesOverride !== undefined ? { trafficLimitBytes: trafficLimitBytesOverride } : {}),
+        ...(customDurationDaysOverride !== undefined ? { customDurationDays: customDurationDaysOverride } : {}),
       });
       if (res.ok) {
         setGrantMessage({
@@ -898,9 +880,12 @@ function ClientEditModal({
           }),
         });
         setGrantNote("");
+        setGrantTrafficGb("");
+        setGrantCustomDays("");
         loadRemnaUser();
         loadDevices();
         loadUsage();
+        loadSecondarySubs();
       } else {
         setGrantMessage({ type: "err", text: res.message ?? t("admin.clients.grant_tariff_error", "Не удалось выдать тариф") });
       }
@@ -911,16 +896,6 @@ function ClientEditModal({
       });
     } finally {
       setGrantLoading(false);
-    }
-  };
-
-  const deleteDevice = async (hwid: string) => {
-    if (!confirm(t("admin.clients.delete_device_confirm"))) return;
-    try {
-      await api.deleteClientRemnaDevice(token, editing.id, hwid);
-      loadDevices();
-    } catch (e) {
-      alert(e instanceof Error ? e.message : t("admin.clients.delete_error"));
     }
   };
 
@@ -962,7 +937,7 @@ function ClientEditModal({
                   )}
                 </div>
                 <div className="text-xs text-muted-foreground font-normal mt-0.5">
-                  {t("admin.clients.created")} {new Date(editing.createdAt).toLocaleString("ru")}
+                  {t("admin.clients.created")} {fmtMsk(editing.createdAt)}
                   {remnaUser?.shortUuid && <> &middot; <code className="text-[10px]">{remnaUser.shortUuid}</code></>}
                 </div>
               </div>
@@ -1011,8 +986,8 @@ function ClientEditModal({
                   <span className="text-sm font-medium">{isOnline ? t("admin.clients.status_online") : t("admin.clients.status_offline")}</span>
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {onlineAt ? `${t("admin.clients.last_seen")} ${new Date(onlineAt).toLocaleString("ru")}` :
-                    remnaUser.userTraffic?.firstConnectedAt ? `${t("admin.clients.first_login")} ${new Date(remnaUser.userTraffic.firstConnectedAt).toLocaleDateString("ru")}` : t("admin.clients.no_data")}
+                  {onlineAt ? `${t("admin.clients.last_seen")} ${fmtMsk(onlineAt)}` :
+                    remnaUser.userTraffic?.firstConnectedAt ? `${t("admin.clients.first_login")} ${fmtMskDate(remnaUser.userTraffic.firstConnectedAt)}` : t("admin.clients.no_data")}
                 </div>
               </div>
             </div>
@@ -1025,10 +1000,20 @@ function ClientEditModal({
               <TabsTrigger value="profile" className="gap-1.5 text-xs rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all">
                 <User className="h-3.5 w-3.5" /> {t("admin.clients.info")}
               </TabsTrigger>
-              {editing.remnawaveUuid && (
+              {/* после унификации Client.remnawaveUuid может быть null,
+                  но у клиента есть Subscription[0].remnawaveUuid. Показываем вкладки если ЕСТЬ
+                  хоть одна подписка с remnawaveUuid (включая primary). */}
+              {/* вкладка «Подписки» заменила «Remna».
+                  Данные Remna / Лимиты / Сквады / Быстрые действия теперь per-subscription.
+                  Вкладка «Действия» оставлена для МАССОВЫХ операций (применяются ко ВСЕМ подпискам). */}
+              {/* показываем вкладки и если у клиента есть подписки БЕЗ
+                  remna (например, migrate_inactive не создаёт Remna user — он добавляется при
+                  первой покупке). Иначе кнопка «Открыть детально» в инлайн-блоке switch'ала
+                  на несуществующий tab. */}
+              {(editing.remnawaveUuid || secondarySubs.length > 0) && (
                 <>
-                  <TabsTrigger value="remna" className="gap-1.5 text-xs rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all">
-                    <Settings className="h-3.5 w-3.5" /> {t("admin.clients.remna")}
+                  <TabsTrigger value="subscriptions" className="gap-1.5 text-xs rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all">
+                    <Package className="h-3.5 w-3.5" /> Подписки
                   </TabsTrigger>
                   <TabsTrigger value="devices" className="gap-1.5 text-xs rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md transition-all">
                     <Smartphone className="h-3.5 w-3.5" /> {t("admin.clients.devices")}
@@ -1149,6 +1134,72 @@ function ClientEditModal({
                     );
                   })()}
 
+                  {/* 3. Лимит трафика — ТОЛЬКО для НЕ-безлимитных тарифов.
+                      Если у тарифа trafficLimitBytes == 0 / null → блок скрыт (нечего переопределять).
+                      Пустое поле → используется лимит тарифа. */}
+                  {(() => {
+                    const selectedTariff = flatTariffs.find((tr) => tr.id === selectedGrantTariffId);
+                    const tariffLimitBytes = selectedTariff?.trafficLimitBytes != null ? Number(selectedTariff.trafficLimitBytes) : 0;
+                    const tariffIsUnlimited = !selectedTariff || tariffLimitBytes <= 0;
+                    if (tariffIsUnlimited) return null;
+                    const defaultGb = (tariffLimitBytes / 1024 ** 3).toFixed(0);
+                    return (
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">
+                          3. {t("admin.clients.grant_tariff_traffic", "Лимит трафика (GB)")} —{" "}
+                          <span className="text-foreground/70">
+                            {t("admin.clients.grant_tariff_traffic_hint", { defaultValue: "по умолчанию {{gb}} GB; 0 = безлимит", gb: defaultGb })}
+                          </span>
+                        </Label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          step={0.1}
+                          value={grantTrafficGb}
+                          onChange={(e) => setGrantTrafficGb(e.target.value)}
+                          placeholder={defaultGb}
+                          disabled={grantLoading}
+                          className="rounded-xl"
+                        />
+                      </div>
+                    );
+                  })()}
+
+                  {/* override длительности подписки в днях.
+                      Подсказка показывает дефолт из выбранной опции / тарифа. Пусто → дефолт. */}
+                  {(() => {
+                    const selectedTariff = flatTariffs.find((tr) => tr.id === selectedGrantTariffId);
+                    if (!selectedTariff) return null;
+                    const selectedOpt = selectedTariff.priceOptions?.find((o) => o.id === selectedGrantOptionId);
+                    const defaultDays = selectedOpt?.durationDays ?? selectedTariff.durationDays ?? 30;
+                    return (
+                      <div className="space-y-1">
+                        <Label className="text-[11px] text-muted-foreground">
+                          {t("admin.clients.grant_tariff_days", "Длительность (дней)")} —{" "}
+                          <span className="text-foreground/70">
+                            {t("admin.clients.grant_tariff_days_hint", {
+                              defaultValue: "по умолчанию {{days}} дн.; перебивает опцию",
+                              days: defaultDays,
+                            })}
+                          </span>
+                        </Label>
+                        <Input
+                          type="number"
+                          inputMode="numeric"
+                          min={1}
+                          max={3650}
+                          step={1}
+                          value={grantCustomDays}
+                          onChange={(e) => setGrantCustomDays(e.target.value)}
+                          placeholder={String(defaultDays)}
+                          disabled={grantLoading}
+                          className="rounded-xl"
+                        />
+                      </div>
+                    );
+                  })()}
+
                   <div className="space-y-1">
                     <Label className="text-[11px] text-muted-foreground">{t("admin.clients.grant_tariff_note", "Комментарий (необязательно)")}</Label>
                     <Input
@@ -1221,6 +1272,59 @@ function ClientEditModal({
                       <span className="text-muted-foreground">{t("admin.clients.referrals")}</span>
                       <span>{editing._count?.referrals ?? 0}</span>
                     </div>
+                    {/* привязка реферера прямо в карточке клиента. */}
+                    <div className="sm:col-span-2 mt-1 p-3 rounded-xl border border-white/10 bg-card/40 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">Реферер (кто привёл)</span>
+                        {referrerInfo ? (
+                          <span className="flex items-center gap-1.5 text-xs">
+                            <span className="text-foreground font-medium">
+                              {referrerInfo.telegramUsername ? `@${referrerInfo.telegramUsername}` : referrerInfo.email || referrerInfo.id.slice(0, 8)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={detachReferrer}
+                              disabled={referrerSaving}
+                              className="text-red-500 hover:text-red-400 text-[11px] underline disabled:opacity-50"
+                            >
+                              отвязать
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground text-xs">не привязан</span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <select
+                          value={referrerLookupBy}
+                          onChange={(e) => setReferrerLookupBy(e.target.value as typeof referrerLookupBy)}
+                          className="h-9 rounded-lg border border-input bg-background px-2 text-xs shrink-0"
+                          disabled={referrerSaving}
+                        >
+                          <option value="referralCode">Реф. код</option>
+                          <option value="username">@username</option>
+                          <option value="tgid">TG ID</option>
+                          <option value="id">ID клиента</option>
+                        </select>
+                        <Input
+                          value={referrerInput}
+                          onChange={(e) => setReferrerInput(e.target.value)}
+                          placeholder={referrerLookupBy === "referralCode" ? "Реф. код реферера" : referrerLookupBy === "username" ? "@username" : referrerLookupBy === "tgid" ? "Telegram ID" : "ID клиента"}
+                          className="h-9 text-xs"
+                          onKeyDown={(e) => { if (e.key === "Enter") attachReferrer(); }}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="h-9 shrink-0 rounded-lg"
+                          onClick={attachReferrer}
+                          disabled={referrerSaving || !referrerInput.trim()}
+                        >
+                          {referrerSaving ? "…" : "Привязать"}
+                        </Button>
+                      </div>
+                      {referrerMessage && <p className="text-[11px] text-muted-foreground">{referrerMessage}</p>}
+                    </div>
                     {remnaUser?.subscriptionUrl && (
                       <div className="flex justify-between sm:col-span-2">
                         <span className="text-muted-foreground flex items-center gap-1"><Link className="h-3 w-3" /> {t("admin.clients.subscription")}</span>
@@ -1235,12 +1339,12 @@ function ClientEditModal({
 
                 <div className="rounded-[1.5rem] bg-gradient-to-br from-background/80 to-background/40 border border-white/10 p-5 space-y-3 text-sm hover:bg-white/5 transition-colors">
                   <div className="font-medium text-xs uppercase tracking-wider text-muted-foreground mb-2">
-                    Дополнительные подписки
+                    Подписки клиента
                   </div>
                   {secondarySubsLoading ? (
                     <div className="text-sm text-muted-foreground">{t("admin.clients.loading_short")}</div>
                   ) : secondarySubs.length === 0 ? (
-                    <div className="text-sm text-muted-foreground">Нет дополнительных подписок</div>
+                    <div className="text-sm text-muted-foreground">У клиента ещё нет подписок</div>
                   ) : (
                     <div className="space-y-2">
                       {secondarySubs.map((s) => {
@@ -1250,12 +1354,29 @@ function ClientEditModal({
                             : s.giftStatus === "GIFTED"
                               ? "Подарена"
                               : "Активна";
-                        const relation = s.owner?.id === editing.id ? "Владелец" : "Получатель";
+                        // relation теперь из ownerId/giftedToClientId
+                        // (endpoint /admin/clients/:id/subscriptions включает обе ветки).
+                        const relation = s.ownerId === editing.id ? "Владелец" : "Получатель";
+                        // помечаем подарочные подписки (purchasedAsGift=true)
+                        // в админке отдельным бейджем — чтобы админ сразу видел что это подарок, а не обычная подписка.
+                        const isGiftPurchase = s.purchasedAsGift === true;
                         return (
-                          <div key={s.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08] px-4 py-3 gap-3 transition-colors">
+                          <div key={s.id} className={cn(
+                            "flex items-center justify-between rounded-xl border px-4 py-3 gap-3 transition-colors",
+                            isGiftPurchase
+                              ? "border-pink-500/30 bg-pink-500/[0.04] hover:bg-pink-500/[0.08]"
+                              : "border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08]"
+                          )}>
                             <div className="min-w-0">
-                              <div className="text-xs font-medium">
-                                #{s.subscriptionIndex ?? "—"} · {s.tariff?.name ?? "Тариф не указан"}
+                              <div className="text-xs font-medium flex items-center gap-1.5 flex-wrap">
+                                <span>
+                                  {s.isPrimary ? "Главная" : `#${s.subscriptionIndex}`} · {s.tariffName ?? "Тариф не указан"}
+                                </span>
+                                {isGiftPurchase && (
+                                  <span className="inline-flex items-center gap-1 rounded-md bg-pink-500/15 text-pink-400 border border-pink-500/30 px-1.5 py-0.5 text-[10px] font-semibold">
+                                    <Gift className="h-2.5 w-2.5" /> Подарочная
+                                  </span>
+                                )}
                               </div>
                               <div className="text-[11px] text-muted-foreground">
                                 {relation} · {status}
@@ -1267,10 +1388,18 @@ function ClientEditModal({
                                   {s.remnawaveUuid}
                                 </span>
                               )}
-                              <Button variant="outline" size="sm" asChild>
-                                <a href={`/admin/secondary-subscriptions?search=${encodeURIComponent(s.id)}`}>
-                                  Открыть детально
-                                </a>
+                              {/* раньше эта кнопка вела на
+                                  /admin/secondary-subscriptions?search=<sub.id>, но та страница
+                                  (legacy «secondary subs» admin) для unify-схемы возвращала 0
+                                  результатов и не имела управления root-подпиской. Теперь
+                                  переключаем на вкладку «Подписки» в этом же диалоге — там
+                                  per-subscription панель: лимиты, сквады, продление, удаление. */}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setTab("subscriptions")}
+                              >
+                                Открыть детально
                               </Button>
                             </div>
                           </div>
@@ -1363,6 +1492,21 @@ function ClientEditModal({
                       }
                       placeholder={t("admin.clients.personal_discount_placeholder")}
                     />
+                    {/* чекбокс одноразовости. */}
+                    <label className="flex items-start gap-2 cursor-pointer text-xs text-muted-foreground pt-1">
+                      <input
+                        type="checkbox"
+                        checked={editForm.personalDiscountIsOneTime ?? false}
+                        onChange={(e) =>
+                          setEditForm((f) => ({ ...f, personalDiscountIsOneTime: e.target.checked }))
+                        }
+                        className="mt-0.5 h-3.5 w-3.5 rounded border-white/20 bg-background/60 accent-primary"
+                      />
+                      <span>
+                        🎁 Одноразовая — сгорит после первой продуктовой покупки
+                        {editing.personalDiscountIsOneTime ? <span className="ml-1 text-amber-400">(сейчас активна)</span> : null}
+                      </span>
+                    </label>
                   </div>
                   <div className="space-y-2 flex items-end gap-2">
                     <label className="flex items-center gap-2">
@@ -1432,262 +1576,53 @@ function ClientEditModal({
               </div>
             </TabsContent>
 
-            {/* ────── Remna ────── */}
-            {editing.remnawaveUuid && (
-              <TabsContent value="remna">
-                <div className="space-y-5">
-                  {remnaLoading && <p className="text-muted-foreground text-sm">{t("admin.clients.loading_remna")}</p>}
-
-                  {remnaUser && (
-                    <div className="rounded-[1.5rem] bg-gradient-to-br from-background/80 to-background/40 border border-white/10 p-5 space-y-3 text-sm hover:bg-white/5 transition-colors">
-                      <div className="font-medium text-xs uppercase tracking-wider text-muted-foreground mb-2">{t("admin.clients.remna_data")}</div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1.5">
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Username</span>
-                          <span className="flex items-center gap-1">
-                            <code className="text-xs">{remnaUser.username}</code>
-                            <CopyButton text={remnaUser.username} />
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">ID Remna</span>
-                          <span className="font-mono text-xs">{remnaUser.id ?? "—"}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">UUID</span>
-                          <span className="flex items-center gap-1">
-                            <code className="text-[10px]">{remnaUser.uuid.slice(0, 12)}…</code>
-                            <CopyButton text={remnaUser.uuid} />
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">Трафик</span>
-                          <span>{formatTrafficBytes(trafficUsed)}{trafficLimit > 0 ? ` / ${formatTrafficBytes(trafficLimit)}` : " (безлимит)"}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">{t("admin.clients.traffic_reset_strategy")}</span>
-                          <span>{STRATEGY_LABELS[remnaUser.trafficLimitStrategy] ?? remnaUser.trafficLimitStrategy}</span>
-                        </div>
-                        {remnaUser.lastTrafficResetAt && (
-                          <div className="flex justify-between">
-                            <span className="text-muted-foreground">{t("admin.clients.last_traffic_reset")}</span>
-                            <span>{new Date(remnaUser.lastTrafficResetAt).toLocaleString("ru")}</span>
-                          </div>
-                        )}
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">{t("admin.clients.expires")}</span>
-                          <span>{remnaUser.expireAt ? new Date(remnaUser.expireAt).toLocaleString("ru") : "—"}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">{t("admin.clients.created_in_remna")}</span>
-                          <span>{new Date(remnaUser.createdAt).toLocaleString("ru")}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-muted-foreground">{t("admin.clients.updated")}</span>
-                          <span>{new Date(remnaUser.updatedAt).toLocaleString("ru")}</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <h3 className="font-semibold mb-3 text-sm">{t("admin.clients.limits_and_tariff")}</h3>
-                    <div className="grid gap-4 sm:grid-cols-2 text-sm">
-                      <div className="space-y-2">
-                        <Label>{t("admin.clients.traffic_limit_gb")}</Label>
-                        <Input
-                          type="number" min={0} step={0.1}
-                          value={
-                            editForm.trafficLimitBytes !== undefined && editForm.trafficLimitBytes > 0
-                              ? (editForm.trafficLimitBytes / (1024 ** 3)).toFixed(2).replace(/\.?0+$/, "")
-                              : editForm.trafficLimitBytes === 0 ? "0" : ""
-                          }
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setEditForm((f) => ({
-                              ...f,
-                              trafficLimitBytes: v === "" ? undefined : (() => { const gb = parseFloat(v); return Number.isNaN(gb) ? undefined : Math.round(gb * 1024 ** 3); })(),
-                            }));
-                          }}
-                          placeholder="0"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>{t("admin.clients.device_limit_hwid")}</Label>
-                        <Input
-                          type="number" min={0}
-                          value={editForm.hwidDeviceLimit ?? ""}
-                          onChange={(e) => setEditForm((f) => ({ ...f, hwidDeviceLimit: e.target.value === "" ? undefined : Number(e.target.value) }))}
-                          placeholder="—"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>{t("admin.clients.traffic_reset")}</Label>
-                        <Select
-                          value={editForm.trafficLimitStrategy ?? ""}
-                          onChange={(v) => setEditForm((f) => ({ ...f, trafficLimitStrategy: v as UpdateClientRemnaPayload["trafficLimitStrategy"] }))}
-                          options={[
-                            { value: "", label: "—" },
-                            { value: "NO_RESET", label: t("admin.clients.reset_none") },
-                            { value: "DAY", label: t("admin.clients.reset_day") },
-                            { value: "WEEK", label: t("admin.clients.reset_week") },
-                            { value: "MONTH", label: t("admin.clients.reset_month") },
-                            { value: "MONTH_ROLLING", label: t("admin.clients.reset_rolling_month") },
-                          ]}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>{t("admin.clients.expiry_date")}</Label>
-                        <Input
-                          type="datetime-local"
-                          value={editForm.expireAt ? editForm.expireAt.slice(0, 16) : ""}
-                          onChange={(e) => setEditForm((f) => ({ ...f, expireAt: e.target.value ? new Date(e.target.value).toISOString() : undefined }))}
-                        />
-                      </div>
-                    </div>
-                    <Button variant="outline" size="sm" className="mt-3 rounded-xl border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08] shadow-sm transition-all" onClick={onSaveRemnaLimits} disabled={saving}>
-                      {t("admin.clients.apply_limits")}
-                    </Button>
-                  </div>
-
-                  {remnaData.squads.length > 0 && (
-                    <div>
-                      <h3 className="font-semibold mb-2 text-sm">{t("admin.clients.squads")}</h3>
-                      <div className="flex flex-wrap gap-2">
-                        {remnaData.squads.map((s) => {
-                          const inSquad = clientRemnaSquads.includes(s.uuid);
-                          return (
-                            <span
-                              key={s.uuid}
-                              className={cn(
-                                "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs border transition-colors",
-                                inSquad ? "bg-primary/10 border-primary/30 text-primary" : "bg-muted border-transparent text-muted-foreground"
-                              )}
-                            >
-                              <span className="font-medium">{s.name || s.uuid.slice(0, 8)}</span>
-                              {inSquad ? (
-                                <Button variant="ghost" size="sm" className="h-5 px-1 text-destructive text-[11px]" onClick={() => onSquadRemove(s.uuid)}>
-                                  {t("admin.clients.remove")}
-                                </Button>
-                              ) : (
-                                <Button variant="ghost" size="sm" className="h-5 px-1 text-[11px]" onClick={() => onSquadAdd(s.uuid)}>
-                                  {t("admin.clients.add")}
-                                </Button>
-                              )}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {actionMessage && <p className="text-sm text-muted-foreground">{actionMessage}</p>}
+            {/* ────── Подписки (T-subscription-remna, 14.05.2026) ──────
+                Заменили старую вкладку «Remna» (client-scoped). Теперь для каждой
+                подписки клиента (primary + secondary) свой блок с собственными
+                Данными Remna, Лимитами, Сквадами и Быстрыми действиями. */}
+            {(editing.remnawaveUuid || secondarySubs.some((s) => s.remnawaveUuid)) && (
+              <TabsContent value="subscriptions">
+                <div className="space-y-4">
+                  <ClientSubsOverviewBlock clientId={editing.id} token={token} />
+                  <ClientSubscriptionsTab
+                    clientId={editing.id}
+                    token={token}
+                    onChanged={() => {
+                      loadDevices();
+                      loadUsage();
+                      loadSecondarySubs();
+                    }}
+                  />
                 </div>
               </TabsContent>
             )}
 
-            {/* ────── Устройства ────── */}
-            {editing.remnawaveUuid && (
+            {/* ────── Устройства (T-tabs-rework, 13.05.2026): со ВСЕХ подписок ────── */}
+            {(editing.remnawaveUuid || secondarySubs.some((s) => s.remnawaveUuid)) && (
               <TabsContent value="devices">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-sm flex items-center gap-2">
-                      <Smartphone className="h-4 w-4" />
-                      {t("admin.clients.hwid_devices")} ({devicesTotal})
-                      {remnaUser?.hwidDeviceLimit != null && <span className="text-muted-foreground font-normal">{t("admin.clients.hwid_limit")} {remnaUser.hwidDeviceLimit}</span>}
-                    </h3>
-                    <Button variant="ghost" size="sm" onClick={loadDevices} disabled={devicesLoading}>
-                      <RefreshCw className={cn("h-4 w-4", devicesLoading && "animate-spin")} />
-                    </Button>
-                  </div>
-
-                  {devicesLoading && <p className="text-sm text-muted-foreground">{t("admin.clients.loading_short")}</p>}
-
-                  {!devicesLoading && devices.length === 0 && (
-                    <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
-                      <Smartphone className="h-8 w-8 mx-auto mb-2 opacity-40" />
-                      <p className="text-sm">{t("admin.clients.no_registered_devices")}</p>
-                    </div>
-                  )}
-
-                  {devices.length > 0 && (
-                    <div className="space-y-2">
-                      {devices.map((d) => (
-                        <div key={d.id || d.hwid} className="flex items-center justify-between rounded-[1.5rem] border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08] p-4 gap-3 transition-colors">
-                          <div className="min-w-0 space-y-0.5">
-                            <div className="flex items-center gap-2">
-                              <HardDrive className="h-4 w-4 text-muted-foreground shrink-0" />
-                              <code className="text-xs truncate">{d.hwid}</code>
-                              <CopyButton text={d.hwid} />
-                            </div>
-                            <div className="text-[11px] text-muted-foreground pl-6">
-                              {d.platform && <span>{t("admin.clients.platform")} {d.platform}</span>}
-                              {d.createdAt && <span> &middot; {new Date(d.createdAt).toLocaleString("ru")}</span>}
-                            </div>
-                            {d.userAgent && (
-                              <div className="text-[10px] text-muted-foreground pl-6 truncate max-w-md" title={d.userAgent}>
-                                {d.userAgent}
-                              </div>
-                            )}
-                          </div>
-                          <Button variant="ghost" size="sm" className="text-destructive shrink-0" onClick={() => deleteDevice(d.hwid)} title="Удалить устройство">
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <ClientAllDevicesTab clientId={editing.id} token={token} />
               </TabsContent>
             )}
 
             {/* ────── Действия ────── */}
-            {editing.remnawaveUuid && (
+            {(editing.remnawaveUuid || secondarySubs.some((s) => s.remnawaveUuid)) && (
               <TabsContent value="actions">
-                <div className="space-y-4">
-                  <h3 className="font-semibold text-sm">{t("admin.clients.quick_actions")}</h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Button
-                      variant="outline" className="justify-start gap-2 rounded-xl border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08] transition-all"
-                      onClick={() => onRemnaAction(t("admin.clients.subscription_revoked"), () => api.clientRemnaRevokeSubscription(token, editing.id))}
-                    >
-                      <Ticket className="h-4 w-4" /> {t("admin.clients.revoke_subscription")}
-                    </Button>
-                    <Button
-                      variant="outline" className="justify-start gap-2 text-destructive border-destructive/30 hover:bg-destructive/10 rounded-xl transition-all"
-                      onClick={() => onRemnaAction(t("admin.clients.disabled"), () => api.clientRemnaDisable(token, editing.id))}
-                    >
-                      <Ban className="h-4 w-4" /> {t("admin.clients.disable_in_remna")}
-                    </Button>
-                    <Button
-                      variant="outline" className="justify-start gap-2 text-green-700 dark:text-green-400 border-green-500/30 hover:bg-green-500/10 rounded-xl transition-all"
-                      onClick={() => onRemnaAction(t("admin.clients.enabled"), () => api.clientRemnaEnable(token, editing.id))}
-                    >
-                      <ShieldCheck className="h-4 w-4" /> {t("admin.clients.enable_in_remna")}
-                    </Button>
-                    <Button
-                      variant="outline" className="justify-start gap-2 rounded-xl border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08] transition-all"
-                      onClick={() => onRemnaAction(t("admin.clients.traffic_reset_done"), () => api.clientRemnaResetTraffic(token, editing.id))}
-                    >
-                      <Wifi className="h-4 w-4" /> {t("admin.clients.reset_traffic")}
-                    </Button>
-                    <Button
-                      variant="outline" className="justify-start gap-2 rounded-xl border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] hover:bg-foreground/[0.06] dark:hover:bg-white/[0.08] transition-all"
-                      onClick={() => { loadRemnaUser(); loadDevices(); loadUsage(); }}
-                    >
-                      <RefreshCw className="h-4 w-4" /> {t("admin.clients.refresh_data")}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="justify-start gap-2 text-amber-700 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10 rounded-xl transition-all sm:col-span-2"
-                      onClick={() => {
-                        if (!confirm(t("admin.clients.unlink_remna_confirm"))) return;
-                        onRemnaAction(t("admin.clients.unlink_remna_ok"), () => api.clientRemnaUnlink(token, editing.id));
-                      }}
-                    >
-                      <Unlink className="h-4 w-4" /> {t("admin.clients.unlink_remna")}
-                    </Button>
-                  </div>
+                <div className="space-y-5">
+                  {/* массовые операции — здесь, не сверху диалога. */}
+                  <ClientBulkActionsPanel
+                    client={editing}
+                    token={token}
+                    onChanged={() => {
+                      loadRemnaUser();
+                      loadDevices();
+                      loadUsage();
+                      loadSecondarySubs();
+                    }}
+                  />
+
+                  {/* Per-subscription quick actions (Отозвать/Disable/Enable/Reset/Unlink)
+                      переехали во вкладку «Подписки» — там для каждой подписки свой набор.
+                      Здесь оставлены ТОЛЬКО массовые операции — они в ClientBulkActionsPanel выше. */}
                   {actionMessage && <p className="text-sm text-muted-foreground mt-2">{actionMessage}</p>}
 
                   {usageData && usageData.sparklineData && usageData.sparklineData.some((v) => v > 0) && (
@@ -1742,5 +1677,486 @@ function Select({
         <option key={o.value} value={o.value}>{o.label}</option>
       ))}
     </select>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Плашка массовых операций над клиентом.
+// Живёт в шапке диалога клиента. Делает: disable/enable, sync push/pull,
+// reset-traffic-all, revoke-all, wipe-subscriptions, audit.
+// ─────────────────────────────────────────────────────────────────────────────
+function ClientBulkActionsPanel({
+  client,
+  token,
+  onChanged,
+}: {
+  client: ClientRecord;
+  token: string;
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [lastReport, setLastReport] = useState<{ title: string; report: import("@/lib/api").BulkOpReport | null; audit?: import("@/lib/api").ClientAuditResult } | null>(null);
+  const [auditOpen, setAuditOpen] = useState(false);
+
+  // Универсальный wrapper для запуска bulk-операции с UI loading + отчёт.
+  const run = useCallback(async (
+    key: string,
+    title: string,
+    fn: () => Promise<import("@/lib/api").BulkOpReport | import("@/lib/api").BulkOpReportFull>,
+    options?: { confirm?: string },
+  ) => {
+    if (options?.confirm && !window.confirm(options.confirm)) return;
+    setBusy(key);
+    try {
+      const r = await fn();
+      setLastReport({ title, report: r });
+      onChanged();
+    } catch (e) {
+      setLastReport({ title, report: { ok: 0, skipped: 0, failed: 1, items: [{ subscriptionId: "", subscriptionIndex: -1, remnawaveUuid: null, status: "error", message: e instanceof Error ? e.message : String(e) }] } });
+    } finally {
+      setBusy(null);
+    }
+  }, [onChanged]);
+
+  const runAudit = useCallback(async () => {
+    setBusy("audit");
+    try {
+      const r = await api.clientAudit(token, client.id);
+      setLastReport({ title: t("admin.clients.bulk_audit", "Аудит БД vs Remnawave"), report: null, audit: r });
+      setAuditOpen(true);
+    } finally {
+      setBusy(null);
+    }
+  }, [token, client.id, t]);
+
+  const isBlocked = client.isBlocked;
+
+  return (
+    <div className="rounded-[1.5rem] border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] p-4 mb-4 space-y-3">
+      {/* Шапка: статус + основные кнопки */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          {isBlocked ? (
+            <span className="inline-flex items-center gap-1.5 rounded-lg bg-red-500/10 border border-red-500/30 px-2.5 py-1 text-xs text-red-400 font-medium">
+              <Ban className="h-3 w-3" /> {t("admin.clients.client_disabled", "Клиент отключён")}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 rounded-lg bg-green-500/10 border border-green-500/30 px-2.5 py-1 text-xs text-green-500 dark:text-green-400 font-medium">
+              <ShieldCheck className="h-3 w-3" /> {t("admin.clients.client_active", "Клиент активен")}
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            {t("admin.clients.bulk_panel_hint", "Массовые операции применяются ко всем подпискам клиента")}
+          </span>
+        </div>
+        <div className="ml-auto flex flex-wrap gap-2">
+          {isBlocked ? (
+            <Button
+              variant="outline" size="sm"
+              className="gap-1.5 rounded-xl text-green-700 dark:text-green-400 border-green-500/30 hover:bg-green-500/10"
+              disabled={busy != null}
+              onClick={() => run("enable", t("admin.clients.bulk_enable_client", "Включение клиента"),
+                () => api.clientBulkEnable(token, client.id))}
+            >
+              {busy === "enable" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+              {t("admin.clients.bulk_enable_client_btn", "Включить клиента")}
+            </Button>
+          ) : (
+            <Button
+              variant="outline" size="sm"
+              className="gap-1.5 rounded-xl text-destructive border-destructive/30 hover:bg-destructive/10"
+              disabled={busy != null}
+              onClick={() => run("disable", t("admin.clients.bulk_disable_client", "Отключение клиента"),
+                () => api.clientBulkDisable(token, client.id),
+                { confirm: t("admin.clients.bulk_disable_confirm", "Отключить клиента?\nЭто заблокирует его в боте, отключит VPN на ВСЕХ его подписках, и снимет авто-продление.") })}
+            >
+              {busy === "disable" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Ban className="h-4 w-4" />}
+              {t("admin.clients.bulk_disable_client_btn", "Отключить клиента")}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Группы массовых операций */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5 text-[11px]">
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={() => run("syncPush", t("admin.clients.bulk_sync_push", "Push БД → Remna"),
+            () => api.clientBulkSyncPush(token, client.id))}>
+          <RotateCw className="h-3 w-3" /> {t("admin.clients.bulk_sync_push_btn", "Push в Remna")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={() => run("syncPull", t("admin.clients.bulk_sync_pull", "Pull Remna → БД"),
+            () => api.clientBulkSyncPull(token, client.id))}>
+          <RefreshCw className="h-3 w-3" /> {t("admin.clients.bulk_sync_pull_btn", "Pull из Remna")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={() => run("resetAll", t("admin.clients.bulk_reset_traffic", "Сброс трафика"),
+            () => api.clientBulkResetAllTraffic(token, client.id),
+            { confirm: t("admin.clients.bulk_reset_traffic_confirm", "Сбросить трафик у всех подписок клиента?") })}>
+          <Wifi className="h-3 w-3" /> {t("admin.clients.bulk_reset_all_btn", "Сбросить трафик")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={() => run("revokeAll", t("admin.clients.bulk_revoke", "Revoke URL"),
+            () => api.clientBulkRevokeAll(token, client.id),
+            { confirm: t("admin.clients.bulk_revoke_confirm", "Перевыпустить subscription URL у всех подписок? Старые ссылки перестанут работать.") })}>
+          <Ticket className="h-3 w-3" /> {t("admin.clients.bulk_revoke_btn", "Перевыпустить URL")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={() => run("disableAll", t("admin.clients.bulk_disable_all", "Disable Remna"),
+            () => api.clientBulkDisableAll(token, client.id))}>
+          <Ban className="h-3 w-3" /> {t("admin.clients.bulk_disable_all_btn", "Disable все в Remna")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={() => run("enableAll", t("admin.clients.bulk_enable_all", "Enable Remna"),
+            () => api.clientBulkEnableAll(token, client.id))}>
+          <ShieldCheck className="h-3 w-3" /> {t("admin.clients.bulk_enable_all_btn", "Enable все в Remna")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start" disabled={busy != null}
+          onClick={runAudit}>
+          <Search className="h-3 w-3" /> {t("admin.clients.bulk_audit_btn", "Аудит БД↔Remna")}
+        </Button>
+        <Button variant="outline" size="sm" className="gap-1 rounded-lg justify-start text-amber-700 dark:text-amber-400 border-amber-500/30 hover:bg-amber-500/10" disabled={busy != null}
+          onClick={() => run("wipe", t("admin.clients.bulk_wipe", "Удаление подписок"),
+            () => api.clientBulkWipe(token, client.id),
+            { confirm: t("admin.clients.bulk_wipe_confirm", "⚠ Удалить ВСЕ подписки клиента из БД и Remnawave?\nКлиент останется (баланс, история).") })}>
+          <Trash2 className="h-3 w-3" /> {t("admin.clients.bulk_wipe_btn", "Удалить все подписки")}
+        </Button>
+      </div>
+
+      {/* Последний отчёт */}
+      {lastReport && lastReport.report && (
+        <div className="rounded-xl border border-white/10 bg-foreground/[0.04] dark:bg-white/[0.04] p-3 text-[11px] space-y-1.5">
+          <div className="flex items-center justify-between font-medium">
+            <span>{lastReport.title}</span>
+            <button onClick={() => setLastReport(null)} className="text-muted-foreground hover:text-foreground">×</button>
+          </div>
+          <div className="flex gap-3">
+            <span className="text-green-500">✓ ok: {lastReport.report.ok}</span>
+            <span className="text-muted-foreground">↷ skipped: {lastReport.report.skipped}</span>
+            <span className="text-red-400">✗ failed: {lastReport.report.failed}</span>
+          </div>
+          {lastReport.report.items.length > 0 && lastReport.report.failed > 0 && (
+            <ul className="text-[10px] text-muted-foreground space-y-0.5 max-h-20 overflow-y-auto">
+              {lastReport.report.items.filter((i) => i.status === "error").map((i, idx) => (
+                <li key={idx} className="text-red-400">
+                  #{i.subscriptionIndex}: {i.message}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Audit-модалка */}
+      {auditOpen && lastReport?.audit && (
+        <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{t("admin.clients.audit_title", "Аудит БД ↔ Remnawave")}</DialogTitle>
+              <DialogDescription>
+                {t("admin.clients.audit_description", { defaultValue: "Проверено: {{checked}} из {{total}} подписок. Расхождений: {{issues}}", checked: lastReport.audit.checked, total: lastReport.audit.total, issues: lastReport.audit.issues.length })}
+              </DialogDescription>
+            </DialogHeader>
+            {lastReport.audit.issues.length === 0 ? (
+              <div className="text-center py-6 text-green-500">
+                <ShieldCheck className="h-10 w-10 mx-auto mb-2" />
+                <p className="text-sm">{t("admin.clients.audit_all_clean", "Расхождений не обнаружено")}</p>
+              </div>
+            ) : (
+              <ul className="space-y-2 max-h-96 overflow-y-auto">
+                {lastReport.audit.issues.map((issue, idx) => (
+                  <li key={idx} className="rounded-xl border border-white/10 p-3 text-xs">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-semibold text-amber-400">{issue.type}</span>
+                      {issue.subscriptionIndex >= 0 && (
+                        <span className="text-muted-foreground">#{issue.subscriptionIndex}</span>
+                      )}
+                    </div>
+                    <div className="text-muted-foreground">{issue.detail}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// вкладка «Устройства» — со ВСЕХ подписок.
+// Каждое устройство показывается с бейджем подписки (#index + tariff name).
+// ─────────────────────────────────────────────────────────────────────────────
+function ClientAllDevicesTab({ clientId, token }: { clientId: string; token: string }) {
+  const { t } = useTranslation();
+  const [data, setData] = useState<import("@/lib/api").ClientAllDevicesResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.getClientAllDevices(token, clientId)
+      .then((r) => setData(r))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [token, clientId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const deleteDevice = async (subId: string, uuid: string | null, hwid: string) => {
+    if (!uuid) return;
+    if (!confirm(t("admin.clients.delete_device_confirm"))) return;
+    try {
+      // Используем эндпоинт по subId если будет в будущем; пока — через clientId (proxy на primary)
+      // если устройство с primary; иначе — через прямой Remna-uuid (надо отдельный endpoint).
+      // Для минимального решения — оставляем через clientId — работает для primary subscription.
+      await api.deleteClientRemnaDevice(token, clientId, hwid);
+      load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : t("admin.clients.delete_error"));
+    }
+    // marker: subId/uuid сейчас не используются — оставлены для будущего per-sub эндпоинта.
+    void subId; void uuid;
+  };
+
+  if (loading) {
+    return <p className="text-sm text-muted-foreground">{t("admin.clients.loading_short")}</p>;
+  }
+  if (!data || data.total === 0) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm flex items-center gap-2">
+            <Smartphone className="h-4 w-4" />
+            {t("admin.clients.hwid_devices", "HWID устройства")} (0)
+          </h3>
+          <Button variant="ghost" size="sm" onClick={load} title={t("admin.clients.refresh_data", "Обновить")}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+          <Smartphone className="h-8 w-8 mx-auto mb-2 opacity-40" />
+          <p className="text-sm">{t("admin.clients.no_registered_devices")}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="font-semibold text-sm flex items-center gap-2">
+          <Smartphone className="h-4 w-4" />
+          {t("admin.clients.hwid_devices", "HWID устройства")} ({data.total})
+          <span className="text-muted-foreground font-normal text-[11px]">{t("admin.clients.from_all_subs", "со всех подписок клиента")}</span>
+        </h3>
+        <Button variant="ghost" size="sm" onClick={load} title={t("admin.clients.refresh_data", "Обновить")}>
+          <RefreshCw className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div className="space-y-4">
+        {data.groups.filter((g) => g.devices.length > 0 || g.remnawaveUuid).map((g) => {
+          const isPrimary = g.subscriptionIndex === 0;
+          const subBadgeLabel = isPrimary ? t("admin.clients.sub_primary", "Главная") : `#${g.subscriptionIndex}`;
+          return (
+            <div key={g.subscriptionId} className="rounded-[1.5rem] border border-white/10 bg-foreground/[0.02] p-4 space-y-2.5">
+              {/* Заголовок группы подписки */}
+              <div className="flex items-center gap-2 text-xs">
+                <span className={cn(
+                  "inline-flex items-center gap-1.5 rounded-lg px-2 py-1 font-semibold border",
+                  isPrimary
+                    ? "bg-primary/10 text-primary border-primary/30"
+                    : "bg-muted text-muted-foreground border-white/10"
+                )}>
+                  {g.tariffEmoji && <span>{g.tariffEmoji}</span>}
+                  {subBadgeLabel}
+                </span>
+                {g.tariffName && <span className="text-muted-foreground">{g.tariffName}</span>}
+                <span className="ml-auto text-muted-foreground">
+                  {g.devices.length}{g.deviceLimit != null ? ` / ${g.deviceLimit}` : ""}
+                </span>
+              </div>
+
+              {g.devices.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground text-center py-3">
+                  {t("admin.clients.no_devices_for_sub", "Нет устройств на этой подписке")}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {g.devices.map((d) => (
+                    <div key={d.id || d.hwid} className="flex items-center justify-between rounded-xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.03] p-3 gap-3 hover:bg-foreground/[0.06] dark:hover:bg-white/[0.06] transition-colors">
+                      <div className="min-w-0 space-y-0.5 flex-1">
+                        <div className="flex items-center gap-2">
+                          <HardDrive className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <code className="text-xs truncate">{d.hwid}</code>
+                          <CopyButton text={d.hwid} />
+                        </div>
+                        <div className="text-[11px] text-muted-foreground pl-6">
+                          {d.platform && <span>{t("admin.clients.platform", "Платформа:")} {d.platform}</span>}
+                          {d.createdAt && <span> &middot; {fmtMsk(d.createdAt)}</span>}
+                        </div>
+                        {d.userAgent && (
+                          <div className="text-[10px] text-muted-foreground pl-6 truncate max-w-md" title={d.userAgent}>
+                            {d.userAgent}
+                          </div>
+                        )}
+                      </div>
+                      <Button variant="ghost" size="sm" className="text-destructive shrink-0"
+                        onClick={() => deleteDevice(g.subscriptionId, g.remnawaveUuid, d.hwid)}
+                        title={t("admin.clients.delete_device", "Удалить устройство")}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// сводка по всем подпискам клиента.
+// Показывает компактную таблицу — для каждой подписки строка с remna-метриками.
+// ─────────────────────────────────────────────────────────────────────────────
+function ClientSubsOverviewBlock({ clientId, token }: { clientId: string; token: string }) {
+  const { t } = useTranslation();
+  const [data, setData] = useState<import("@/lib/api").ClientSubsOverviewResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.getClientSubsOverview(token, clientId)
+      .then((r) => setData(r))
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  }, [token, clientId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <p className="text-sm text-muted-foreground">{t("admin.clients.loading_short", "Загрузка…")}</p>;
+  if (!data || data.items.length === 0) return null;
+
+  const totalTrafficUsed = data.items.reduce((acc, it) => acc + (it.remna?.trafficUsedBytes ?? 0), 0);
+  const totalDevices = data.items.reduce((acc, it) => acc + (it.remna?.deviceCount ?? 0), 0);
+  const activeCount = data.items.filter((it) => it.remna?.status === "ACTIVE").length;
+
+  return (
+    <div className="rounded-[1.5rem] border border-white/10 bg-gradient-to-br from-background/80 to-background/40 p-5 space-y-4">
+      {/* Шапка со сводными цифрами */}
+      <div className="flex flex-wrap items-center gap-4">
+        <h3 className="font-semibold text-sm flex items-center gap-2">
+          <Package className="h-4 w-4" />
+          {t("admin.clients.subs_overview", "Подписки клиента")} ({data.items.length})
+        </h3>
+        <div className="ml-auto flex flex-wrap gap-3 text-[11px]">
+          <span className="text-green-500">✓ ACTIVE: {activeCount}</span>
+          <span className="text-muted-foreground">📱 Devices: {totalDevices}</span>
+          <span className="text-muted-foreground">📊 Traffic: {formatTrafficBytes(totalTrafficUsed)}</span>
+          <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={load}>
+            <RefreshCw className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Таблица подписок */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead className="text-[10px] uppercase text-muted-foreground border-b border-white/10">
+            <tr>
+              <th className="text-left py-2 pr-2 font-medium">#</th>
+              <th className="text-left py-2 pr-2 font-medium">{t("admin.clients.tariff", "Тариф")}</th>
+              <th className="text-left py-2 pr-2 font-medium">{t("admin.clients.status", "Статус")}</th>
+              <th className="text-left py-2 pr-2 font-medium">{t("admin.clients.expires", "Истекает")}</th>
+              <th className="text-right py-2 pr-2 font-medium">{t("admin.clients.traffic", "Трафик")}</th>
+              <th className="text-right py-2 pr-2 font-medium">{t("admin.clients.devices", "HWID")}</th>
+              <th className="text-right py-2 font-medium">Squads</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.items.map((it) => {
+              const isPrimary = it.subscriptionIndex === 0;
+              const expiresSoon = it.remna?.expireAt
+                ? new Date(it.remna.expireAt).getTime() - Date.now() < 3 * 86_400_000
+                : false;
+              const isExpired = it.remna?.expireAt
+                ? new Date(it.remna.expireAt).getTime() <= Date.now()
+                : false;
+              return (
+                <tr key={it.subscriptionId} className="border-b border-white/5 hover:bg-white/[0.03] transition-colors">
+                  <td className="py-2 pr-2">
+                    <span className={cn(
+                      "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold border",
+                      isPrimary ? "bg-primary/10 text-primary border-primary/30" : "bg-muted text-muted-foreground border-white/10"
+                    )}>
+                      {isPrimary ? t("admin.clients.sub_primary", "Главная") : `#${it.subscriptionIndex}`}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-2">
+                    <div className="flex items-center gap-1">
+                      {it.tariffEmoji && <span>{it.tariffEmoji}</span>}
+                      <span>{it.tariffName ?? (it.isTrial ? (it.trialName ?? "Trial") : "—")}</span>
+                      {it.isTrial && <span className="text-[9px] text-amber-400">trial</span>}
+                      {it.purchasedAsGift && <Gift className="h-3 w-3 text-pink-400" />}
+                      {it.autoRenewEnabled && <RotateCw className="h-3 w-3 text-blue-400" />}
+                    </div>
+                  </td>
+                  <td className="py-2 pr-2">
+                    {it.remna ? (
+                      <span className={cn(
+                        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] border",
+                        it.remna.status === "ACTIVE" && "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+                        it.remna.status === "DISABLED" && "bg-red-500/10 text-red-400 border-red-500/30",
+                        it.remna.status === "LIMITED" && "bg-amber-500/10 text-amber-400 border-amber-500/30",
+                        it.remna.status === "EXPIRED" && "bg-gray-500/10 text-gray-400 border-gray-500/30",
+                      )}>
+                        {it.remna.status ?? "—"}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">{t("admin.clients.no_remna", "нет Remna")}</span>
+                    )}
+                  </td>
+                  <td className={cn(
+                    "py-2 pr-2",
+                    isExpired ? "text-red-400" : expiresSoon ? "text-amber-400" : "text-muted-foreground"
+                  )}>
+                    {it.remna?.expireAt
+                      ? fmtMskDate(it.remna.expireAt)
+                      : "—"}
+                  </td>
+                  <td className="py-2 pr-2 text-right">
+                    {it.remna ? (
+                      <span>
+                        {formatTrafficBytes(it.remna.trafficUsedBytes ?? 0)}
+                        {it.remna.trafficLimitBytes && it.remna.trafficLimitBytes > 0 ? (
+                          <span className="text-muted-foreground"> / {formatTrafficBytes(it.remna.trafficLimitBytes)}</span>
+                        ) : (
+                          <span className="text-muted-foreground"> / ∞</span>
+                        )}
+                      </span>
+                    ) : "—"}
+                  </td>
+                  <td className="py-2 pr-2 text-right">
+                    {it.remna ? `${it.remna.deviceCount} / ${it.remna.hwidDeviceLimit ?? "∞"}` : "—"}
+                  </td>
+                  <td className="py-2 text-right">
+                    {it.remna?.activeSquadsCount ?? 0}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="text-[10px] text-muted-foreground italic">
+        {t("admin.clients.overview_hint", "Ниже — детали и настройки главной подписки. Управление конкретной подпиской — в карточке подписки.")}
+      </div>
+    </div>
   );
 }

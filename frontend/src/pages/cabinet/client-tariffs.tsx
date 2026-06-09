@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
-import { Package, Calendar, Wifi, Smartphone, CreditCard, Loader2, Gift, Tag, Check, Wallet, ChevronDown, Shield, Zap, ArrowLeft, AlertTriangle, Sparkles } from "lucide-react";
+import { Package, Calendar, Wifi, Smartphone, CreditCard, Loader2, Gift, Tag, Check, Wallet, ChevronDown, Shield, Zap, ArrowLeft, Sparkles, RefreshCw } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { useCabinetDesign } from "@/lib/use-cabinet-design";
 import { StealthTariffs } from "@/pages/cabinet/stealth/stealth-tariffs";
@@ -31,6 +32,16 @@ function formatMoney(amount: number, currency: string) {
     currency: currency.toUpperCase() === "USD" ? "USD" : currency.toUpperCase() === "RUB" ? "RUB" : "USD",
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+// Цена за день — всегда с копейками (2 знака), в отличие от полной цены тарифа.
+function formatMoneyPerDay(amount: number, currency: string) {
+  return new Intl.NumberFormat("ru-RU", {
+    style: "currency",
+    currency: currency.toUpperCase() === "USD" ? "USD" : currency.toUpperCase() === "RUB" ? "RUB" : "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(amount);
 }
 
@@ -111,12 +122,43 @@ function ClassicTariffsPage() {
 
   // Активная подписка пользователя (для предупреждения о сбросе трафика)
   const [activeSubInfo, setActiveSubInfo] = useState<{ hasActive: boolean; expireAt: string | null; tariffName: string | null; currentPricePerDay: number | null }>({ hasActive: false, expireAt: null, tariffName: null, currentPricePerDay: null });
-  const [warnModal, setWarnModal] = useState<{ tariff: TariffForPay } | null>(null);
   // Унифицированная модалка покупки: длительность + ДОП. устройства + скидки + total.
   const [purchaseModal, setPurchaseModal] = useState<{ tariff: TariffForPay } | null>(null);
   const [selectedPriceOptionId, setSelectedPriceOptionId] = useState<string | null>(null);
   /** Сколько ДОП. устройств клиент докупает поверх tariff.includedDevices (0..maxExtraDevices). */
   const [selectedExtraDevices, setSelectedExtraDevices] = useState<number>(0);
+
+  // мульти-подписки как в боте.
+  // Список подписок клиента — нужен для режима продления (берём tariffId подписки).
+  const [userSubs, setUserSubs] = useState<{ id: string; subscriptionIndex: number; label: string; expireAt: string | null; emoji: string | null; tariffId: string | null }[]>([]);
+  const [buyMode, setBuyMode] = useState<{ kind: "new" } | { kind: "extend"; subId: string; label: string }>({ kind: "new" });
+
+  // T-unify-cabinet: ?extend=<subId> — пришли с кнопки «Продлить» конкретной подписки.
+  // Как в боте (pay_tariff_ext): продлеваем ИМЕННО её и СТРОГО ТЕМ ЖЕ тарифом —
+  // поэтому каталог фильтруется до тарифа подписки (см. displayTariffs ниже).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const extendParam = searchParams.get("extend");
+  const extendTarget = extendParam ? userSubs.find((s) => s.id === extendParam) ?? null : null;
+
+  /**
+   * T-unify-cabinet: доп. поля для платёжных запросов.
+   *  - extend → продлить КОНКРЕТНУЮ подписку тем же тарифом (extendsSecondarySubId)
+   *  - обычная покупка из каталога → ВСЕГДА новая подписка (как в боте: каталог не продлевает).
+   *    asAdditional=true когда у клиента уже есть подписки (маркер «доп.»), иначе backend создаст первую.
+   */
+  function purchaseExtra(): { extendsSecondarySubId?: string; asAdditional?: boolean } {
+    if (buyMode.kind === "extend") return { extendsSecondarySubId: buyMode.subId };
+    if (userSubs.length > 0) return { asAdditional: true };
+    return {};
+  }
+
+  // в режиме продления (?extend) показываем в каталоге
+  // ТОЛЬКО тариф продлеваемой подписки — продлить можно строго тем же тарифом (как бот pay_tariff_ext).
+  const displayTariffs = (extendTarget?.tariffId)
+    ? tariffs
+        .map((c) => ({ ...c, tariffs: c.tariffs.filter((tf) => tf.id === extendTarget.tariffId) }))
+        .filter((c) => c.tariffs.length > 0)
+    : tariffs;
 
   // Промокод
   const [promoInput, setPromoInput] = useState("");
@@ -190,6 +232,34 @@ function ClassicTariffsPage() {
     }).catch(() => { /* not critical */ });
   }, [token]);
 
+  // загружаем ВСЕ подписки клиента (root + secondary),
+  // чтобы предложить выбор «продлить конкретную / купить новую» — точь-в-точь как в боте.
+  const loadUserSubs = useCallback(() => {
+    if (!token) return;
+    api.clientAllSubscriptions(token).then((r) => {
+      const list = (r.items ?? []).map((it) => {
+        // Remna кладёт данные в subscription.response или напрямую.
+        const raw = it.subscription as Record<string, unknown> | null;
+        const payload = (raw && typeof raw === "object" && raw.response && typeof raw.response === "object")
+          ? (raw.response as Record<string, unknown>)
+          : (raw ?? null);
+        const expireAt = payload && typeof payload.expireAt === "string" ? payload.expireAt : null;
+        const idx = it.subscriptionIndex ?? 0;
+        return {
+          id: it.id,
+          subscriptionIndex: idx,
+          label: it.tariffDisplayName?.trim() || `Подписка #${idx}`,
+          expireAt,
+          emoji: it.tariffMenuEmoji ?? null,
+          tariffId: it.tariffId ?? null,
+        };
+      });
+      setUserSubs(list);
+    }).catch(() => { /* not critical */ });
+  }, [token]);
+
+  useEffect(() => { loadUserSubs(); }, [loadUserSubs]);
+
   // Запрос на покупку тарифа: открываем единую модалку.
   function requestBuy(tariff: TariffForPay) {
     const opts = tariff.priceOptions ?? [];
@@ -216,18 +286,15 @@ function ClassicTariffsPage() {
     };
     setSelectedPriceOptionId(opt?.id ?? null);
     setPurchaseModal(null);
-    if (activeSubInfo.hasActive) {
-      setWarnModal({ tariff: tariffWithOption });
+    // строго как в боте.
+    //  • Пришли по «Продлить» (?extend) → продление ИМЕННО этой подписки тем же тарифом.
+    //  • Иначе (каталог) → ВСЕГДА новая подписка. Каталог НЕ продлевает чужие подписки.
+    if (extendTarget) {
+      setBuyMode({ kind: "extend", subId: extendTarget.id, label: extendTarget.label });
     } else {
-      setPayModal({ tariff: tariffWithOption });
+      setBuyMode({ kind: "new" });
     }
-  }
-
-  function confirmWarnAndBuy() {
-    if (!warnModal) return;
-    const t = warnModal.tariff;
-    setWarnModal(null);
-    setPayModal({ tariff: t });
+    setPayModal({ tariff: tariffWithOption });
   }
 
   async function activateTrial() {
@@ -297,6 +364,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "Platega" });
     } catch (e) {
@@ -316,12 +384,15 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       setPayModal(null);
       setPromoInput("");
       setPromoResult(null);
+      setBuyMode({ kind: "new" });
       alert(res.message);
       await refreshProfile();
+      loadUserSubs(); // T-unify-cabinet: подписок стало больше — обновляем список для след. покупки
     } catch (e) {
       setPayError(e instanceof Error ? e.message : t("cabinet.tariffs.error_payment"));
     } finally {
@@ -345,6 +416,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "ЮMoney" });
     } catch (e) {
@@ -370,6 +442,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.confirmationUrl) setReadyUrl({ url: res.confirmationUrl, provider: "ЮKassa" });
     } catch (e) {
@@ -391,6 +464,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Crypto Bot" });
     } catch (e) {
@@ -412,6 +486,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Heleket" });
     } catch (e) {
@@ -433,6 +508,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "LAVA" });
     } catch (e) {
@@ -454,6 +530,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Lava.top" });
     } catch (e) {
@@ -475,6 +552,7 @@ function ClassicTariffsPage() {
         tariffPriceOptionId: selectedPriceOptionId ?? undefined,
         deviceCount: selectedExtraDevices,
         promoCode: promoResult ? promoInput.trim() : undefined,
+        ...purchaseExtra(),
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Overpay" });
     } catch (e) {
@@ -798,6 +876,34 @@ function ClassicTariffsPage() {
               </p>
             </div>
 
+            {/* контекст продления (пришли с кнопки «Продлить» из дашборда) */}
+            {extendTarget && (
+              <Card className="rounded-3xl border border-primary/30 bg-primary/5 backdrop-blur-xl shadow-lg">
+                <CardContent className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pt-6">
+                  <div className="flex items-center gap-4 min-w-0">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/20 text-primary shadow-inner shrink-0">
+                      <RefreshCw className="h-6 w-6" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-bold text-lg text-foreground truncate">
+                        Продление: Подписка #{extendTarget.subscriptionIndex}
+                      </p>
+                      <p className="text-sm text-muted-foreground font-medium">
+                        Выбранный тариф продлит именно эту подписку{extendTarget.label ? ` · ${extendTarget.label}` : ""}. Трафик сохранится.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="w-full sm:w-auto rounded-xl shrink-0 gap-2"
+                    onClick={() => { const p = new URLSearchParams(searchParams); p.delete("extend"); setSearchParams(p, { replace: true }); }}
+                  >
+                    Отменить продление
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+
             {showTrial && (
               <Card className="rounded-3xl border border-green-500/30 bg-green-500/5 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all duration-300">
                 <CardContent className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pt-6">
@@ -832,7 +938,7 @@ function ClassicTariffsPage() {
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-primary/50" />
               </div>
-            ) : tariffs.length === 0 ? (
+            ) : displayTariffs.length === 0 ? (
               <Card className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl shadow-sm">
                 <CardContent className="flex flex-col items-center justify-center py-16 text-muted-foreground gap-4">
                   <Package className="h-12 w-12 opacity-20" />
@@ -841,7 +947,7 @@ function ClassicTariffsPage() {
               </Card>
             ) : useCategoryCardLayout ? (
               <div className="space-y-1">
-                {tariffs.map((cat, catIndex) => (
+                {displayTariffs.map((cat, catIndex) => (
                   <Collapsible
                     key={cat.id}
                     open={expandedCategoryId === cat.id}
@@ -936,7 +1042,7 @@ function ClassicTariffsPage() {
               </div>
             ) : (
               <div className="space-y-8">
-                {tariffs.map((cat, catIndex) => (
+                {displayTariffs.map((cat, catIndex) => (
                   <motion.section
                     key={cat.id}
                     initial={{ opacity: 0, y: 12 }}
@@ -1057,125 +1163,6 @@ function ClassicTariffsPage() {
           </DialogContent>
         </Dialog>
       )}
-
-      {/* Предупреждение перед сменой тарифа: трафик сбросится, дни добавятся к текущему сроку */}
-      <Dialog open={!!warnModal} onOpenChange={(open) => !open && setWarnModal(null)}>
-        <DialogContent className="bg-background/85 backdrop-blur-3xl border-white/10 rounded-[2rem] sm:max-w-md overflow-hidden">
-          <div className="absolute -top-16 -right-16 h-48 w-48 rounded-full bg-gradient-to-br from-amber-500/25 to-orange-500/15 blur-3xl pointer-events-none" />
-          <DialogHeader className="relative">
-            <div className="flex items-center gap-3 mb-1">
-              <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-amber-500/30 to-orange-500/15 border border-white/10 flex items-center justify-center shadow-inner shrink-0">
-                <AlertTriangle className="h-6 w-6 text-amber-500 dark:text-amber-400" />
-              </div>
-              <DialogTitle className="text-xl font-bold tracking-tight">
-                У вас уже есть активная подписка
-              </DialogTitle>
-            </div>
-            <DialogDescription className="text-sm text-muted-foreground leading-relaxed pt-2">
-              Если вы продолжите покупку, произойдут следующие изменения:
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="relative space-y-3 mt-1">
-            <div className="rounded-2xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.02] p-4 space-y-2.5">
-              <div className="flex items-start gap-3">
-                <div className="h-7 w-7 shrink-0 rounded-lg bg-amber-500/15 border border-amber-500/20 flex items-center justify-center mt-0.5">
-                  <Wifi className="h-3.5 w-3.5 text-amber-500 dark:text-amber-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold leading-tight">Сбросится израсходованный трафик</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">Текущий счётчик обнулится — сможете снова использовать гигабайты по новому тарифу</p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="h-7 w-7 shrink-0 rounded-lg bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center mt-0.5">
-                  <Calendar className="h-3.5 w-3.5 text-emerald-500 dark:text-emerald-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold leading-tight">Дни добавятся к текущему сроку</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {warnModal?.tariff.durationDays
-                      ? `+${warnModal.tariff.durationDays} ${formatRuDays(warnModal.tariff.durationDays).replace(/^\d+\s/, "")} к подписке`
-                      : "Дни нового тарифа добавятся к подписке"}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <div className="h-7 w-7 shrink-0 rounded-lg bg-primary/15 border border-primary/20 flex items-center justify-center mt-0.5">
-                  <Package className="h-3.5 w-3.5 text-primary" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold leading-tight">Тариф сменится на новый</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Лимиты, устройства и серверы — по новому тарифу <span className="font-medium text-foreground">{warnModal?.tariff.name}</span>
-                  </p>
-                </div>
-              </div>
-              {(() => {
-                // Расчёт конвертированных дней (pro-rata) на лету
-                const oldPpd = activeSubInfo.currentPricePerDay;
-                const expireRaw = activeSubInfo.expireAt;
-                const newDays = warnModal?.tariff.durationDays ?? 0;
-                const newPrice = warnModal?.tariff.price ?? 0;
-                const newPpd = newDays > 0 ? newPrice / newDays : 0;
-                if (!oldPpd || !expireRaw || !newPpd || newDays === 0) {
-                  return (
-                    <div className="flex items-start gap-3">
-                      <div className="h-7 w-7 shrink-0 rounded-lg bg-sky-500/15 border border-sky-500/20 flex items-center justify-center mt-0.5">
-                        <Sparkles className="h-3.5 w-3.5 text-sky-500 dark:text-sky-400" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold leading-tight">Остаток конвертируется в дни</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          Остаток вашего текущего тарифа пересчитается в дни нового по соотношению цен
-                        </p>
-                      </div>
-                    </div>
-                  );
-                }
-                const remainingMs = new Date(expireRaw).getTime() - Date.now();
-                const remainingDays = Math.max(0, Math.floor(remainingMs / (24 * 60 * 60 * 1000)));
-                const isSameTariff = activeSubInfo.tariffName?.trim() === warnModal?.tariff.name.trim();
-                const convertedDays = isSameTariff
-                  ? remainingDays // Тот же тариф = стек 1:1
-                  : Math.max(0, Math.floor((remainingDays * oldPpd) / newPpd));
-                const totalDays = newDays + convertedDays;
-                return (
-                  <div className="flex items-start gap-3">
-                    <div className="h-7 w-7 shrink-0 rounded-lg bg-sky-500/15 border border-sky-500/20 flex items-center justify-center mt-0.5">
-                      <Sparkles className="h-3.5 w-3.5 text-sky-500 dark:text-sky-400" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold leading-tight">
-                        {isSameTariff ? "Остаток сохранится полностью" : "Остаток конвертируется"}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Осталось <span className="font-semibold text-foreground">{remainingDays}</span> дн. по текущему тарифу.
-                        {!isSameTariff && (
-                          <> Конвертируется в <span className="font-semibold text-foreground">{convertedDays}</span> дн. нового по соотношению цен.</>
-                        )}
-                      </p>
-                      <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 font-semibold">
-                        Итого: {newDays} + {convertedDays} = {totalDays} {formatRuDays(totalDays).replace(/^\d+\s/, "")}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
-
-          <DialogFooter className="mt-2 gap-2 sm:gap-2 flex-col sm:flex-row">
-            <Button variant="outline" onClick={() => setWarnModal(null)} className="rounded-xl">
-              Отмена
-            </Button>
-            <Button onClick={confirmWarnAndBuy} className="rounded-xl gap-2 bg-gradient-to-br from-primary to-primary/85 hover:from-primary/90 hover:to-primary/75">
-              <CreditCard className="h-4 w-4" />
-              Продолжить покупку
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Унифицированная модалка покупки: длительность + ДОП. устройства + total */}
       <UnifiedPurchaseModal
@@ -1323,8 +1310,12 @@ function UnifiedPurchaseModal({
                       <p className={cn("text-sm font-bold", isActive && "text-primary")}>
                         {opt.durationDays} {formatRuDays(opt.durationDays).replace(/^\d+\s/, "")}
                       </p>
-                      <p className="text-[10px] text-muted-foreground mt-0.5 tabular-nums">
-                        {formatMoney(Math.round(perDay * 100) / 100, tariff.currency)}/день
+                      {/* полная стоимость подписки за период */}
+                      <p className={cn("text-[13px] font-extrabold tabular-nums mt-0.5", isActive ? "text-primary" : "text-foreground")}>
+                        {formatMoney(opt.price, tariff.currency)}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground tabular-nums">
+                        {formatMoneyPerDay(perDay, tariff.currency)}/день
                       </p>
                     </button>
                   );

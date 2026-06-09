@@ -11,6 +11,7 @@ import {
   CircleDot, CircleCheck, RefreshCw, MessagesSquare, Paperclip, X as XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { fmtMskShort } from "@/lib/datetime";
 
 type TicketListItem = {
   id: string;
@@ -177,7 +178,7 @@ export function AdminTicketsPage() {
 
   const formatDate = (s: string) => {
     try {
-      return new Date(s).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+      return fmtMskShort(s);
     } catch {
       return s;
     }

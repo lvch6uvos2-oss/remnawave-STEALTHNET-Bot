@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
-import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Target } from "lucide-react";
+import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Target, GitBranch, Globe } from "lucide-react";
 import { useAuth } from "@/contexts/auth";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,9 @@ export function ReferralNetworkPage() {
   const [dims, setDims] = useState({ width: window.innerWidth, height: window.innerHeight - 56 });
   const [data, setData] = useState<{ nodes: Node[]; links: Link[]; stats?: any } | null>(null);
   const [loading, setLoading] = useState(true);
+  // «только связанные» — скрывает одиночные узлы
+  // (без реферера/рефералов), чтобы реальные цепочки не терялись среди тысяч точек.
+  const [onlyLinked, setOnlyLinked] = useState(true);
 
   const load = async () => {
     setLoading(true);
@@ -70,7 +73,19 @@ export function ReferralNetworkPage() {
     };
   }, []);
 
-  const graph = useMemo(() => data ?? { nodes: [], links: [] }, [data]);
+  const graph = useMemo(() => {
+    if (!data) return { nodes: [] as Node[], links: [] as Link[] };
+    if (!onlyLinked) return { nodes: data.nodes, links: data.links };
+    // Оставляем только узлы участвующие хотя бы в одной связи.
+    const linkedIds = new Set<string>();
+    for (const l of data.links) {
+      linkedIds.add(typeof l.source === "string" ? l.source : (l.source as { id: string }).id);
+      linkedIds.add(typeof l.target === "string" ? l.target : (l.target as { id: string }).id);
+    }
+    return { nodes: data.nodes.filter((n) => linkedIds.has(n.id)), links: data.links };
+  }, [data, onlyLinked]);
+
+  const hiddenCount = (data?.nodes.length ?? 0) - graph.nodes.length;
 
   const handleZoomIn = () => {
     if (!fgRef.current) return;
@@ -107,7 +122,17 @@ export function ReferralNetworkPage() {
         <Network className="h-4 w-4 text-primary" /> Реферальная сеть
       </div>
       
-      <div className="absolute right-3 top-3 z-10">
+      <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+        <Button
+          variant={onlyLinked ? "default" : "secondary"}
+          size="sm"
+          className="shadow-sm gap-2"
+          onClick={() => setOnlyLinked((v) => !v)}
+          title={onlyLinked ? "Показать всех (включая без связей)" : "Показать только связанных"}
+        >
+          {onlyLinked ? <GitBranch className="h-4 w-4" /> : <Globe className="h-4 w-4" />}
+          {onlyLinked ? "Только связанные" : "Все клиенты"}
+        </Button>
         <Button variant="secondary" size="sm" className="shadow-sm" onClick={load}>
           <RefreshCw className="h-4 w-4 mr-2" />Обновить
         </Button>
@@ -174,11 +199,22 @@ export function ReferralNetworkPage() {
         </div>
       </div>
 
+      {/* T-network-filter: счётчик скрытых одиночных узлов */}
+      {!loading && onlyLinked && hiddenCount > 0 && (
+        <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-full bg-background/90 backdrop-blur border shadow-sm px-3 py-1 text-xs text-muted-foreground pointer-events-none">
+          Скрыто {hiddenCount} без связей · показаны {graph.nodes.length}
+        </div>
+      )}
+
       {loading ? (
         <div className="h-full flex items-center justify-center text-sm text-muted-foreground">Загрузка…</div>
       ) : graph.nodes.length === 0 ? (
-        <div className="h-full p-6">
-          <Card><CardContent className="pt-6 text-sm text-muted-foreground">Нет данных по рефералам</CardContent></Card>
+        <div className="h-full flex items-center justify-center p-6">
+          <Card className="max-w-md"><CardContent className="pt-6 text-center text-sm text-muted-foreground">
+            {onlyLinked
+              ? "Пока нет связанных рефералов. Привяжи реферера в разделе «Рефералка» или нажми «Все клиенты» чтобы увидеть всю базу."
+              : "Нет данных по клиентам"}
+          </CardContent></Card>
         </div>
       ) : (
         <ForceGraph2D

@@ -12,6 +12,7 @@ import { createSingboxSlotsByPaymentId } from "../singbox/singbox-slots-activati
 import { applyExtraOptionByPaymentId } from "../extra-options/extra-options.service.js";
 import { notifyProxySlotsCreated, notifySingboxSlotsCreated } from "../notification/telegram-notify.service.js";
 import { auditPaymentClientBotAlignment } from "./payment-webhook-audit.util.js";
+import { extinguishOneTimeDiscount } from "../client/personal-discount.js";
 
 function hasExtraOptionInMetadata(metadata: string | null): boolean {
   if (!metadata?.trim()) return false;
@@ -41,7 +42,6 @@ export async function markPaymentPaid(paymentId: string): Promise<MarkPaymentPai
   await auditPaymentClientBotAlignment({
     id: payment.id,
     clientId: payment.clientId,
-    botId: payment.botId,
   });
   if (payment.status === "PAID") {
     const result = await distributeReferralRewards(paymentId);
@@ -85,6 +85,10 @@ export async function markPaymentPaid(paymentId: string): Promise<MarkPaymentPai
   if (isExtraOption) {
     const extraResult = await applyExtraOptionByPaymentId(paymentId);
     activation = extraResult.ok ? { ok: true } : { ok: false, error: (extraResult as { error?: string }).error };
+    if (extraResult.ok && payment.clientId) {
+      const { notifyExtraOptionApplied } = await import("../notification/telegram-notify.service.js");
+      await notifyExtraOptionApplied(payment.clientId, paymentId).catch(() => {});
+    }
   } else if (payment.tariffId) {
     activation = await activateTariffByPaymentId(paymentId);
   } else if (payment.proxyTariffId) {
@@ -126,6 +130,12 @@ export async function markPaymentPaid(paymentId: string): Promise<MarkPaymentPai
       where: { id: payment.clientId },
       data: { trialUsed: true },
     }).catch(() => {});
+  }
+
+  // сжигаем одноразовую персональную
+  // скидку после продуктовой покупки. Топ-ап баланса НЕ сжигает.
+  if (!isTopUp) {
+    await extinguishOneTimeDiscount(payment.clientId);
   }
 
   const referral = await distributeReferralRewards(paymentId);

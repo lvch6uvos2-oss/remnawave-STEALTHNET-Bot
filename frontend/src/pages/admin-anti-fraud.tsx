@@ -12,6 +12,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { antiFraudApi, type FraudSignal } from "@/lib/admin-extras-api";
+import { fmtMsk } from "@/lib/datetime";
 
 function severityColors(s: FraudSignal["severity"]) {
   if (s === "error") return { ring: "border-rose-500/30", bg: "bg-rose-500/5", text: "text-rose-500", Icon: AlertCircle };
@@ -154,7 +155,7 @@ export function AdminAntiFraudPage() {
       )}
 
       {generatedAt && (
-        <p className="text-[11px] text-muted-foreground text-center pt-2">Сгенерировано: {new Date(generatedAt).toLocaleString("ru-RU")}</p>
+        <p className="text-[11px] text-muted-foreground text-center pt-2">Сгенерировано: {fmtMsk(generatedAt)}</p>
       )}
     </div>
   );

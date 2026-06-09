@@ -10,10 +10,12 @@ RUN npm run build
 FROM node:22-alpine
 
 # Fallback-зеркала для apk: dl-cdn.alpinelinux.org иногда недоступен.
+# 25.05.2026, WolfVPN — добавили ffmpeg (нужен ffprobe для извлечения
+# width/height/duration видео в broadcast, чтобы Telegram не рисовал квадрат).
 RUN set -eux; \
-    apk add --no-cache postgresql-client \
-    || (printf 'https://mirror.yandex.ru/mirrors/alpine/v3.19/main\nhttps://mirror.yandex.ru/mirrors/alpine/v3.19/community\n' > /etc/apk/repositories && apk update && apk add --no-cache postgresql-client) \
-    || (printf 'https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.19/main\nhttps://mirrors.tuna.tsinghua.edu.cn/alpine/v3.19/community\n' > /etc/apk/repositories && apk update && apk add --no-cache postgresql-client)
+    apk add --no-cache postgresql-client ffmpeg \
+    || (printf 'https://mirror.yandex.ru/mirrors/alpine/v3.19/main\nhttps://mirror.yandex.ru/mirrors/alpine/v3.19/community\n' > /etc/apk/repositories && apk update && apk add --no-cache postgresql-client ffmpeg) \
+    || (printf 'https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.19/main\nhttps://mirrors.tuna.tsinghua.edu.cn/alpine/v3.19/community\n' > /etc/apk/repositories && apk update && apk add --no-cache postgresql-client ffmpeg)
 
 WORKDIR /app
 ENV NODE_ENV=production

@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { GlassSelect } from "@/components/ui/glass-select";
 import { BannerCard } from "./marketplace-layout";
+import { fmtMsk } from "@/lib/datetime";
 
 export function MarketplaceHubReportsPage() {
   const { t } = useTranslation();
@@ -92,7 +93,7 @@ export function MarketplaceHubReportsPage() {
                 </div>
                 {r.comment && <p className="text-sm">{r.comment}</p>}
                 <div className="text-[11px] text-muted-foreground">
-                  Status: {r.status} · created {new Date(r.createdAt).toLocaleString()} · listing.status = {r.listing.status} (reports: {r.listing.reportsCount})
+                  Status: {r.status} · created {fmtMsk(r.createdAt)} · listing.status = {r.listing.status} (reports: {r.listing.reportsCount})
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">

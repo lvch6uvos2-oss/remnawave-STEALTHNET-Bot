@@ -664,7 +664,7 @@ export function DashboardPage() {
       const dateRaw = revenuePoint?.date ?? clientsPoint?.date ?? "";
       const date = dateRaw
         ? new Date(dateRaw)
-            .toLocaleDateString("ru-RU", { day: "2-digit", month: "short" })
+            .toLocaleDateString("ru-RU", { day: "2-digit", month: "short", timeZone: "Europe/Moscow" })
             .replace(".", "")
         : "";
 

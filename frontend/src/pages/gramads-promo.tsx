@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { GlassSelect } from "@/components/ui/glass-select";
 import type { AdminSettings } from "@/lib/api";
+import { fmtMsk, fmtMskDate } from "@/lib/datetime";
 
 const STRATEGY_OPTIONS = [
   { value: "0", label: "Minimum (дешёвые боты)" },
@@ -413,7 +414,7 @@ export function GramadsPromoPage() {
                             <tr key={d.id} className="border-b border-border/30 hover:bg-muted/30">
                               <td className="py-2 px-3 font-mono text-xs">{d.id}</td>
                               <td className="py-2 px-3">{Math.round(d.amount).toLocaleString()} <span className="text-xs text-muted-foreground">{t("admin.gramads.impressions_unit")}</span></td>
-                              <td className="py-2 px-3 text-muted-foreground">{new Date(d.dateCreated).toLocaleString()}</td>
+                              <td className="py-2 px-3 text-muted-foreground">{fmtMsk(d.dateCreated)}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -872,7 +873,7 @@ function CampaignDetailDialog({ post, onClose, onAction, onRefresh, token }: {
             </div>
             <div className="p-3 rounded-lg border">
               <p className="text-xs text-muted-foreground">{t("admin.gramads.created")}</p>
-              <p className="text-sm">{new Date(post.dateCreated).toLocaleDateString()}</p>
+              <p className="text-sm">{fmtMskDate(post.dateCreated)}</p>
             </div>
           </div>
 

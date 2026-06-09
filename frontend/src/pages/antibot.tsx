@@ -19,6 +19,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { fmtMsk } from "@/lib/datetime";
 import {
   clientsBulkApi,
   type AntibotCandidate,
@@ -500,7 +501,7 @@ function CandidateRow({
             </span>
           )}
           {c.registrationSource && <span>· {c.registrationSource}</span>}
-          <span>· {new Date(c.createdAt).toLocaleString("ru-RU")}</span>
+          <span>· {fmtMsk(c.createdAt)}</span>
           {c.balance > 0 && (
             <span className="text-amber-500">· баланс {c.balance}</span>
           )}

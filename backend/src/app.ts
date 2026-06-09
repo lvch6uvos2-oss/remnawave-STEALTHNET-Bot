@@ -20,7 +20,6 @@ import { heleketWebhooksRouter } from "./modules/webhooks/heleket.webhooks.route
 import { lavaWebhooksRouter } from "./modules/webhooks/lava.webhooks.routes.js";
 import { lavatopWebhooksRouter } from "./modules/webhooks/lavatop.webhooks.routes.js";
 import { botAdminRouter } from "./modules/bot-admin/bot-admin.routes.js";
-import { botAdminRouter as botsAdminCrudRouter, botInternalRouter } from "./modules/bot/bot.routes.js";
 import { contestAdminRouter } from "./modules/contest/contest.admin.routes.js";
 import { contestPublicRouter, contestClientRouter } from "./modules/contest/contest.public.routes.js";
 import { adminReferralsRouter } from "./modules/admin/referrals.routes.js";
@@ -164,12 +163,27 @@ app.use("/api/auth/2fa-login", authStrictLimiter);
 // от своего IP и без skip все регистрации через /start блокируются —
 // все клиенты выглядят как «один IP» для лимитера. Telegram сам по себе
 // антибот-щит (нужен аккаунт + подписка), доверяем X-Telegram-Bot-Token header.
+
+// общий хелпер: запросы из docker-network (бот-контейнер,
+// внутренние крон-сервисы) НЕ лимитим. Используется во ВСЕХ rate-limit'ерах ниже.
+function isInternalIp(ip: string | undefined): boolean {
+  if (!ip) return false;
+  if (ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1") return true;
+  const m = ip.match(/^(?:::ffff:)?(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (!m) return false;
+  const a = parseInt(m[1]!, 10);
+  const b = parseInt(m[2]!, 10);
+  return a === 172 && b >= 16 && b <= 31;
+}
+
 const clientRegisterLimiter = rateLimit({
   windowMs: 60 * 1000, // 60 секунд
   max: dev ? 500 : 5,
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
+    // Запросы из docker-network (бот) — без лимита.
+    if (isInternalIp(req.ip)) return true;
     // Если в заголовке есть наш bot-token — пропускаем лимит.
     // Валидность токена проверяется дальше в /register самим хэндлером.
     const t = req.headers["x-telegram-bot-token"];
@@ -199,6 +213,7 @@ const clientLoginLimiter = rateLimit({
   message: { message: "Слишком много попыток входа. Попробуйте через 15 минут." },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isInternalIp(req.ip),
 });
 app.use("/api/client/auth/login", clientLoginLimiter);
 app.use("/api/client/auth/2fa-login", clientLoginLimiter);
@@ -210,6 +225,7 @@ const clientTelegramMiniappLimiter = rateLimit({
   message: { message: "Too many attempts. Try again later." },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isInternalIp(req.ip),
 });
 app.use("/api/client/auth/telegram-miniapp", clientTelegramMiniappLimiter);
 
@@ -220,6 +236,7 @@ const clientOAuthLimiter = rateLimit({
   message: { message: "Too many OAuth attempts. Try again later." },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isInternalIp(req.ip),
 });
 app.use("/api/client/auth/google", clientOAuthLimiter);
 app.use("/api/client/auth/apple", clientOAuthLimiter);
@@ -231,16 +248,19 @@ const clientAuthLimiter = rateLimit({
   message: { message: "Too many requests" },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isInternalIp(req.ip),
 });
 app.use("/api/client/auth", clientAuthLimiter);
 
-// Общий лимит на весь API (по IP: каждый клиент/NAT имеет свой счётчик)
+// Общий лимит на весь API (по IP: каждый клиент/NAT имеет свой счётчик).
+// `skip` для internal IPs см. isInternalIp() выше.
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: dev ? 2000 : 1500,
   message: { message: "Too many requests" },
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => isInternalIp(req.ip),
 });
 app.use("/api/", limiter);
 
@@ -288,8 +308,12 @@ app.use("/api/admin/marketplace/hub", requireAuth, requireHubRole, marketplaceHu
 app.use("/api/admin/marketplace", requireMarketplaceEnabled, marketplaceClientRouter);
 
 app.use("/api/auth", authRouter);
-app.use("/api/admin", adminRouter);
+// adminReferralsRouter (/referrals/network) ДОЛЖЕН
+// идти ПЕРЕД adminRouter (/api/admin), иначе GET /referrals/network перехватывается роутом
+// /referrals/:id в adminRouter (id="network") → 404 «Клиент не найден». Граф «Реф. сеть» был сломан.
+// Специфичные под-роуты (lookup, :id, :id/referrer) живут в adminRouter и резолвятся через next().
 app.use("/api/admin/referrals", adminReferralsRouter);
+app.use("/api/admin", adminRouter);
 app.use("/api/admin/traffic-abuse", trafficAbuseRouter);
 app.use("/api/admin/api-keys", apiKeysAdminRouter);
 app.use("/api/admin/geo-map", geoMapRouter);
@@ -327,8 +351,6 @@ app.use("/api/public", landingPublicRouter);
 app.use("/api/pay", paymentRedirectRouter);
 app.use("/api/v1", externalApiRouter);
 app.use("/api/bot-admin", botAdminRouter);
-app.use("/api/admin/bots", botsAdminCrudRouter);
-app.use("/api/internal", botInternalRouter);
 app.use("/api/webhooks", remnaWebhooksRouter);
 app.use("/api/webhooks", plategaWebhooksRouter); // raw body для /platega уже применён выше
 app.use("/api/webhooks", yoomoneyWebhooksRouter);

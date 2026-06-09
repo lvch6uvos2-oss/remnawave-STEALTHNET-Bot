@@ -1,4 +1,5 @@
 import type { MarketplaceCurrency, MarketplacePriceUnit } from "@/lib/api";
+import { fmtMsk } from "@/lib/datetime";
 
 const CURRENCY_FORMAT: Record<MarketplaceCurrency, { symbol: string; locale: string }> = {
   USD: { symbol: "$", locale: "en-US" },
@@ -29,7 +30,7 @@ export function formatRelativeDate(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString();
+  return fmtMsk(d);
 }
 
 export function flagEmoji(code: string | null | undefined): string {

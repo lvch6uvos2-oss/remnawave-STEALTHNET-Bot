@@ -15,6 +15,11 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-stealthnet}
       POSTGRES_USER: ${POSTGRES_USER:-stealthnet}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stealthnet_change_me}
+      # T-msk (14.05.2026, WolfVPN): session timezone в МСК. NOW()/CURRENT_TIMESTAMP
+      # отдаёт +03. Существующие timestamp-литералы заранее сдвинуты +3h миграцией
+      # migrate-tz-msk.sql, так что абсолютное UTC-время сохранено.
+      TZ: Europe/Moscow
+      PGTZ: Europe/Moscow
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -38,9 +43,15 @@ services:
     ports:
       - "0.0.0.0:5000:5000"
     environment:
+      # T-msk (14.05.2026, WolfVPN): TZ=Europe/Moscow → Node Date/cron-логи/console
+      # в МСК. Прописываем для api, bot и postgres единообразно.
+      TZ: Europe/Moscow
       NODE_ENV: production
       PORT: "5000"
-      DATABASE_URL: "postgresql://${POSTGRES_USER:-stealthnet}:${POSTGRES_PASSWORD:-stealthnet_change_me}@postgres:5432/${POSTGRES_DB:-stealthnet}"
+      # 24.05.2026, WolfVPN — connection_limit=30 для запаса под массовую рассылку
+      # (30k мигрированных юзеров). Default 9 при 30k одновременных /start может
+      # ставить запросы в очередь и плодить timeouts.
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-stealthnet}:${POSTGRES_PASSWORD:-stealthnet_change_me}@postgres:5432/${POSTGRES_DB:-stealthnet}?connection_limit=30"
       JWT_SECRET: "${JWT_SECRET}"
       JWT_ACCESS_EXPIRES_IN: "${JWT_ACCESS_EXPIRES_IN:-15m}"
       JWT_REFRESH_EXPIRES_IN: "${JWT_REFRESH_EXPIRES_IN:-7d}"
@@ -55,6 +66,9 @@ services:
       - /etc/ssh:/host-etc/ssh
       - /proc:/host-proc:ro
       - uploads_data:/app/uploads
+      # 25.05.2026, WolfVPN — shared с broadcast-worker: api сохраняет файлы рассылок сюда,
+      # worker читает.
+      - broadcast_attachments:/data/broadcast-attachments
       # Read-only frontend bundle: модуль branding/spa-html.ts читает index.html
       # отсюда чтобы инжектить per-bot брендинг в SPA-shell перед отдачей через nginx /_spa.
       - frontend_dist:/var/www/stealthnet:ro
@@ -82,6 +96,35 @@ services:
       start_period: 600s
     networks:
       - stealthnet
+    # 25.05.2026, WolfVPN — добавили shared volume для broadcast attachments
+    # (api сохраняет файл, broadcast-worker читает).
+
+  # ── Broadcast Worker (25.05.2026, WolfVPN) ─────────────────────
+  # Отдельный процесс обработки рассылок: polls broadcast_history
+  # WHERE status='pending', запускает runBroadcast в своём event-loop.
+  # API стек освобождается полностью — bot/UI не лагают во время рассылки.
+  broadcast-worker:
+    image: stealthnet-api:latest    # тот же image что и api (build выше)
+    container_name: stealthnet-broadcast-worker
+    restart: unless-stopped
+    # 25.05.2026, WolfVPN — env_file тот же что у api: import цепочка
+    # broadcast.service → client.service → config валидирует JWT_SECRET и др.
+    env_file: .env
+    environment:
+      TZ: Europe/Moscow
+      NODE_ENV: production
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-stealthnet}:${POSTGRES_PASSWORD:-stealthnet_change_me}@postgres:5432/${POSTGRES_DB:-stealthnet}?connection_limit=10"
+      BROADCAST_ATTACHMENT_DIR: "/data/broadcast-attachments"
+    entrypoint: ["node", "dist/worker/broadcast-worker.js"]
+    volumes:
+      - broadcast_attachments:/data/broadcast-attachments
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy   # API подняла миграции — worker присоединяется к схеме
+    networks:
+      - stealthnet
 
   # ── Telegram Bot ────────────────────────────────────────────────
   bot:
@@ -91,6 +134,8 @@ services:
     container_name: stealthnet-bot
     restart: unless-stopped
     environment:
+      # T-msk (14.05.2026, WolfVPN): Grammy/Node логи в МСК.
+      TZ: Europe/Moscow
       BOT_TOKEN: "${BOT_TOKEN:-}"
       API_URL: "http://api:5000"
     depends_on:
@@ -153,6 +198,8 @@ volumes:
   uploads_data:
   certbot_www:
   certbot_certs:
+  # 25.05.2026, WolfVPN — shared между api и broadcast-worker.
+  broadcast_attachments:
 
 networks:
   stealthnet:
