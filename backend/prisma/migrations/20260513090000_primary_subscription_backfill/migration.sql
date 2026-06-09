@@ -1,4 +1,4 @@
--- T-primary-fix (13.05.2026, WolfVPN): re-backfill для Subscription[0].
+-- re-backfill для Subscription[0].
 -- Изначальный seed (миграция 20260513040000_unify_subscriptions) создал Subscription[0]
 -- для клиентов с Client.remnawaveUuid. НО:
 --   1. Клиенты, активировавшие триал ПОСЛЕ unify-миграции, не получили запись (триал-код

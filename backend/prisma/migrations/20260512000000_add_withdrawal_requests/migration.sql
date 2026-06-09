@@ -1,4 +1,4 @@
--- T6 (11.05.2026, WolfVPN): заявка на вывод реферального баланса USDT TRC20.
+-- заявка на вывод реферального баланса USDT TRC20.
 CREATE TABLE IF NOT EXISTS "withdrawal_requests" (
   "id" TEXT NOT NULL,
   "client_id" TEXT NOT NULL,

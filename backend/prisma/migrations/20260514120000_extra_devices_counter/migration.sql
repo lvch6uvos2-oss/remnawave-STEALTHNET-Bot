@@ -1,4 +1,4 @@
--- T-extras-counter (14.05.2026, WolfVPN)
+-- T-extras-counter
 -- Заменяем накопительный customPrice на чистый счётчик доп. устройств в подписке.
 -- Цена при продлении считается формулой:
 --   selectedOption.price + extraDevices × pricePerExtraDevice × (days/30)

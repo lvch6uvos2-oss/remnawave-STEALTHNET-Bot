@@ -1,4 +1,4 @@
--- T-one-time-discount (14.05.2026, WolfVPN)
+-- T-one-time-discount
 -- Делаем персональную скидку одноразовой (опция).
 -- Client.personalDiscountIsOneTime — если true, скидка сгорает после первой
 -- продуктовой покупки (см. mark-paid.service.ts).

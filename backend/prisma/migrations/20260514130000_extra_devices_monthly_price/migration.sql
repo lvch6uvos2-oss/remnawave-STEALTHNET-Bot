@@ -1,4 +1,4 @@
--- T-extras-monthly-price (14.05.2026, WolfVPN)
+-- T-extras-monthly-price
 -- Цена доп. устройств подписки за 30 дней. При продлении:
 --   finalPrice = selectedOption.price + extraDevicesMonthlyPrice × (days / 30)
 -- НЕ зависит от tariff.pricePerExtraDevice (это отдельная фича создания тарифа).
