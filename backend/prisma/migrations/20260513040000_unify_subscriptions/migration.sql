@@ -1,4 +1,4 @@
--- T-unify (12.05.2026, WolfVPN): УНИФИКАЦИЯ подписок в одну таблицу.
+-- УНИФИКАЦИЯ подписок в одну таблицу.
 -- До: Client.{remnawaveUuid,currentTariffId,autoRenew*} (primary) + secondary_subscriptions (доп.).
 -- После: ВСЁ в одной таблице subscriptions. subscription_index=0 = главная.
 
