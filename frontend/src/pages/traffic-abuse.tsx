@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { fmtMsk, fmtMskDate } from "@/lib/datetime";
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0 B";
@@ -75,7 +76,7 @@ function AbuserRow({ user, index }: { user: TrafficAbuser; index: number }) {
           <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
             {user.email && <span>{user.email}</span>}
             {user.telegramId && <span>TG: {user.telegramId}</span>}
-            {user.onlineAt && <span>Онлайн: {new Date(user.onlineAt).toLocaleString("ru-RU")}</span>}
+            {user.onlineAt && <span>Онлайн: {fmtMsk(user.onlineAt)}</span>}
           </div>
         </div>
 
@@ -141,7 +142,7 @@ function AbuserRow({ user, index }: { user: TrafficAbuser; index: number }) {
             </div>
             <div>
               <span className="text-muted-foreground block">Истекает</span>
-              <span className="font-medium">{user.expireAt ? new Date(user.expireAt).toLocaleDateString("ru-RU") : "—"}</span>
+              <span className="font-medium">{user.expireAt ? fmtMskDate(user.expireAt) : "—"}</span>
             </div>
           </div>
 
@@ -178,6 +179,9 @@ export function TrafficAbusePage() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<TrafficAbuseResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // фильтр по squads (тарифные группы Remnawave).
+  // Пустой Set = «все»; иначе показываем только юзеров чьи squadNames пересекаются с фильтром.
+  const [selectedSquads, setSelectedSquads] = useState<Set<string>>(new Set());
 
   const load = async () => {
     try {
@@ -194,13 +198,32 @@ export function TrafficAbusePage() {
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
+  // Все уникальные squad-имена из текущей выборки — для рендера чипов фильтра.
+  const allSquads = Array.from(
+    new Set((data?.abusers ?? []).flatMap((u) => u.squadNames ?? []))
+  ).sort();
+
   const filtered = data?.abusers.filter((u) => {
+    // squad-фильтр (если выбрано хотя бы одно — оставляем только тех у кого есть пересечение)
+    if (selectedSquads.size > 0) {
+      const hasMatch = (u.squadNames ?? []).some((s) => selectedSquads.has(s));
+      if (!hasMatch) return false;
+    }
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return u.username.toLowerCase().includes(q) ||
       (u.email?.toLowerCase().includes(q)) ||
       (u.telegramId && String(u.telegramId).includes(q));
   }) ?? [];
+
+  const toggleSquad = (name: string) => {
+    setSelectedSquads((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
 
   return (
     <div className="space-y-5 px-4 sm:px-6 md:px-8 pt-6 pb-10 relative">
@@ -322,6 +345,48 @@ export function TrafficAbusePage() {
                 </div>
               )}
             </div>
+            {allSquads.length > 0 && (
+              <div className="px-4 py-2.5 border-t border-white/5 bg-foreground/[0.015] flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-muted-foreground mr-1">Squad:</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSquads(new Set())}
+                  className={`rounded-lg px-2.5 py-1 text-xs border transition-colors ${
+                    selectedSquads.size === 0
+                      ? "bg-primary/15 text-primary border-primary/40"
+                      : "bg-foreground/[0.02] text-muted-foreground border-white/10 hover:border-white/20"
+                  }`}
+                >
+                  Все
+                </button>
+                {allSquads.map((sq) => {
+                  const active = selectedSquads.has(sq);
+                  return (
+                    <button
+                      key={sq}
+                      type="button"
+                      onClick={() => toggleSquad(sq)}
+                      className={`rounded-lg px-2.5 py-1 text-xs border transition-colors ${
+                        active
+                          ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40"
+                          : "bg-foreground/[0.02] text-muted-foreground border-white/10 hover:border-white/20"
+                      }`}
+                    >
+                      {sq}
+                    </button>
+                  );
+                })}
+                {selectedSquads.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSquads(new Set())}
+                    className="text-xs text-muted-foreground hover:text-foreground ml-2 underline"
+                  >
+                    сброс
+                  </button>
+                )}
+              </div>
+            )}
             <div className="p-4 space-y-2">
               {filtered.length > 0 ? (
                 filtered.map((u, i) => <AbuserRow key={`${u.uuid}-${u.username}`} user={u} index={i} />)

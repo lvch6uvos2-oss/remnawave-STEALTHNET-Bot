@@ -302,7 +302,7 @@ function SortableTariffRow({
         </span>
         {t.trafficResetMode && t.trafficResetMode !== "no_reset" && (
           <span className="inline-flex items-center rounded-full bg-amber-500/10 text-amber-500 dark:text-amber-400 border border-amber-500/20 px-2 py-0.5 text-[10px] font-medium">
-            {t.trafficResetMode === "on_purchase" ? "сброс при покупке" : t.trafficResetMode === "monthly" ? "сброс ежемесячно" : t.trafficResetMode === "monthly_rolling" ? "скользящий месяц" : ""}
+            {t.trafficResetMode === "carry_over" ? "перенос остатка" : t.trafficResetMode === "on_purchase" ? "сброс при покупке" : t.trafficResetMode === "monthly" ? "сброс ежемесячно" : t.trafficResetMode === "monthly_rolling" ? "скользящий месяц" : ""}
           </span>
         )}
         {t.deviceLimit != null && (
@@ -1156,7 +1156,9 @@ function TariffModal({
   const [trafficGb, setTrafficGb] = useState<string>(
     tariff?.trafficLimitBytes != null ? String((tariff.trafficLimitBytes / BYTES_PER_GB).toFixed(2)) : ""
   );
-  const [trafficResetMode, setTrafficResetMode] = useState<string>(tariff?.trafficResetMode ?? "no_reset");
+  // для НОВЫХ тарифов дефолт «carry_over» (перенос остатка).
+  // Существующие тарифы сохраняют свой режим.
+  const [trafficResetMode, setTrafficResetMode] = useState<string>(tariff?.trafficResetMode ?? "carry_over");
   const [deviceLimit, setDeviceLimit] = useState<string>(tariff?.deviceLimit != null ? String(tariff.deviceLimit) : "");
   // Новая модель устройств:
   //   includedDevices — сколько входит в базовую цену тарифа
@@ -1170,6 +1172,16 @@ function TariffModal({
   const [discountsEnabled, setDiscountsEnabled] = useState<boolean>(() => (tariff?.deviceDiscountTiers?.length ?? 0) > 0);
   const [currency, setCurrency] = useState<string>((tariff?.currency ?? "usd").toLowerCase());
   const [lavatopOfferId, setLavatopOfferId] = useState<string>(tariff?.lavatopOfferId ?? "");
+  // T11+T12 (11.05.2026) — rich-text локаций тарифа.
+  const [locations, setLocations] = useState<string>((tariff as { locations?: string | null } | null)?.locations ?? "");
+  // T16 (12.05.2026) — эмодзи-префикс для главного меню бота перед названием подписки.
+  const [menuEmoji, setMenuEmoji] = useState<string>((tariff as { menuEmoji?: string | null } | null)?.menuEmoji ?? "");
+  // T-cooldown (13.05.2026) — кулдаун покупки тарифа (дней). Пусто/0 = без ограничения.
+  const [purchaseCooldownDays, setPurchaseCooldownDays] = useState<string>(
+    (tariff as { purchaseCooldownDays?: number | null } | null)?.purchaseCooldownDays != null
+      ? String((tariff as { purchaseCooldownDays?: number | null }).purchaseCooldownDays)
+      : ""
+  );
 
   useEffect(() => {
     if (isEdit && tariff) {
@@ -1188,6 +1200,16 @@ function TariffModal({
       setDiscountsEnabled((tariff.deviceDiscountTiers?.length ?? 0) > 0);
       setCurrency((tariff.currency ?? "usd").toLowerCase());
       setLavatopOfferId(tariff.lavatopOfferId ?? "");
+      // T11+T12 (11.05.2026)
+      setLocations((tariff as { locations?: string | null }).locations ?? "");
+      // T16 (12.05.2026)
+      setMenuEmoji((tariff as { menuEmoji?: string | null }).menuEmoji ?? "");
+      // T-cooldown (13.05.2026)
+      setPurchaseCooldownDays(
+        (tariff as { purchaseCooldownDays?: number | null }).purchaseCooldownDays != null
+          ? String((tariff as { purchaseCooldownDays?: number | null }).purchaseCooldownDays)
+          : ""
+      );
     } else {
       setName("");
       setDescription("");
@@ -1203,6 +1225,9 @@ function TariffModal({
       setDiscountTiers([]);
       setDiscountsEnabled(false);
       setCurrency("usd");
+      setLocations("");
+      setMenuEmoji("");
+      setPurchaseCooldownDays("");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modal, isEdit, tariff]);
@@ -1395,6 +1420,15 @@ function TariffModal({
           deviceDiscountTiers: normalizedTiers,
           currency: currency || "usd",
           lavatopOfferId: lavatopOfferId.trim() || null,
+          // T11+T12 (11.05.2026) — rich-text локаций тарифа.
+          locations: locations.trim() || null,
+          // T16 (12.05.2026) — эмодзи-префикс для главного меню бота.
+          menuEmoji: menuEmoji.trim() || null,
+          // T-cooldown (13.05.2026) — кулдаун покупки (дней). Пусто/0 = без ограничения.
+          purchaseCooldownDays: (() => {
+            const n = parseInt(purchaseCooldownDays.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
           priceOptions: normalized,
         };
         await api.updateTariff(token, tariff.id, payload);
@@ -1413,6 +1447,15 @@ function TariffModal({
           deviceDiscountTiers: normalizedTiers,
           currency: currency || "usd",
           lavatopOfferId: lavatopOfferId.trim() || null,
+          // T11+T12 (11.05.2026) — rich-text локаций тарифа.
+          locations: locations.trim() || null,
+          // T16 (12.05.2026) — эмодзи-префикс для главного меню бота.
+          menuEmoji: menuEmoji.trim() || null,
+          // T-cooldown (13.05.2026) — кулдаун покупки (дней). Пусто/0 = без ограничения.
+          purchaseCooldownDays: (() => {
+            const n = parseInt(purchaseCooldownDays.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
           priceOptions: normalized,
         };
         await api.createTariff(token, payload);
@@ -1438,17 +1481,36 @@ function TariffModal({
           <DialogDescription className="sr-only">Форма тарифа</DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="space-y-4">
-          <div className="grid gap-1.5">
-            <Label htmlFor="tariff-name" className="text-xs text-muted-foreground">Название</Label>
-            <Input
-              id="tariff-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Например: 30 дней, 1 год"
-              required
-              className={inputCls}
-            />
+          <div className="grid gap-1.5 grid-cols-[1fr_auto]">
+            <div className="grid gap-1.5">
+              <Label htmlFor="tariff-name" className="text-xs text-muted-foreground">Название</Label>
+              <Input
+                id="tariff-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Например: 30 дней, 1 год"
+                required
+                className={inputCls}
+              />
+            </div>
+            {/* T16 (12.05.2026) — эмодзи-префикс перед названием подписки в главном меню бота. */}
+            <div className="grid gap-1.5 w-24">
+              <Label htmlFor="tariff-menu-emoji" className="text-xs text-muted-foreground" title="Эмодзи перед названием подписки в главном меню бота">
+                Эмодзи
+              </Label>
+              <Input
+                id="tariff-menu-emoji"
+                value={menuEmoji}
+                onChange={(e) => setMenuEmoji(e.target.value.slice(0, 16))}
+                placeholder="🌐"
+                maxLength={16}
+                className={`${inputCls} text-center text-lg`}
+              />
+            </div>
           </div>
+          <p className="text-[10px] text-muted-foreground -mt-2">
+            Эмодзи показывается перед названием подписки в главном меню бота (напр. 🌐 / 🔒 / ♾️🔒). Если пусто — fallback по типу.
+          </p>
           <div className="grid gap-1.5">
             <Label htmlFor="tariff-desc" className="text-xs text-muted-foreground">Описание (необязательно)</Label>
             <textarea
@@ -1516,6 +1578,50 @@ function TariffModal({
               />
               <p className="text-[10px] text-muted-foreground">
                 Создайте оффер в Lava.top dashboard с ценой = цене тарифа. При оплате через Lava.top создастся <b>подписка</b> с авто-списанием раз в месяц. Если пусто — используется Default Offer ID из настроек.
+              </p>
+            </div>
+
+            {/* T-cooldown (13.05.2026) — кулдаун покупки тарифа.
+                Клиент сможет купить этот тариф не чаще раз в N дней. 0/пусто = без ограничения.
+                Применяется во всех точках оплаты (баланс / карта / крипта / etc).
+                Продление (extendsSecondarySubId) пропускает проверку — это нормальная операция. */}
+            <div className="grid gap-1">
+              <Label htmlFor="tariff-purchase-cooldown" className="text-[11px] text-muted-foreground">
+                ⏳ Кулдаун продления (дней) <span className="text-[10px] opacity-60">(пусто или 0 = без ограничения)</span>
+              </Label>
+              <Input
+                id="tariff-purchase-cooldown"
+                type="number"
+                min={0}
+                max={3650}
+                step={1}
+                value={purchaseCooldownDays}
+                onChange={(e) => setPurchaseCooldownDays(e.target.value)}
+                placeholder="например 10"
+                className={inputCls}
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Клиент сможет <b>продлевать</b> уже купленную подписку с этим тарифом не чаще раз в N дней. Полезно для дорогих/безлимитных тарифов (например, Unblock безлимит → 10 дней). <b>Новые покупки</b> этого тарифа как отдельных подписок ограничением <b>не блокируются</b>.
+              </p>
+            </div>
+
+            {/* T11+T12 (11.05.2026) — rich-text список локаций тарифа.
+                Показывается клиенту по кнопке «🌐 Локации» в боте (детали подписки / после триала).
+                Если пусто — кнопка «Локации» в боте не появляется. */}
+            <div className="grid gap-1">
+              <Label htmlFor="tariff-locations" className="text-[11px] text-muted-foreground">
+                🌐 Локации <span className="text-[10px] opacity-60">(rich-text для бота, plain + emoji)</span>
+              </Label>
+              <textarea
+                id="tariff-locations"
+                value={locations}
+                onChange={(e) => setLocations(e.target.value)}
+                placeholder="✨ В стандартной подписке доступны локации из списка ниже...&#10;&#10;✨ Нидерланды 1 🇳🇱 - Нидерланды&#10;✨ Германия 🇩🇪 - некоторые соцсети могут работать быстрее&#10;..."
+                rows={10}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono whitespace-pre-wrap"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Полный текст со списком стран и описаний. Поддерживает переносы строк и эмодзи. Клиент видит этот текст по кнопке «🌐 Локации» в боте. Если пусто — кнопка не показывается.
               </p>
             </div>
 
@@ -1660,13 +1766,15 @@ function TariffModal({
               onChange={(e) => setTrafficResetMode(e.target.value)}
               className={selectCls}
             >
-              <option value="no_reset">Без сброса</option>
+              <option value="carry_over">Перенос остатка трафика</option>
+              <option value="no_reset">Рост трафика без сброса</option>
               <option value="on_purchase">Сброс при покупке тарифа</option>
               <option value="monthly">Ежемесячный сброс</option>
               <option value="monthly_rolling">Скользящий месяц</option>
             </select>
             <p className="text-[11px] text-muted-foreground/80">
-              {trafficResetMode === "no_reset" && "Трафик не сбрасывается — лимит действует на весь срок тарифа."}
+              {trafficResetMode === "carry_over" && "Остаток трафика переносится на новый период. Пример: было 90 ГБ, использовано 40 → докупил 90 → станет 0 из 140 ГБ. Счётчик использованного обнуляется."}
+              {trafficResetMode === "no_reset" && "Лимит накапливается, счётчик использованного НЕ сбрасывается. Пример: было 90 ГБ, использовано 40 → докупил 90 → станет 40 из 180 ГБ."}
               {trafficResetMode === "on_purchase" && "Трафик обнуляется при каждой покупке/продлении тарифа."}
               {trafficResetMode === "monthly" && "Трафик обнуляется каждый месяц (Remna MONTH). Например: 10 ГБ/мес на 3 месяца."}
               {trafficResetMode === "monthly_rolling" && "Трафик сбрасывается через 30 дней от последнего сброса (Remna MONTH_ROLLING)."}

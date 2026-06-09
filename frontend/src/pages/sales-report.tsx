@@ -11,11 +11,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PaymentActionsDrawer } from "@/components/payment-actions-drawer";
+import { fmtMskShort } from "@/lib/datetime";
 
 function fmtDate(s: string | null) {
   if (!s) return "—";
   try {
-    return new Date(s).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    return fmtMskShort(s);
   } catch {
     return s;
   }

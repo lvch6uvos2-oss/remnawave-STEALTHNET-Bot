@@ -21,6 +21,7 @@ import { Card } from "@/components/ui/card";
 import { useAuth } from "@/contexts/auth";
 import { paymentActionsApi, type PaymentDetailResponse } from "@/lib/admin-extras-api";
 import { cn } from "@/lib/utils";
+import { fmtMsk } from "@/lib/datetime";
 
 interface Props {
   paymentId: string | null;
@@ -204,7 +205,7 @@ export function PaymentActionsDrawer({ paymentId, onClose, onRefreshList }: Prop
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Создан</span>
-                  <span className="text-xs text-muted-foreground">{new Date(p.createdAt).toLocaleString("ru-RU")}</span>
+                  <span className="text-xs text-muted-foreground">{fmtMsk(p.createdAt)}</span>
                 </div>
               </Card>
 

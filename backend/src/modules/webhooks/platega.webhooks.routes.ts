@@ -58,7 +58,6 @@ type PaymentRow = {
   externalId: string | null;
   status: string;
   clientId: string;
-  botId: string | null;
   amount: number;
   currency: string;
   tariffId: string | null;
@@ -73,7 +72,6 @@ const PAYMENT_SELECT = {
   externalId: true,
   status: true,
   clientId: true,
-  botId: true,
   amount: true,
   currency: true,
   tariffId: true,
@@ -129,7 +127,6 @@ async function findPlategaPaymentByAnyId(candidateIds: string[]): Promise<Paymen
         externalId: byOrder.externalId,
         status: byOrder.status,
         clientId: byOrder.clientId,
-        botId: byOrder.botId,
         amount: byOrder.amount,
         currency: byOrder.currency,
         tariffId: byOrder.tariffId,
@@ -183,48 +180,29 @@ async function ensureTariffActivation(paymentId: string): Promise<void> {
     select: { tariffId: true, proxyTariffId: true, singboxTariffId: true, clientId: true, metadata: true },
   });
   const isExtraOption = row ? hasExtraOptionInMetadata(row.metadata) : false;
-
-  // Retry-обёртка для сетевых ошибок при обращении к Remna API:
-  // "fetch failed", "ETIMEDOUT", "ECONNREFUSED", "socket hang up" и т.п.
-  // 3 попытки с экспонентой 2с/4с/8с. Бизнес-ошибки (тариф не найден, клиент
-  // заблокирован и т.п.) НЕ ретраим — они не сетевые.
-  type Activation = { ok: boolean; error?: string; slotIds?: string[] };
-  const isNetworkError = (e?: string): boolean =>
-    !!e && /fetch failed|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|socket hang up|abort|EAI_AGAIN/i.test(e);
-  const activateWithRetry = async (fn: () => Promise<Activation>, ctx: string): Promise<Activation> => {
-    let res = await fn();
-    for (let attempt = 1; attempt <= 3 && !res.ok && isNetworkError(res.error); attempt++) {
-      const delay = attempt * 2000;
-      console.warn(`[Platega Webhook] ${ctx}: network error "${res.error}", retry ${attempt}/3 in ${delay}ms...`);
-      await new Promise((r) => setTimeout(r, delay));
-      res = await fn();
-    }
-    return res;
-  };
-
-  let activation: Activation = { ok: false };
+  let activation: { ok: boolean; error?: string; slotIds?: string[] } = { ok: false };
   if (isExtraOption) {
-    activation = await activateWithRetry(() => applyExtraOptionByPaymentId(paymentId), "extra-option");
+    activation = await applyExtraOptionByPaymentId(paymentId);
+    if (activation.ok && row?.clientId) {
+      const { notifyExtraOptionApplied } = await import("../notification/telegram-notify.service.js");
+      await notifyExtraOptionApplied(row.clientId, paymentId).catch(() => {});
+    }
   } else if (row?.proxyTariffId) {
-    activation = await activateWithRetry(async () => {
-      const r = await createProxySlotsByPaymentId(paymentId);
-      return r.ok ? { ok: true, slotIds: r.slotIds } : { ok: false, error: r.error };
-    }, "proxy");
+    const proxyResult = await createProxySlotsByPaymentId(paymentId);
+    activation = proxyResult.ok ? { ok: true, slotIds: proxyResult.slotIds } : { ok: false, error: proxyResult.error };
     if (activation.ok && activation.slotIds?.length && row.clientId) {
       const tariff = await prisma.proxyTariff.findUnique({ where: { id: row.proxyTariffId! }, select: { name: true } });
       await notifyProxySlotsCreated(row.clientId, activation.slotIds, tariff?.name ?? undefined).catch(() => {});
     }
   } else if (row?.singboxTariffId) {
-    activation = await activateWithRetry(async () => {
-      const r = await createSingboxSlotsByPaymentId(paymentId);
-      return r.ok ? { ok: true, slotIds: r.slotIds } : { ok: false, error: r.error };
-    }, "singbox");
+    const singboxResult = await createSingboxSlotsByPaymentId(paymentId);
+    activation = singboxResult.ok ? { ok: true, slotIds: singboxResult.slotIds } : { ok: false, error: singboxResult.error };
     if (activation.ok && activation.slotIds?.length && row.clientId) {
       const tariff = await prisma.singboxTariff.findUnique({ where: { id: row.singboxTariffId }, select: { name: true } });
       await notifySingboxSlotsCreated(row.clientId, activation.slotIds, tariff?.name ?? undefined).catch(() => {});
     }
   } else {
-    activation = await activateWithRetry(() => activateTariffByPaymentId(paymentId), "tariff");
+    activation = await activateTariffByPaymentId(paymentId);
   }
   await prisma.$transaction(async (tx) => {
     const row = await tx.payment.findUnique({
@@ -510,6 +488,13 @@ plategaWebhooksRouter.post("/platega", async (req, res) => {
       await notifyTariffActivated(payment.clientId, payment.id).catch(() => {});
     }
     // proxyTariffId: notifyProxySlotsCreated вызывается из ensureTariffActivation
+
+    // сжигаем одноразовую персональную скидку после продуктовой покупки.
+    if (!isTopUp) {
+      const { extinguishOneTimeDiscount } = await import("../client/personal-discount.js");
+      await extinguishOneTimeDiscount(payment.clientId).catch(() => {});
+    }
+
     await distributeReferralRewards(payment.id).catch((e) => {
       console.error("[Platega Webhook] Referral distribution error", { paymentId: payment.id, error: e });
     });

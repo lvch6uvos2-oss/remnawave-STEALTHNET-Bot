@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Loader2, RefreshCw, Activity, Clock, FileText, ShieldOff, Play, CheckCircle2, AlertTriangle, XCircle, MinusCircle } from "lucide-react";
 import { diagnosticsApi, adminSecurityApi, type HealthResponse, type CronEntry } from "@/lib/admin-extras-api";
+import { fmtMsk } from "@/lib/datetime";
 
 const STATUS_META = {
   ok: { cls: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30", icon: CheckCircle2, label: "OK" },
@@ -189,7 +190,7 @@ export function AdminDiagnosticsPage() {
                       </div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         <span className="font-mono">{c.cron}</span>
-                        {c.nextRunAt ? <span className="ml-2">next: {new Date(c.nextRunAt).toLocaleString("ru")}</span> : null}
+                        {c.nextRunAt ? <span className="ml-2">next: {fmtMsk(c.nextRunAt)}</span> : null}
                         {c.description ? <span className="ml-2">— {c.description}</span> : null}
                       </div>
                       {lastRun ? (
@@ -199,7 +200,7 @@ export function AdminDiagnosticsPage() {
                           ) : (
                             <span className="text-red-600 dark:text-red-400 inline-flex items-center gap-1"><XCircle className="h-3 w-3" /> ERROR</span>
                           )}
-                          <span className="text-muted-foreground">{new Date(lastRun.startedAt).toLocaleTimeString("ru")} · {lastRun.durationMs}ms</span>
+                          <span className="text-muted-foreground">{new Date(lastRun.startedAt).toLocaleTimeString("ru", { timeZone: "Europe/Moscow" })} · {lastRun.durationMs}ms</span>
                           {lastRun.error ? <span className="text-muted-foreground truncate">{lastRun.error.slice(0, 60)}</span> : null}
                         </div>
                       ) : null}

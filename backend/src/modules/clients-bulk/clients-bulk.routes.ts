@@ -159,7 +159,6 @@ clientsBulkRouter.post(
  *   - neverConnected: только без remnawave_uuid и без trial_used
  *   - hasNoPayments: только без платежей
  *   - registrationSource: web/telegram/google/apple
- *   - botId: ограничить клоном
  *
  * Возвращает массив подозрительных + сводку. Удаление — отдельным /antibot/purge.
  */
@@ -173,7 +172,6 @@ const findSuspiciousSchema = z.object({
   neverConnected: z.boolean().optional(),
   hasNoPayments: z.boolean().optional(),
   registrationSource: z.string().max(20).optional(),
-  botId: z.string().optional(),
   limit: z.number().int().min(1).max(2000).default(500),
 });
 
@@ -192,7 +190,6 @@ clientsBulkRouter.post(
     }
     if (f.registrationIp) where.registrationIp = f.registrationIp;
     if (f.registrationSource) where.registrationSource = f.registrationSource;
-    if (f.botId) where.botId = f.botId;
     if (f.neverConnected) {
       where.remnawaveUuid = null;
       where.trialUsed = false;
@@ -225,7 +222,6 @@ clientsBulkRouter.post(
         registrationSource: true,
         remnawaveUuid: true,
         trialUsed: true,
-        botId: true,
         createdAt: true,
       },
       orderBy: { createdAt: "desc" },

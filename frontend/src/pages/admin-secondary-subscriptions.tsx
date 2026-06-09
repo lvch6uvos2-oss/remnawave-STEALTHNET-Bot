@@ -18,6 +18,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { fmtMsk, fmtMskShort, fmtMskDate } from "@/lib/datetime";
 import {
   Search,
   RefreshCw,
@@ -37,24 +38,43 @@ import {
   Activity,
   Plus,
   Loader2,
+  Pencil,
 } from "lucide-react";
 
-function giftStatusBadge(status: string | null): { label: string; className: string } {
+/**
+ * бейдж статуса подписки в админке.
+ * Учитывает purchasedAsGift и subscriptionIndex для корректной семантики:
+ *  - index=0 + giftStatus=null → «Главная» (primary, купил себе или выдан админом)
+ *  - index>0 + giftStatus=null + purchasedAsGift=false → «Своя» (доп. куплена клиентом)
+ *  - index>0 + giftStatus=null + purchasedAsGift=true → «Готова к подарку» (код ещё не создан)
+ *  - GIFT_RESERVED / GIFT_CODE_ACTIVE → «Код активен» (ожидает redeem)
+ *  - GIFTED → «Подарена» (получатель активировал)
+ *  - ACTIVATED_SELF → «Забрана себе» (отмена подарка)
+ */
+function giftStatusBadge(
+  status: string | null,
+  purchasedAsGift?: boolean,
+  subscriptionIndex?: number,
+): { label: string; className: string } {
+  // Активный подарочный цикл — приоритет над «своими».
   switch (status) {
-    case null:
-    case "":
-      return { label: "Доступна", className: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 shadow-sm backdrop-blur-md" };
-    case "ACTIVATED_SELF":
-      return { label: "Своя", className: "bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 shadow-sm backdrop-blur-md" };
     case "GIFT_RESERVED":
-      return { label: "Резерв", className: "bg-amber-500/15 text-amber-400 border border-amber-500/20 shadow-sm backdrop-blur-md" };
     case "GIFT_CODE_ACTIVE":
-      return { label: "Код активен", className: "bg-blue-500/15 text-blue-500 dark:text-blue-400 border border-blue-500/20 shadow-sm backdrop-blur-md" };
+      return { label: "Код активен", className: "bg-amber-500/15 text-amber-400 border border-amber-500/20 shadow-sm backdrop-blur-md" };
     case "GIFTED":
       return { label: "Подарена", className: "bg-purple-500/15 text-purple-400 border border-purple-500/20 shadow-sm backdrop-blur-md" };
-    default:
-      return { label: status, className: "bg-foreground/[0.06] dark:bg-white/10 text-muted-foreground border border-white/20 shadow-sm backdrop-blur-md" };
+    case "ACTIVATED_SELF":
+      return { label: "Забрана себе", className: "bg-blue-500/15 text-blue-500 dark:text-blue-400 border border-blue-500/20 shadow-sm backdrop-blur-md" };
   }
+  // null / "" — обычная подписка, дальше различаем по purchasedAsGift и index.
+  if (purchasedAsGift === true) {
+    return { label: "Готова к подарку", className: "bg-cyan-500/15 text-cyan-400 border border-cyan-500/20 shadow-sm backdrop-blur-md" };
+  }
+  if (subscriptionIndex === 0) {
+    return { label: "Главная", className: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 shadow-sm backdrop-blur-md" };
+  }
+  // index > 0 + purchasedAsGift=false → купленная себе доп. подписка.
+  return { label: "Своя", className: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 shadow-sm backdrop-blur-md" };
 }
 
 const EVENT_LABELS: Record<string, { icon: React.ReactNode; label: string }> = {
@@ -84,6 +104,28 @@ export function AdminSecondarySubscriptionsPage() {
   });
   
   const [searchInput, setSearchInput] = useState(initialSearch);
+
+  // live-search с debounce 300мс. Раньше фильтрация шла только
+  // по Enter / клику «Найти», и пользователи думали что поиск не работает (вводили
+  // username, видели полный список 51k subs, считали что поиск сломан).
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      const next = searchInput.trim();
+      setFilters((prev) => {
+        if ((prev.search ?? "") === next) return prev;
+        return { ...prev, search: next || undefined, page: 1 };
+      });
+      setSearchParams((prev) => {
+        const p = new URLSearchParams(prev);
+        if (next) p.set("search", next);
+        else p.delete("search");
+        return p;
+      });
+    }, 300);
+    return () => clearTimeout(handle);
+    // setSearchParams identity is stable; не включаем в deps чтобы не дёргать лишний раз.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
   
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -91,6 +133,15 @@ export function AdminSecondarySubscriptionsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
+  // ── Edit Subscription Dialog State ──
+  // Меняем количество дней (+/−) и/или лимит трафика (ГБ, пусто = безлимит).
+  const [editOpen, setEditOpen] = useState(false);
+  const [editAddDays, setEditAddDays] = useState<string>("");
+  const [editTrafficGb, setEditTrafficGb] = useState<string>("");
+  const [editTrafficUnlimited, setEditTrafficUnlimited] = useState<boolean>(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // ── Create Gift Code Dialog State ──
   const [createOpen, setCreateOpen] = useState(false);
@@ -104,6 +155,11 @@ export function AdminSecondarySubscriptionsPage() {
   const [createMessage, setCreateMessage] = useState("");
   const [createResult, setCreateResult] = useState<{ code: string; expiresAt: string } | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  // срок/трафик override + режим уведомления + ссылка для пересылки.
+  const [createDurationDays, setCreateDurationDays] = useState<string>("");
+  const [createTrafficGb, setCreateTrafficGb] = useState<string>("");
+  const [createNotify, setCreateNotify] = useState<boolean>(true);
+  const [createGiftUrl, setCreateGiftUrl] = useState<string | null>(null);
 
   const fetchItems = useCallback(async () => {
     if (!token) return;
@@ -219,7 +275,7 @@ export function AdminSecondarySubscriptionsPage() {
 
   // ── Create Gift Code Handlers ──
 
-  const openCreateDialog = async () => {
+  const openCreateDialog = async (notify: boolean = true) => {
     setCreateOpen(true);
     setCreateSelectedClient(null);
     setCreateSelectedTariff("");
@@ -228,6 +284,10 @@ export function AdminSecondarySubscriptionsPage() {
     setCreateError(null);
     setCreateClientSearch("");
     setCreateClients([]);
+    setCreateDurationDays("");
+    setCreateTrafficGb("");
+    setCreateNotify(notify);
+    setCreateGiftUrl(null);
 
     // Load tariffs
     try {
@@ -256,12 +316,19 @@ export function AdminSecondarySubscriptionsPage() {
     setCreateLoading(true);
     setCreateError(null);
     try {
+      const durationDaysNum = createDurationDays.trim() ? Math.floor(Number(createDurationDays.trim())) : undefined;
+      const trafficGbRaw = createTrafficGb.trim();
+      const trafficGbNum = trafficGbRaw !== "" ? Number(trafficGbRaw) : undefined;
       const result = await api.adminCreateGiftCode(token, {
         clientId: createSelectedClient.id,
         tariffId: createSelectedTariff,
         giftMessage: createMessage.trim() || undefined,
+        durationDays: durationDaysNum != null && durationDaysNum > 0 ? durationDaysNum : undefined,
+        trafficGb: trafficGbNum != null && !Number.isNaN(trafficGbNum) && trafficGbNum >= 0 ? trafficGbNum : undefined,
+        notify: createNotify,
       });
       setCreateResult({ code: result.code, expiresAt: result.expiresAt });
+      setCreateGiftUrl(result.giftUrl ?? null);
       fetchItems(); // refresh list
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : "Ошибка создания подарочного кода");
@@ -297,7 +364,7 @@ export function AdminSecondarySubscriptionsPage() {
           </motion.div>
           <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-foreground via-primary to-foreground/70 dark:from-foreground dark:via-primary dark:to-foreground/60">
-              Дополнительные подписки
+              Подписки
             </h1>
             <div className="flex flex-wrap items-center gap-2 mt-2 text-sm font-medium">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-2.5 py-0.5 text-[11px] font-semibold text-primary backdrop-blur-md">
@@ -317,13 +384,21 @@ export function AdminSecondarySubscriptionsPage() {
           </div>
         </div>
 
-        <div className="relative z-10">
+        <div className="relative z-10 flex flex-col sm:flex-row gap-2">
           <Button
-            onClick={openCreateDialog}
+            onClick={() => openCreateDialog(true)}
             className="h-11 px-5 rounded-2xl gap-2 shadow-lg hover:shadow-xl transition-all bg-gradient-to-br from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70 text-primary-foreground font-semibold group"
           >
             <Plus className="h-4 w-4 transition-transform group-hover:rotate-90" />
             Создать подарок
+          </Button>
+          <Button
+            onClick={() => openCreateDialog(false)}
+            variant="secondary"
+            className="h-11 px-5 rounded-2xl gap-2 font-semibold border border-white/10 bg-foreground/[0.04] dark:bg-white/5 hover:bg-foreground/[0.08] dark:hover:bg-white/10 transition-all"
+          >
+            <Gift className="h-4 w-4" />
+            Выдать код
           </Button>
         </div>
       </motion.div>
@@ -337,11 +412,11 @@ export function AdminSecondarySubscriptionsPage() {
           <h2 className="text-[11px] font-bold uppercase tracking-[0.25em] text-foreground/80 mb-4">Фильтры</h2>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
             <div className="flex-1 space-y-2">
-              <Label className="text-xs">Поиск (Email / Telegram)</Label>
+              <Label className="text-xs">Поиск (Email / Telegram / подарочный код / отправитель)</Label>
               <div className="relative">
                 <Search className="absolute left-3 top-3.5 h-4 w-4 text-muted-foreground" />
                 <Input
-                  placeholder="Поиск по владельцу..."
+                  placeholder="Email, @username, TG ID, код подарка (XXXX-XXXX-XXXX)..."
                   className="pl-9 bg-background/60 border-white/10 hover:border-primary/30 focus:border-primary/50 rounded-xl h-11 transition-colors"
                   value={searchInput}
                   onChange={(e) => setSearchInput(e.target.value)}
@@ -351,7 +426,7 @@ export function AdminSecondarySubscriptionsPage() {
             </div>
             
             <div className="w-full sm:w-64 space-y-2">
-              <Label className="text-xs">Статус подарка</Label>
+              <Label className="text-xs">Статус</Label>
               <div className="relative">
                 <select
                   className="flex h-11 w-full rounded-xl border border-white/10 bg-background/60 hover:border-primary/30 focus:border-primary/50 backdrop-blur-xl px-3 py-1 text-sm shadow-sm text-foreground focus:outline-none transition-colors appearance-none"
@@ -420,7 +495,7 @@ export function AdminSecondarySubscriptionsPage() {
                 <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Владелец</th>
                 <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Тариф</th>
                 <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Статус</th>
-                <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Получатель</th>
+                <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Отправитель</th>
                 <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Код</th>
                 <th className="px-5 py-4 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground text-right">Действия</th>
               </tr>
@@ -452,9 +527,16 @@ export function AdminSecondarySubscriptionsPage() {
                 </tr>
               ) : (
                 data?.items.map((item, idx) => {
-                  const badge = giftStatusBadge(item.giftStatus);
+                  const badge = giftStatusBadge(item.giftStatus, item.purchasedAsGift, item.subscriptionIndex);
                   const ownerName = item.owner.telegramUsername ? `@${item.owner.telegramUsername}` : item.owner.email || item.owner.telegramId;
-                  const giftedName = item.giftedToClient?.telegramUsername ? `@${item.giftedToClient.telegramUsername}` : item.giftedToClient?.email || "—";
+                  // «Отправитель» = создатель gift code (giftSender),
+                  // а не получатель. Если код создан админом — показываем 👑 + email админа.
+                  const sender = (item as { giftSender?: { telegramUsername?: string | null; email?: string | null; isAdmin?: boolean } | null }).giftSender;
+                  const giftedName = sender?.isAdmin
+                    ? `👑 ${sender.email ?? "Администратор"}`
+                    : sender?.telegramUsername
+                      ? `@${sender.telegramUsername}`
+                      : sender?.email || "—";
                   const isSelected = selectedIds.has(item.id);
                   
                   return (
@@ -506,7 +588,7 @@ export function AdminSecondarySubscriptionsPage() {
                       </td>
                       <td className="px-5 py-4">
                         <div className="text-sm font-medium text-foreground/80">{item.tariff?.name || "—"}</div>
-                        <div className="text-[10px] text-muted-foreground mt-0.5">{new Date(item.createdAt).toLocaleDateString("ru-RU")}</div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">{fmtMskDate(item.createdAt)}</div>
                       </td>
                       <td className="px-5 py-4">
                         <span className={cn("px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wide uppercase", badge.className)}>
@@ -538,7 +620,10 @@ export function AdminSecondarySubscriptionsPage() {
                         ) : <span className="text-muted-foreground/40">—</span>}
                       </td>
                       <td className="px-5 py-4 text-right relative z-10">
-                        <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-2 group-hover:translate-x-0">
+                        {/* кнопки «глаз» и «удалить» теперь видны
+                            всегда, а не только при hover. Раньше пользователи думали что
+                            кнопки удаления нет. */}
+                        <div className="flex items-center justify-end gap-2">
                           <Button variant="ghost" size="icon" className="h-8 w-8 rounded-xl bg-foreground/[0.04] dark:bg-white/5 hover:bg-blue-500/15 hover:text-blue-400 border border-white/10 hover:border-blue-500/30 transition-all shadow-sm" onClick={(e) => { e.stopPropagation(); openDetail(item.id); }}>
                             <Eye className="h-4 w-4" />
                           </Button>
@@ -622,18 +707,18 @@ export function AdminSecondarySubscriptionsPage() {
                     <span className="text-sm font-bold text-foreground/90">{detailData.tariff?.name || "—"}</span>
                   </div>
                   <div className="rounded-[1.5rem] bg-gradient-to-br from-background/80 to-background/40 backdrop-blur-xl border border-white/10 p-5 shadow-sm transition-all hover:shadow-md hover:border-white/20 flex flex-col items-start justify-center">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground block mb-2">Статус подарка</span>
-                    <span className={cn("px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide", giftStatusBadge(detailData.giftStatus).className)}>
-                      {giftStatusBadge(detailData.giftStatus).label}
+                    <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground block mb-2">Статус</span>
+                    <span className={cn("px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide", giftStatusBadge(detailData.giftStatus, detailData.purchasedAsGift, detailData.subscriptionIndex).className)}>
+                      {giftStatusBadge(detailData.giftStatus, detailData.purchasedAsGift, detailData.subscriptionIndex).label}
                     </span>
                   </div>
                   <div className="rounded-[1.5rem] bg-gradient-to-br from-background/80 to-background/40 backdrop-blur-xl border border-white/10 p-5 shadow-sm transition-all hover:shadow-md hover:border-white/20">
                     <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground block mb-2">Создана</span>
-                    <span className="text-sm font-medium text-foreground/80">{new Date(detailData.createdAt).toLocaleDateString("ru-RU")}</span>
+                    <span className="text-sm font-medium text-foreground/80">{fmtMskDate(detailData.createdAt)}</span>
                   </div>
                   <div className="rounded-[1.5rem] bg-gradient-to-br from-background/80 to-background/40 backdrop-blur-xl border border-white/10 p-5 shadow-sm transition-all hover:shadow-md hover:border-white/20">
                     <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground block mb-2">Обновлена</span>
-                    <span className="text-sm font-medium text-foreground/80">{new Date(detailData.updatedAt).toLocaleDateString("ru-RU")}</span>
+                    <span className="text-sm font-medium text-foreground/80">{fmtMskDate(detailData.updatedAt)}</span>
                   </div>
                 </div>
 
@@ -660,38 +745,87 @@ export function AdminSecondarySubscriptionsPage() {
 
                 <div className="rounded-[1.5rem] bg-gradient-to-br from-background/80 to-background/40 backdrop-blur-xl border border-white/10 p-5 shadow-sm relative overflow-hidden group">
                   <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/5 blur-[40px] pointer-events-none rounded-full" />
-                  <h3 className="text-[11px] font-bold uppercase tracking-[0.25em] text-foreground/80 flex items-center gap-2.5 mb-5">
-                    <Activity className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" /> Данные Remnawave
-                  </h3>
-                  {detailData.remnaData ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm relative z-10">
-                      <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
-                        <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-2">Статус</span>
-                        <span className={cn(
-                          "px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider",
-                          detailData.remnaData.status === "active" ? "bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 shadow-sm backdrop-blur-md" : "bg-red-500/15 text-red-500 dark:text-red-400 border border-red-500/20 shadow-sm backdrop-blur-md"
-                        )}>
-                          {String(detailData.remnaData.status || "unknown")}
-                        </span>
+                  <div className="flex items-center justify-between mb-5">
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.25em] text-foreground/80 flex items-center gap-2.5">
+                      <Activity className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" /> Данные Remnawave
+                    </h3>
+                    {/* кнопка «Редактировать» — открывает модалку с полями. */}
+                    {detailData.remnaData && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-xl h-8 px-3 text-[11px] font-bold gap-1.5 border-white/10 bg-foreground/[0.04] dark:bg-white/[0.04] hover:bg-foreground/[0.08]"
+                        onClick={() => {
+                          setEditAddDays("");
+                          setEditTrafficGb("");
+                          setEditTrafficUnlimited(false);
+                          setEditError(null);
+                          setEditOpen(true);
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                        Редактировать
+                      </Button>
+                    )}
+                  </div>
+                  {detailData.remnaData ? (() => {
+                    // корректные имена полей Remna API
+                    //   • status — строка ACTIVE / DISABLED / LIMITED / EXPIRED (верхний регистр).
+                    //   • trafficLimitBytes — лимит в байтах (0 = безлимит).
+                    //   • userTraffic.usedTrafficBytes — использовано в байтах.
+                    // Раньше код читал `usedTraffic`, `trafficLimit`, `devices` — таких полей в Remna нет → всегда «0/∞».
+                    const remna = detailData.remnaData as Record<string, unknown>;
+                    const statusStr = String(remna.status ?? "unknown");
+                    const statusActive = statusStr === "ACTIVE";
+                    const trafficLimitBytesRaw = remna.trafficLimitBytes;
+                    const trafficLimitBytes = typeof trafficLimitBytesRaw === "number"
+                      ? trafficLimitBytesRaw
+                      : typeof trafficLimitBytesRaw === "string" ? Number(trafficLimitBytesRaw) : 0;
+                    const userTraffic = (remna.userTraffic ?? {}) as Record<string, unknown>;
+                    const usedRaw = userTraffic.usedTrafficBytes ?? remna.trafficUsedBytes;
+                    const usedBytes = typeof usedRaw === "number"
+                      ? usedRaw
+                      : typeof usedRaw === "string" ? Number(usedRaw) : 0;
+                    const fmt = (b: number): string => {
+                      if (!Number.isFinite(b) || b <= 0) return "0 B";
+                      const u = ["B", "KB", "MB", "GB", "TB"];
+                      const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), u.length - 1);
+                      return `${(b / Math.pow(1024, i)).toFixed(i > 1 ? 2 : 0)} ${u[i]}`;
+                    };
+                    const trafficStr = `${fmt(usedBytes)} / ${trafficLimitBytes > 0 ? fmt(trafficLimitBytes) : "∞"}`;
+                    const deviceLimit = typeof remna.hwidDeviceLimit === "number" ? remna.hwidDeviceLimit : "—";
+                    return (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm relative z-10">
+                        <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-2">Статус</span>
+                          <span className={cn(
+                            "px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider",
+                            statusActive
+                              ? "bg-emerald-500/15 text-emerald-500 dark:text-emerald-400 border border-emerald-500/20 shadow-sm backdrop-blur-md"
+                              : "bg-red-500/15 text-red-500 dark:text-red-400 border border-red-500/20 shadow-sm backdrop-blur-md"
+                          )}>
+                            {statusStr}
+                          </span>
+                        </div>
+                        <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-1">Истекает</span>
+                          <span className="font-medium text-foreground/80">
+                            {remna.expireAt
+                              ? fmtMskDate(String(remna.expireAt))
+                              : "—"}
+                          </span>
+                        </div>
+                        <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-1">Трафик</span>
+                          <span className="font-mono text-foreground/80 text-xs">{trafficStr}</span>
+                        </div>
+                        <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
+                          <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-1">Лимит устройств</span>
+                          <span className="font-mono text-foreground/80">{String(deviceLimit)}</span>
+                        </div>
                       </div>
-                      <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
-                        <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-1">Истекает</span>
-                        <span className="font-medium text-foreground/80">
-                          {detailData.remnaData.expireAt 
-                            ? new Date(String(detailData.remnaData.expireAt)).toLocaleDateString("ru-RU") 
-                            : "—"}
-                        </span>
-                      </div>
-                      <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
-                        <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-1">Трафик</span>
-                        <span className="font-mono text-foreground/80">{String(detailData.remnaData.usedTraffic || "0")} / {String(detailData.remnaData.trafficLimit || "∞")}</span>
-                      </div>
-                      <div className="bg-foreground/[0.03] dark:bg-white/[0.04] border border-white/5 rounded-xl p-4">
-                        <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground block mb-1">Устройства</span>
-                        <span className="font-mono text-foreground/80">{String(detailData.remnaData.devices || "0")}</span>
-                      </div>
-                    </div>
-                  ) : (
+                    );
+                  })() : (
                     <div className="p-6 border border-dashed border-white/10 rounded-xl flex items-center justify-center text-sm font-medium text-muted-foreground/60 relative z-10">
                       Нет данных Remnawave
                     </div>
@@ -732,7 +866,7 @@ export function AdminSecondarySubscriptionsPage() {
                             )}
                             <div className="flex flex-col mt-1">
                               <span className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">Действует до</span>
-                              <span className="font-medium text-foreground/80 mt-0.5">{new Date(code.expiresAt).toLocaleDateString("ru-RU")}</span>
+                              <span className="font-medium text-foreground/80 mt-0.5">{fmtMskDate(code.expiresAt)}</span>
                             </div>
                           </div>
                           {code.giftMessage && (
@@ -771,10 +905,7 @@ export function AdminSecondarySubscriptionsPage() {
                               <div className="flex justify-between items-center mb-2">
                                 <span className="text-sm font-bold text-foreground/90">{evData.label}</span>
                                 <span className="text-[10px] font-medium tracking-wide text-muted-foreground bg-foreground/[0.04] dark:bg-white/[0.04] px-2 py-1 rounded-md border border-white/5">
-                                  {new Date(event.createdAt).toLocaleString("ru-RU", { 
-                                    day: '2-digit', month: '2-digit', year: 'numeric',
-                                    hour: '2-digit', minute: '2-digit'
-                                  })}
+                                  {fmtMskShort(event.createdAt)}
                                 </span>
                               </div>
                               {event.metadata && Object.keys(event.metadata).length > 0 && (
@@ -795,6 +926,175 @@ export function AdminSecondarySubscriptionsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* модалка редактирования доп. подписки админом. */}
+      <Dialog open={editOpen} onOpenChange={(o) => !o && !editSaving && setEditOpen(false)}>
+        <DialogContent className="sm:max-w-md bg-background/80 backdrop-blur-3xl border-white/10 shadow-2xl p-6 sm:rounded-[2rem]">
+          <DialogHeader>
+            <DialogTitle className="text-lg font-bold tracking-tight flex items-center gap-2">
+              <Pencil className="h-4 w-4 text-primary" /> Редактирование подписки
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Дни добавляются к текущему сроку (отрицательное число — сократить). Изменения применяются в Remnawave.
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* текущее состояние подписки (срок + трафик). */}
+          {(() => {
+            const r = detailData?.remnaData as Record<string, unknown> | undefined;
+            if (!r) return null;
+            const BYTES = 1024 ** 3;
+            // Расчёт «осталось дней» из expireAt.
+            const expireRaw = r.expireAt ?? r.expire_at;
+            let daysLeftLabel = "—";
+            let expireDateLabel = "—";
+            if (typeof expireRaw === "string" || typeof expireRaw === "number") {
+              const d = typeof expireRaw === "number" ? new Date(expireRaw * 1000) : new Date(expireRaw);
+              if (!isNaN(d.getTime())) {
+                const diffMs = d.getTime() - Date.now();
+                if (diffMs <= 0) {
+                  daysLeftLabel = "истекла";
+                } else {
+                  const days = Math.ceil(diffMs / 86_400_000);
+                  daysLeftLabel = `${days} ${days === 1 ? "день" : days < 5 ? "дня" : "дней"}`;
+                }
+                expireDateLabel = fmtMskDate(d);
+              }
+            }
+            // Трафик: usedTrafficBytes / trafficLimitBytes (0 = безлимит).
+            const usedRaw = (r.userTraffic as { usedTrafficBytes?: number | string } | undefined)?.usedTrafficBytes
+              ?? r.trafficUsedBytes ?? r.usedTrafficBytes ?? r.traffic_used_bytes ?? 0;
+            const limitRaw = r.trafficLimitBytes ?? r.traffic_limit_bytes ?? 0;
+            const usedNum = typeof usedRaw === "string" ? parseFloat(usedRaw) : Number(usedRaw);
+            const limitNum = typeof limitRaw === "string" ? parseFloat(limitRaw) : Number(limitRaw);
+            const usedGb = Number.isFinite(usedNum) ? (usedNum / BYTES).toFixed(2) : "0";
+            const trafficLabel = Number.isFinite(limitNum) && limitNum > 0
+              ? `${usedGb} / ${(limitNum / BYTES).toFixed(2)} ГБ`
+              : `${usedGb} ГБ / ∞ (безлимит)`;
+            const remainingLabel = Number.isFinite(limitNum) && limitNum > 0
+              ? `осталось ${Math.max(0, (limitNum - usedNum) / BYTES).toFixed(2)} ГБ`
+              : "безлимит";
+            return (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.04] p-3.5 space-y-2 text-xs">
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">Срок:</span>
+                  <span className="font-medium text-foreground/90">
+                    осталось <b>{daysLeftLabel}</b>{expireDateLabel !== "—" && <span className="text-muted-foreground"> · до {expireDateLabel}</span>}
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-muted-foreground">Трафик:</span>
+                  <span className="font-mono text-foreground/90">
+                    {trafficLabel} <span className="text-muted-foreground">({remainingLabel})</span>
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+
+          <div className="space-y-4 mt-4">
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-add-days" className="text-xs text-muted-foreground">Изменить срок (дней)</Label>
+              <Input
+                id="edit-add-days"
+                type="number"
+                value={editAddDays}
+                onChange={(e) => setEditAddDays(e.target.value)}
+                placeholder="+30 (продлить) или -7 (сократить)"
+                className="rounded-xl"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Например <code>+30</code> — добавить 30 дней к текущему сроку. Пусто или 0 — не менять.
+              </p>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-traffic-gb" className="text-xs text-muted-foreground">Лимит трафика (ГБ)</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="edit-traffic-gb"
+                  type="text"
+                  inputMode="decimal"
+                  value={editTrafficGb}
+                  onChange={(e) => { setEditTrafficGb(e.target.value); setEditTrafficUnlimited(false); }}
+                  placeholder="например 100"
+                  disabled={editTrafficUnlimited}
+                  className="rounded-xl flex-1"
+                />
+                <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none">
+                  <Checkbox
+                    checked={editTrafficUnlimited}
+                    onCheckedChange={(c) => { setEditTrafficUnlimited(!!c); if (c) setEditTrafficGb(""); }}
+                  />
+                  Безлимит
+                </label>
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Пусто и без чекбокса — не менять. Чекбокс «Безлимит» = 0 ГБ (без ограничения).
+              </p>
+            </div>
+            {editError && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 text-red-300 text-xs p-3">
+                ❌ {editError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => setEditOpen(false)}
+                disabled={editSaving}
+                className="rounded-xl"
+              >
+                Отмена
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!detailId || !token) return;
+                  const addDaysNum = editAddDays.trim() ? parseInt(editAddDays, 10) : 0;
+                  if (editAddDays.trim() && !Number.isFinite(addDaysNum)) {
+                    setEditError("Неверное число дней");
+                    return;
+                  }
+                  let trafficLimitBytes: number | null | undefined = undefined;
+                  if (editTrafficUnlimited) {
+                    trafficLimitBytes = 0;
+                  } else if (editTrafficGb.trim()) {
+                    const gb = parseFloat(editTrafficGb.replace(",", "."));
+                    if (!Number.isFinite(gb) || gb < 0) {
+                      setEditError("Неверный лимит трафика");
+                      return;
+                    }
+                    trafficLimitBytes = Math.floor(gb * 1024 ** 3);
+                  }
+                  if (!addDaysNum && trafficLimitBytes === undefined) {
+                    setEditError("Укажите хотя бы одно поле для изменения");
+                    return;
+                  }
+                  setEditSaving(true);
+                  setEditError(null);
+                  try {
+                    const body: { addDays?: number; trafficLimitBytes?: number | null } = {};
+                    if (addDaysNum) body.addDays = addDaysNum;
+                    if (trafficLimitBytes !== undefined) body.trafficLimitBytes = trafficLimitBytes;
+                    await api.editSecondarySubscription(token, detailId, body);
+                    setEditOpen(false);
+                    // Перезагружаем detail чтобы увидеть свежие данные из Remna.
+                    const refreshed = await api.getSecondarySubscription(token, detailId);
+                    setDetailData(refreshed);
+                  } catch (e: unknown) {
+                    setEditError(e instanceof Error ? e.message : "Ошибка сохранения");
+                  } finally {
+                    setEditSaving(false);
+                  }
+                }}
+                disabled={editSaving}
+                className="rounded-xl"
+              >
+                {editSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Сохранить"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={createOpen} onOpenChange={(open) => { if (!open) setCreateOpen(false); }}>
         <DialogContent className="sm:max-w-lg bg-background/80 backdrop-blur-3xl border-white/10 shadow-2xl p-0 sm:rounded-[2rem] [&>button]:z-50">
           <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] pointer-events-none rounded-full" />
@@ -807,9 +1107,9 @@ export function AdminSecondarySubscriptionsPage() {
                   <Gift className="w-6 h-6 text-primary" />
                 </div>
                 <div>
-                  <DialogTitle className="text-xl font-bold tracking-tight">Создать подарочный код</DialogTitle>
+                  <DialogTitle className="text-xl font-bold tracking-tight">{createNotify ? "Создать подарочный код" : "Выдать код для подарка"}</DialogTitle>
                   <DialogDescription className="text-xs mt-1 text-muted-foreground/80">
-                    Генерирует код для активации подписки
+                    {createNotify ? "Код отправится клиенту в Telegram" : "Код НЕ отправляется клиенту — отдайте дарителю"}
                   </DialogDescription>
                 </div>
               </div>
@@ -848,8 +1148,23 @@ export function AdminSecondarySubscriptionsPage() {
                   </div>
                   
                   <p className="text-xs font-medium text-muted-foreground bg-background/50 inline-block px-3 py-1.5 rounded-full border border-white/5">
-                    Действует до: {new Date(createResult.expiresAt).toLocaleString("ru-RU")}
+                    Действует до: {fmtMsk(createResult.expiresAt)}
                   </p>
+
+                  {createGiftUrl && (
+                    <div className="space-y-2 pt-2">
+                      <p className="text-[11px] font-medium text-muted-foreground">Ссылка для пересылки дарителю:</p>
+                      <div className="flex items-center gap-2 bg-black/30 p-3 rounded-xl border border-white/10">
+                        <span className="font-mono text-xs text-primary/90 flex-1 truncate text-left">{createGiftUrl}</span>
+                        <Button size="icon" className="h-9 w-9 rounded-lg bg-foreground/[0.04] dark:bg-white/5 hover:bg-primary/15 text-muted-foreground hover:text-primary border border-white/10 shrink-0" onClick={() => copyToClipboard(createGiftUrl!)}>
+                          {copiedCode === createGiftUrl ? <Check className="h-4 w-4 text-emerald-500 dark:text-emerald-400" /> : <Copy className="h-4 w-4" />}
+                        </Button>
+                      </div>
+                      {!createNotify && (
+                        <p className="text-[10px] text-amber-500/90">Клиенту ничего не отправлено — передайте код/ссылку дарителю.</p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <Button className="w-full h-12 rounded-2xl font-bold bg-foreground/[0.05] dark:bg-white/10 hover:bg-foreground/[0.08] dark:hover:bg-white/[0.15] text-foreground border border-white/10 transition-all shadow-sm" onClick={() => setCreateOpen(false)}>
                   Закрыть
@@ -936,6 +1251,43 @@ export function AdminSecondarySubscriptionsPage() {
                     </select>
                   </div>
                 </div>
+
+                {/* срок + трафик (override тарифа) + режим уведомления */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <Label className="text-[11px] font-bold uppercase tracking-[0.1em] text-foreground/80 ml-1">Срок (дней)</Label>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={3650}
+                      placeholder="по тарифу"
+                      className="bg-background/60 border-white/10 hover:border-primary/30 focus:border-primary/50 rounded-xl h-11 shadow-inner"
+                      value={createDurationDays}
+                      onChange={(e) => setCreateDurationDays(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-[11px] font-bold uppercase tracking-[0.1em] text-foreground/80 ml-1">Трафик (GB)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      step={0.1}
+                      placeholder="по тарифу · 0 = ∞"
+                      className="bg-background/60 border-white/10 hover:border-primary/30 focus:border-primary/50 rounded-xl h-11 shadow-inner"
+                      value={createTrafficGb}
+                      onChange={(e) => setCreateTrafficGb(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-3 px-1 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-white/20 accent-primary"
+                    checked={createNotify}
+                    onChange={(e) => setCreateNotify(e.target.checked)}
+                  />
+                  <span className="text-xs text-muted-foreground">Уведомить клиента в Telegram (отправить ему код + ссылку)</span>
+                </label>
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between ml-1">

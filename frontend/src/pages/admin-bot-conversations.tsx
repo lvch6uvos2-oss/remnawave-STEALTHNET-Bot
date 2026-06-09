@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { botConversationsApi, type BotConversationListItem, type TimelineEvent } from "@/lib/admin-extras-api";
+import { fmtMsk } from "@/lib/datetime";
 
 const KIND_META: Record<TimelineEvent["kind"], { color: string; Icon: typeof User }> = {
   registered:        { color: "text-emerald-500", Icon: UserPlus },
@@ -193,7 +194,7 @@ export function AdminBotConversationsPage() {
                         <div className={cn("absolute -left-[11px] mt-0.5 h-5 w-5 rounded-full bg-background border-2 border-white/10 flex items-center justify-center", meta.color)}>
                           <Icon className="h-3 w-3" />
                         </div>
-                        <div className="text-[10px] text-muted-foreground tabular-nums font-mono">{new Date(e.ts).toLocaleString("ru-RU")}</div>
+                        <div className="text-[10px] text-muted-foreground tabular-nums font-mono">{fmtMsk(e.ts)}</div>
                         <div className="text-sm font-medium text-foreground">{e.title}</div>
                         {e.detail && <div className="text-xs text-muted-foreground mt-0.5 break-words">{e.detail}</div>}
                       </li>

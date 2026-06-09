@@ -5,8 +5,8 @@
 # 1) Обычный апгрейд: migrate deploy проходит — reconcile_schema_drift проверяет
 #    что физическая схема совпадает со schema.prisma, и стартует node.
 # 2) P3009 (зависшая failed-запись): resolve --rolled-back → снова deploy → reconcile.
-# 3) P3005: БД с данными, но без истории Prisma — clone_bots при необходимости, drift
-#    через psql lenient (ON_ERROR_STOP=0) → baseline всех миграций → deploy → reconcile.
+# 3) P3005: БД с данными, но без истории Prisma — drift через psql lenient
+#    (ON_ERROR_STOP=0) → baseline всех миграций → deploy → reconcile.
 # 4) Greenfield (только чистая установка): lexsort имён миграций ломает deploy на пустой БД
 #    (раньше применяются инкременты без базовых таблиц). Тогда допустим ТОЛЬКО если в public
 #    нет «настоящих» таблиц — только _prisma_migrations и/или pending_* — иначе это прод с
@@ -16,24 +16,13 @@
 #    говорит "no pending migrations", но физически таблицы (landing_theme,
 #    marketplace_categories, ...) отсутствуют. reconcile_schema_drift вызывается
 #    после КАЖДОГО успешного deploy'я и detect'ит этот рассинхрон по `migrate diff`.
-# 7) ⚠️ КЕЙС P3018 ПОСЛЕ P3009 RECOVERY: миграция X была применена частично
+# 6) ⚠️ КЕЙС P3018 ПОСЛЕ P3009 RECOVERY: миграция X была применена частично
 #    (CREATE TABLE/ALTER успели), процесс упал → запись висит failed. После
 #    `resolve --rolled-back` повторный deploy пытается СНОВА выполнить SQL и
 #    падает на `column/relation X already exists` (P3018). Решение: detect
 #    P3018+already-exists → `resolve --applied` (объекты уже в БД, миграция
 #    фактически применена) → retry deploy. Итеративно для до 5 миграций
 #    подряд в том же состоянии.
-#
-# 6) ⚠️ КЕЙС clone_bots SILENT-CORRUPTION: миграция `20260502160000_clone_bots`
-#    помечена `applied` в `_prisma_migrations`, но физически SQL не выполнен
-#    (например, `migrate resolve --applied` без накатывания файла). В `clients`
-#    7к+ строк, но колонки `bot_id` нет, или есть пустая. Drift хочет
-#    `ADD COLUMN bot_id TEXT NOT NULL` — psql падает на NOT NULL поверх данных,
-#    `verify_drift_resolved` корректно даёт FATAL. Чтобы пользователь не звонил
-#    вручную выполнять SQL, `rescue_clients_bot_id_pre_drift` лечит это сам:
-#    создаёт primary bot из `BOT_TOKEN` env, добавляет колонку nullable, заполняет
-#    значением, делает SET NOT NULL, добавляет индексы и FK. После этого
-#    apply_sql_lenient видит «всё уже есть» и через verify drift пуст.
 #
 # Важно: drift применяется через psql ON_ERROR_STOP=0 (statement-by-statement),
 # а НЕ через `prisma db execute` (один батч в транзакции — при первой ошибке
@@ -50,6 +39,14 @@ log() {
   printf '%s\n' "[docker-entrypoint] $*"
 }
 
+# psql не понимает все query-параметры Prisma-стиля (connection_limit, schema, pgbouncer).
+# Перед передачей URL в psql очищаем эти параметры. Для prisma-команд оставляем оригинал.
+psql_url() {
+  printf '%s' "$DATABASE_URL" \
+    | sed -E 's/[?&](connection_limit|schema|pgbouncer|sslcert|sslkey|sslrootcert|sslidentity|sslpassword|socket_timeout|pool_timeout|connect_timeout|statement_cache_size)=[^&]*//g' \
+    | sed -E 's/\?&/?/; s/\?$//'
+}
+
 # Применяет SQL по statement'ам через psql с ON_ERROR_STOP=0 — пропускает
 # дубликаты ('already exists'/'duplicate'), но выполняет все остальные statement'ы.
 # Это критично для drift SQL'я от prisma migrate diff: Prisma может включать
@@ -63,7 +60,7 @@ log() {
 apply_sql_lenient() {
   file="$1"
   if command -v psql >/dev/null 2>&1; then
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=0 -X -q -f "$file" 2>&1 || true
+    psql "$(psql_url)" -v ON_ERROR_STOP=0 -X -q -f "$file" 2>&1 || true
     return 0
   fi
   # Fallback без psql: режем drift SQL по разделителям '-- (Create|Alter|Drop|Add)'
@@ -124,107 +121,6 @@ verify_drift_resolved() {
   fi
   log "verify_drift_resolved: остаточный drift — только INDEX/CONSTRAINT с уже существующими именами (benign Prisma false-positive), игнорирую"
   rm -f "$drift_check"
-  return 0
-}
-
-# rescue_clients_bot_id_pre_drift — превентивно лечит сценарий 6 (clone_bots
-# silent-corruption): если drift хочет добавить `clients.bot_id` NOT NULL, а в
-# `clients` уже есть данные без bot_id — `apply_sql_lenient` упадёт на NOT NULL
-# constraint и `verify_drift_resolved` даст FATAL. Эта функция выполняет
-# rescue-сценарий, который делал бы человек руками:
-#   1) Если `bots` пуст — создаём primary bot из `BOT_TOKEN` env (username
-#      берётся через Telegram API getMe).
-#   2) `ADD COLUMN bot_id TEXT` (nullable) если колонки ещё нет.
-#   3) `UPDATE clients SET bot_id = <primary_bot.id>` для всех null'ов.
-#   4) `ALTER COLUMN bot_id SET NOT NULL`.
-#   5) Также добавляет смежные `telegram_unreachable`, индексы, FK
-#      (всё с IF NOT EXISTS / DO-блоками — идемпотентно).
-#
-# После rescue последующий `apply_sql_lenient` увидит «всё уже есть» (дубликаты
-# через ON_ERROR_STOP=0 пропустятся), а `verify_drift_resolved` подтвердит синк.
-#
-# Условия вызова: drift_file содержит ALTER на clients для bot_id NOT NULL.
-# Безопасно: если триггера нет — функция сразу выходит, ничего не трогая.
-rescue_clients_bot_id_pre_drift() {
-  drift_file="$1"
-  # Триггер: drift хочет ADD COLUMN bot_id NOT NULL в clients.
-  if ! grep -qE 'ALTER TABLE "clients"[^;]*"bot_id"[^;]*NOT NULL' "$drift_file" 2>/dev/null \
-       && ! grep -qE 'ALTER TABLE clients[^;]*bot_id[^;]*NOT NULL' "$drift_file" 2>/dev/null; then
-    return 0
-  fi
-  if ! command -v psql >/dev/null 2>&1; then return 0; fi
-  log "rescue_clients_bot_id: drift хочет clients.bot_id NOT NULL — проверяю состояние данных"
-
-  # Есть ли таблица clients?
-  has_clients=$(psql "$DATABASE_URL" -t -A -c "SELECT (to_regclass('public.clients') IS NOT NULL);" 2>/dev/null | tr -d '[:space:]')
-  if [ "$has_clients" != "t" ]; then
-    log "rescue_clients_bot_id: таблицы clients нет, rescue не нужен"
-    return 0
-  fi
-
-  clients_count=$(psql "$DATABASE_URL" -t -A -c "SELECT count(*) FROM clients;" 2>/dev/null | tr -d '[:space:]')
-  if [ "${clients_count:-0}" = "0" ]; then
-    log "rescue_clients_bot_id: clients пуст — drift накатится без проблем"
-    return 0
-  fi
-
-  # Гарантируем primary bot
-  has_bots_table=$(psql "$DATABASE_URL" -t -A -c "SELECT (to_regclass('public.bots') IS NOT NULL);" 2>/dev/null | tr -d '[:space:]')
-  if [ "$has_bots_table" != "t" ]; then
-    log "rescue_clients_bot_id: нет таблицы bots — невозможно сделать rescue (clone_bots миграция не применена ВООБЩЕ)"
-    return 1
-  fi
-  active_bots=$(psql "$DATABASE_URL" -t -A -c "SELECT count(*) FROM bots WHERE is_active = true;" 2>/dev/null | tr -d '[:space:]')
-  if [ "${active_bots:-0}" = "0" ]; then
-    if [ -z "${BOT_TOKEN:-}" ]; then
-      log "rescue_clients_bot_id: bots пуст и BOT_TOKEN не установлен — не могу создать primary bot, добавьте BOT_TOKEN в .env и перезапустите"
-      return 1
-    fi
-    log "rescue_clients_bot_id: bots пуст, создаю primary bot из BOT_TOKEN"
-    bot_username="primary_bot"
-    if command -v curl >/dev/null 2>&1; then
-      tg_resp=$(curl -s --max-time 10 "https://api.telegram.org/bot${BOT_TOKEN}/getMe" 2>/dev/null || true)
-      detected=$(printf '%s' "$tg_resp" | sed -nE 's/.*"username":"([^"]+)".*/\1/p')
-      if [ -n "$detected" ]; then
-        bot_username="$detected"
-      fi
-    fi
-    log "rescue_clients_bot_id: bot username=$bot_username"
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-      -v "bt=${BOT_TOKEN}" -v "bn=${bot_username}" <<'SQL' 2>&1 | sed 's/^/  /'
-INSERT INTO bots (id, token, username, is_primary, is_active, markup_percent, created_at, updated_at)
-SELECT 'rescue_' || replace(gen_random_uuid()::text, '-', ''),
-       :'bt', :'bn', true, true, 0, NOW(), NOW()
-WHERE NOT EXISTS (SELECT 1 FROM bots WHERE is_active = true);
-SQL
-  fi
-
-  primary_bot_id=$(psql "$DATABASE_URL" -t -A -c "SELECT id FROM bots WHERE is_active = true ORDER BY is_primary DESC, created_at LIMIT 1;" 2>/dev/null | tr -d '[:space:]')
-  if [ -z "$primary_bot_id" ]; then
-    log "rescue_clients_bot_id: не удалось определить primary bot id — abort"
-    return 1
-  fi
-  log "rescue_clients_bot_id: primary bot id = $primary_bot_id"
-
-  # Применяем rescue SQL (идемпотентный)
-  log "rescue_clients_bot_id: применяю DDL — ADD COLUMN bot_id, UPDATE, SET NOT NULL, индексы, FK"
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=0 \
-    -v "pb=${primary_bot_id}" <<'SQL' 2>&1 | grep -vE '^\s*$' | sed 's/^/  /'
-ALTER TABLE clients ADD COLUMN IF NOT EXISTS bot_id TEXT;
-UPDATE clients SET bot_id = :'pb' WHERE bot_id IS NULL;
-ALTER TABLE clients ALTER COLUMN bot_id SET NOT NULL;
-ALTER TABLE clients ADD COLUMN IF NOT EXISTS telegram_unreachable BOOLEAN NOT NULL DEFAULT false;
-CREATE INDEX IF NOT EXISTS clients_bot_id_idx ON clients(bot_id);
-CREATE UNIQUE INDEX IF NOT EXISTS clients_bot_id_telegram_id_unique ON clients(bot_id, telegram_id);
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'clients_bot_id_fkey') THEN
-    ALTER TABLE clients ADD CONSTRAINT clients_bot_id_fkey
-      FOREIGN KEY (bot_id) REFERENCES bots(id) ON DELETE RESTRICT ON UPDATE CASCADE;
-  END IF;
-END$$;
-SQL
-  log "rescue_clients_bot_id: завершено"
   return 0
 }
 
@@ -293,11 +189,6 @@ reconcile_schema_drift() {
     return 0
   fi
   log "schema drift detected post-deploy: применяю недостающий DDL ($(wc -c <"$POST_DRIFT_SQL" | tr -d ' ') байт) — каждый statement отдельно через psql lenient"
-  # Превентивный rescue для clone_bots silent-corruption (см. сценарий 6 в шапке файла).
-  # Если drift хочет clients.bot_id NOT NULL поверх существующих данных — psql упал бы
-  # на NOT NULL constraint и verify_drift_resolved дал бы FATAL. Эта функция всё лечит
-  # сама и идемпотентна — если триггер не сработал или rescue не нужен, выходит мгновенно.
-  rescue_clients_bot_id_pre_drift "$POST_DRIFT_SQL" || log "rescue_clients_bot_id_pre_drift: возникли проблемы (см. логи выше), всё равно пробую apply_sql_lenient"
   apply_sql_lenient "$POST_DRIFT_SQL"
   rm -f "$POST_DRIFT_SQL"
   if ! verify_drift_resolved; then
@@ -306,6 +197,29 @@ reconcile_schema_drift() {
   fi
   log "schema drift fix: применён успешно, схема в синке"
 }
+
+# ─── v5.0.0 pre-check: дубликаты telegram_id перед апгрейдом с clone-bots ─────
+# Миграция 20260604120000_drop_clone_bots восстанавливает @unique(telegram_id).
+# Если апгрейд идёт с multi-bot версии, где один TG-юзер мог быть в нескольких
+# клонах (дубли telegram_id) — миграция упадёт посреди процесса. Лучше отказать
+# ЗАРАНЕЕ с понятным сообщением, до запуска migrate deploy. Срабатывает только
+# если есть таблица clients С колонкой bot_id (т.е. это именно clone-bots-апгрейд).
+if command -v psql >/dev/null 2>&1; then
+  has_botid=$(psql "$(psql_url)" -t -A -c "SELECT (to_regclass('public.clients') IS NOT NULL) AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='clients' AND column_name='bot_id');" 2>/dev/null | tr -d '[:space:]')
+  if [ "$has_botid" = "t" ]; then
+    dup_tg=$(psql "$(psql_url)" -t -A -c "SELECT count(*) FROM (SELECT telegram_id FROM clients WHERE telegram_id IS NOT NULL GROUP BY telegram_id HAVING count(*) > 1) d;" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$dup_tg" ] && [ "$dup_tg" -gt 0 ] 2>/dev/null; then
+      log "FATAL: апгрейд до v5.0.0 невозможен — найдено $dup_tg дубликатов telegram_id в clients"
+      log "       (один TG-юзер в нескольких ботах-клонах). v5 возвращает @unique(telegram_id)."
+      log "       Разрулите вручную ДО апгрейда: для каждого дублирующегося telegram_id"
+      log "       оставьте одного клиента (последний по created_at), остальных удалите/слейте."
+      log "       SQL для поиска: SELECT telegram_id, count(*) FROM clients WHERE telegram_id IS NOT NULL GROUP BY telegram_id HAVING count(*)>1;"
+      log "       Сделайте бэкап БД перед чисткой. После — перезапустите контейнер."
+      exit 1
+    fi
+    log "pre-check: дубликатов telegram_id нет — апгрейд с clone-bots безопасен"
+  fi
+fi
 
 if npx prisma migrate deploy >"$MIGRATE_LOG" 2>&1; then
   cat "$MIGRATE_LOG" || true
@@ -383,13 +297,13 @@ if ! grep -q "P3005" "$MIGRATE_LOG"; then
   # pending_* (артефакт частичного migrate). Любая другая таблица = уже не «пустой инсталл» —
   # DROP SCHEMA запрещён, чтобы не уничтожить прод при рассинхроне истории миграций.
   if command -v psql >/dev/null 2>&1; then
-    only_bootstrap_tables=$(psql "$DATABASE_URL" -t -A -c "SELECT NOT EXISTS (SELECT 1 FROM information_schema.tables t WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE' AND t.table_name NOT IN ('_prisma_migrations', 'pending_telegram_links', 'pending_email_links'));" 2>/dev/null) || only_bootstrap_tables=f
+    only_bootstrap_tables=$(psql "$(psql_url)" -t -A -c "SELECT NOT EXISTS (SELECT 1 FROM information_schema.tables t WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE' AND t.table_name NOT IN ('_prisma_migrations', 'pending_telegram_links', 'pending_email_links'));" 2>/dev/null) || only_bootstrap_tables=f
     only_bootstrap_tables=$(printf '%s' "$only_bootstrap_tables" | tr -d '[:space:]')
-    clients_missing=$(psql "$DATABASE_URL" -t -A -c "SELECT (to_regclass('public.clients') IS NULL);" 2>/dev/null) || clients_missing=t
+    clients_missing=$(psql "$(psql_url)" -t -A -c "SELECT (to_regclass('public.clients') IS NULL);" 2>/dev/null) || clients_missing=t
     clients_missing=$(printf '%s' "$clients_missing" | tr -d '[:space:]')
     if [ "$only_bootstrap_tables" = "t" ]; then
       log "greenfield: в public только служебные таблицы (или пусто) — безопасный сброс и полная схема из Prisma + baseline миграций"
-      psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;' || {
+      psql "$(psql_url)" -v ON_ERROR_STOP=1 -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;' || {
         log "ERROR: не удалось сбросить schema public (нужны права владельца БД)"
         exit 1
       }
@@ -437,30 +351,11 @@ if ! grep -q "P3005" "$MIGRATE_LOG"; then
   exit 1
 fi
 
-log "P3005: БД не пустая без истории Prisma Migrate — clone_bots (при необходимости), drift через psql lenient, baseline"
-
-CLONE_SQL="prisma/migrations/20260502160000_clone_bots/migration.sql"
-if [ ! -f "$CLONE_SQL" ]; then
-  log "ERROR: не найден $CLONE_SQL"
-  exit 1
-fi
+log "P3005: БД не пустая без истории Prisma Migrate — drift через psql lenient, baseline"
 
 if ! command -v psql >/dev/null 2>&1; then
-  log "ERROR: нет psql (нужен postgresql-client) для проверки таблицы bots"
+  log "ERROR: нет psql (нужен postgresql-client) для P3005-восстановления"
   exit 1
-fi
-
-bots_missing=$(psql "$DATABASE_URL" -t -A -c "SELECT (to_regclass('public.bots') IS NULL);" 2>/dev/null) || {
-  log "ERROR: psql не смог выполнить проверку to_regclass('public.bots')"
-  exit 1
-}
-bots_missing=$(printf '%s' "$bots_missing" | tr -d '[:space:]')
-
-if [ "$bots_missing" = "t" ]; then
-  log "таблицы bots нет — применяю $CLONE_SQL (миграция clone_bots) через psql lenient"
-  apply_sql_lenient "$CLONE_SQL"
-else
-  log "таблица bots уже есть — шаг clone_bots пропускаю"
 fi
 
 DRIFT_SQL=$(mktemp)
@@ -479,8 +374,6 @@ rm -f /tmp/drift.stderr
 # Ненулевой размер и есть непробельные символы — применяем lenient
 if [ -s "$DRIFT_SQL" ] && grep -q '[^[:space:]]' "$DRIFT_SQL"; then
   log "применяю drift SQL ($(wc -c <"$DRIFT_SQL" | tr -d ' ') байт) через psql ON_ERROR_STOP=0 — каждый statement отдельно, дубликаты пропускаются молча"
-  # Pre-rescue для clone_bots silent-corruption (см. сценарий 6)
-  rescue_clients_bot_id_pre_drift "$DRIFT_SQL" || log "rescue_clients_bot_id_pre_drift: проблемы (см. выше), всё равно пробую apply_sql_lenient"
   apply_sql_lenient "$DRIFT_SQL"
   # Проверяем что drift реально устранён — если структурный остаток есть (CREATE
   # TABLE / ADD COLUMN), значит lenient apply упал на чём-то критичном, и идти в

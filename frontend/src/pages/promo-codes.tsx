@@ -39,6 +39,7 @@ import {
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MassPromoDialog } from "@/components/mass-promo-dialog";
+import { fmtMsk, fmtMskDate } from "@/lib/datetime";
 
 interface Squad {
   uuid: string;
@@ -330,7 +331,7 @@ export function PromoCodesPage() {
           <motion.div whileHover={{ y: -2 }} transition={{ type: "spring", stiffness: 300 }}>
             <Card className="bg-background/60 backdrop-blur-3xl border-white/10 rounded-[2rem] p-5 shadow-xl h-full">
               <p className="text-xs text-muted-foreground mb-2">Истекает</p>
-              <p className="text-sm font-medium">{detail.expiresAt ? new Date(detail.expiresAt).toLocaleDateString("ru-RU") : "Бессрочно"}</p>
+              <p className="text-sm font-medium">{detail.expiresAt ? fmtMskDate(detail.expiresAt) : "Бессрочно"}</p>
             </Card>
           </motion.div>
         </div>
@@ -369,7 +370,7 @@ export function PromoCodesPage() {
                       <td className="px-4 py-3 font-medium">{u.client.email || u.client.id.slice(0, 8)}</td>
                       <td className="px-4 py-3 text-muted-foreground">{u.client.telegramUsername ? `@${u.client.telegramUsername}` : u.client.telegramId || "—"}</td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{u.client.remnawaveUuid?.slice(0, 12) || "—"}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{new Date(u.createdAt).toLocaleString("ru-RU")}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{fmtMsk(u.createdAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -472,7 +473,7 @@ export function PromoCodesPage() {
                       {c.expiresAt && (
                         <>
                           <span className="text-muted-foreground/40">•</span>
-                          <span>до {new Date(c.expiresAt).toLocaleDateString("ru-RU")}</span>
+                          <span>до {fmtMskDate(c.expiresAt)}</span>
                         </>
                       )}
                     </div>

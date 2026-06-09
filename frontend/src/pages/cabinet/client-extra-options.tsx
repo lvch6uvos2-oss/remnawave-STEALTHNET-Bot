@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wifi, Smartphone, Server, CreditCard, Loader2, Wallet, Layers, Shield, Zap, ArrowLeft } from "lucide-react";
+import { Wifi, Smartphone, Server, CreditCard, Loader2, Wallet, Layers, Shield, Zap, ArrowLeft, Calendar, Check, ChevronRight } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { api } from "@/lib/api";
 import type { PublicSellOption } from "@/lib/api";
@@ -63,6 +63,11 @@ export function ClientExtraOptionsPage() {
   const [payError, setPayError] = useState<string | null>(null);
   const [readyUrl, setReadyUrl] = useState<{ url: string; provider: string } | null>(null);
 
+  // опция применяется к КОНКРЕТНОЙ подписке (как в боте).
+  // Грузим все подписки клиента; для devices цена растёт пропорционально остатку дней подписки.
+  const [userSubs, setUserSubs] = useState<{ id: string; subscriptionIndex: number; label: string; expireAt: string | null; emoji: string | null }[]>([]);
+  const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
+
   const isMobileOrMiniapp = useCabinetMiniapp();
 
   useEffect(() => {
@@ -81,13 +86,60 @@ export function ClientExtraOptionsPage() {
     }).catch(() => setLoading(false));
   }, []);
 
+  // Загружаем подписки клиента (root + secondary) для выбора цели опции.
+  useEffect(() => {
+    if (!token) return;
+    api.clientAllSubscriptions(token).then((r) => {
+      const list = (r.items ?? []).map((it) => {
+        const raw = it.subscription as Record<string, unknown> | null;
+        const payload = (raw && typeof raw === "object" && raw.response && typeof raw.response === "object")
+          ? (raw.response as Record<string, unknown>)
+          : (raw ?? null);
+        const expireAt = payload && typeof payload.expireAt === "string" ? payload.expireAt : null;
+        const idx = it.subscriptionIndex ?? 0;
+        return {
+          id: it.id,
+          subscriptionIndex: idx,
+          label: it.tariffDisplayName?.trim() || `Подписка #${idx}`,
+          expireAt,
+          emoji: it.tariffMenuEmoji ?? null,
+        };
+      });
+      setUserSubs(list);
+    }).catch(() => { /* not critical */ });
+  }, [token]);
+
+  // При открытии модалки опции выбираем первую подписку по умолчанию (обычно #0).
+  useEffect(() => {
+    if (payModal) {
+      setSelectedSubId((prev) => prev && userSubs.some((s) => s.id === prev) ? prev : (userSubs[0]?.id ?? null));
+    } else {
+      setSelectedSubId(null);
+    }
+  }, [payModal, userSubs]);
+
+  /**
+   * T-unify-cabinet: цена опции для конкретной подписки.
+   * devices — пропорционально остатку дней (coef = max(1, daysLeft/30)), округление вниз (как бэк).
+   * traffic/servers — фикс. (личная скидка применяется бэком при оплате — тут не показываем).
+   */
+  function computeOptionPrice(option: PublicSellOption | null, sub: { expireAt: string | null } | null): { price: number; daysLeft: number; coef: number } {
+    const base = option?.price ?? 0;
+    if (!option || option.kind !== "devices" || !sub?.expireAt) return { price: base, daysLeft: 0, coef: 1 };
+    const exp = new Date(sub.expireAt).getTime();
+    if (Number.isNaN(exp)) return { price: base, daysLeft: 0, coef: 1 };
+    const daysLeft = Math.max(0, (exp - Date.now()) / 86_400_000);
+    const coef = Math.max(1, daysLeft / 30);
+    return { price: Math.floor(base * coef), daysLeft: Math.round(daysLeft), coef: Math.round(coef * 10) / 10 };
+  }
+
   async function startYookassaPayment(option: PublicSellOption) {
     if (!token) return;
     setPayError(null);
     setPayLoading(true);
     try {
       const res = await api.yookassaCreatePayment(token, {
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.confirmationUrl) setReadyUrl({ url: res.confirmationUrl, provider: "ЮKassa" });
     } catch (e) {
@@ -103,7 +155,7 @@ export function ClientExtraOptionsPage() {
     setPayLoading(true);
     try {
       const res = await api.cryptopayCreatePayment(token, {
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Crypto Bot" });
     } catch (e) {
@@ -119,7 +171,7 @@ export function ClientExtraOptionsPage() {
     setPayLoading(true);
     try {
       const res = await api.heleketCreatePayment(token, {
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Heleket" });
     } catch (e) {
@@ -135,7 +187,7 @@ export function ClientExtraOptionsPage() {
     setPayLoading(true);
     try {
       const res = await api.lavaCreatePayment(token, {
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "LAVA" });
     } catch (e) {
@@ -151,7 +203,7 @@ export function ClientExtraOptionsPage() {
     setPayLoading(true);
     try {
       const res = await api.overpayCreatePayment(token, {
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Overpay" });
     } catch (e) {
@@ -168,7 +220,7 @@ export function ClientExtraOptionsPage() {
     try {
       const res = await api.clientCreatePlategaPayment(token, {
         paymentMethod: methodId,
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "Platega" });
     } catch (e) {
@@ -185,7 +237,7 @@ export function ClientExtraOptionsPage() {
     try {
       const res = await api.yoomoneyCreateFormPayment(token, {
         paymentType: "AC",
-        extraOption: { kind: option.kind, productId: option.id },
+        extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
       if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "ЮMoney" });
     } catch (e) {
@@ -197,14 +249,16 @@ export function ClientExtraOptionsPage() {
 
   async function startBalancePayment(option: PublicSellOption) {
     if (!token) return;
-    if (balance < option.price) {
+    const selSub = userSubs.find((s) => s.id === selectedSubId) ?? null;
+    const eff = computeOptionPrice(option, selSub);
+    if (balance < eff.price) {
       setPayError("Недостаточно средств на балансе");
       return;
     }
     setPayError(null);
     setPayLoading(true);
     try {
-      await api.clientPayOptionByBalance(token, { extraOption: { kind: option.kind, productId: option.id } });
+      await api.clientPayOptionByBalance(token, { extraOption: { kind: option.kind, productId: option.id }, targetSubscriptionId: selectedSubId ?? undefined });
       setPayModal(null);
       await refreshProfile();
       setPayError(null);
@@ -223,8 +277,11 @@ export function ClientExtraOptionsPage() {
 
   const PaymentContent = () => {
     if (!payModal) return null;
-    // Оставляем кнопку всегда (даже если баланса нет), просто делаем ее disabled
-    const hasBalance = balance >= payModal.price;
+    // T-unify-cabinet: цена и баланс — по выбранной подписке (devices масштабируется по сроку).
+    const selSub = userSubs.find((s) => s.id === selectedSubId) ?? null;
+    const eff = computeOptionPrice(payModal, selSub);
+    const hasBalance = balance >= eff.price;
+    const isDeviceProrata = payModal.kind === "devices" && eff.coef > 1;
 
     if (readyUrl) {
       return (
@@ -249,16 +306,69 @@ export function ClientExtraOptionsPage() {
                 </p>
                 {!isMobileOrMiniapp && <p className="font-bold text-foreground">{payModal.name || optionLabel(payModal)}</p>}
                 {isMobileOrMiniapp && (
-                   <span className="text-3xl font-black text-primary">{formatMoney(payModal.price, payModal.currency)}</span>
+                   <span className="text-3xl font-black text-primary">{formatMoney(eff.price, payModal.currency)}</span>
                 )}
              </div>
              {!isMobileOrMiniapp && (
                 <div className="text-right">
-                   <span className="font-bold text-xl text-primary">{formatMoney(payModal.price, payModal.currency)}</span>
+                   <span className="font-bold text-xl text-primary">{formatMoney(eff.price, payModal.currency)}</span>
                 </div>
              )}
           </div>
+          {/* T-unify-cabinet: пояснение масштаба цены по сроку (только devices с coef>1) */}
+          {isDeviceProrata && (
+            <p className="text-[11px] text-muted-foreground mt-2 relative z-10 flex items-center gap-1">
+              <Calendar className="h-3 w-3" /> {formatMoney(payModal.price, payModal.currency)}/30 дн × {eff.coef} (осталось ~{eff.daysLeft} дн)
+            </p>
+          )}
         </div>
+
+        {/* выбор подписки для применения опции — как в боте. */}
+        {userSubs.length === 0 ? (
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-400">
+            Сначала оформите подписку в разделе «Тарифы» — потом опцию можно будет применить.
+          </div>
+        ) : userSubs.length > 1 ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Layers className={cn("text-primary", isMobileOrMiniapp ? "h-5 w-5" : "h-4 w-4")} />
+              <span className={cn("font-bold", isMobileOrMiniapp ? "text-lg" : "text-sm")}>К какой подписке</span>
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {userSubs.map((s) => {
+                const sEff = computeOptionPrice(payModal, s);
+                const active = s.id === selectedSubId;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setSelectedSubId(s.id)}
+                    className={cn(
+                      "w-full text-left rounded-2xl border p-3.5 transition-all flex items-center gap-3",
+                      active
+                        ? "border-primary/50 bg-primary/[0.08] ring-2 ring-primary/30"
+                        : "border-border/50 bg-background/40 hover:bg-background/60 hover:border-primary/30"
+                    )}
+                  >
+                    <div className={cn("h-9 w-9 shrink-0 rounded-xl flex items-center justify-center text-base border", active ? "bg-primary/15 border-primary/30" : "bg-foreground/[0.04] border-white/10")}>
+                      {s.emoji || "📦"}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-bold leading-tight truncate">
+                        Подписка #{s.subscriptionIndex} · <span className="font-medium text-muted-foreground">{s.label}</span>
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 tabular-nums">
+                        {formatMoney(sEff.price, payModal.currency)}
+                        {payModal.kind === "devices" && sEff.coef > 1 && <span className="text-primary/80"> · ×{sEff.coef} за {sEff.daysLeft} дн</span>}
+                      </p>
+                    </div>
+                    {active ? <Check className="h-5 w-5 text-primary shrink-0" /> : <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
 
         <div className={cn("space-y-3", isMobileOrMiniapp ? "pb-24" : "")}>
           <div className="flex items-center gap-2 pt-2 pb-1">
@@ -522,8 +632,10 @@ export function ClientExtraOptionsPage() {
                           </div>
                         </div>
                         <div className="mt-auto space-y-4 pt-4 border-t border-border/50">
-                          <div className="flex items-baseline gap-2">
+                          <div className="flex items-baseline gap-1.5">
                             <span className="text-2xl font-extrabold text-foreground">{formatMoney(opt.price, opt.currency)}</span>
+                            {/* T-unify-cabinet: цена базовая за 30 дней — итог зависит от срока подписки */}
+                            <span className="text-xs text-muted-foreground font-medium">/ 30 дней</span>
                           </div>
                           <Button onClick={() => setPayModal(opt)} className="w-full gap-2 shadow-md hover:scale-[1.02] transition-transform rounded-xl h-12">
                             <CreditCard className="h-5 w-5" />

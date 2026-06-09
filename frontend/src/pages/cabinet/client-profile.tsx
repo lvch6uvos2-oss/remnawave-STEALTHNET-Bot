@@ -78,7 +78,7 @@ function ClassicProfilePage() {
   const [linkEmailSent, setLinkEmailSent] = useState(false);
   const [linkEmailError, setLinkEmailError] = useState<string | null>(null);
   const [paymentsHistoryOpen, setPaymentsHistoryOpen] = useState(false);
-  const [devices, setDevices] = useState<{ hwid: string; platform?: string; deviceModel?: string; createdAt?: string }[]>([]);
+  const [devices, setDevices] = useState<import("@/lib/api").ClientDeviceItem[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [deletingHwid, setDeletingHwid] = useState<string | null>(null);
@@ -120,12 +120,14 @@ function ClassicProfilePage() {
     }
   }, [token]);
 
+  // грузим устройства ВСЕХ подписок (root + secondary).
+  // Бэк уже исключает дубли (root vs Subscription с тем же remnawaveUuid).
   useEffect(() => {
     if (!token) return;
     setDevicesLoading(true);
     setDevicesError(null);
-    api.getClientDevices(token)
-      .then((r) => setDevices(r.devices ?? []))
+    api.getMyAllDevices(token)
+      .then((r) => setDevices(r.items ?? []))
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("Подписка не привязана")) {
@@ -138,12 +140,13 @@ function ClassicProfilePage() {
       .finally(() => setDevicesLoading(false));
   }, [token]);
 
-  async function deleteDevice(hwid: string) {
+  async function deleteDevice(hwid: string, subscriptionType: "root" | "secondary", subscriptionId: string) {
     if (!token) return;
     setDeletingHwid(hwid);
     try {
-      await api.deleteClientDevice(token, hwid);
-      setDevices((prev) => prev.filter((d) => d.hwid !== hwid));
+      await api.deleteClientDevice(token, hwid, { type: subscriptionType, id: subscriptionId });
+      // Удаляем именно ту запись (hwid может встречаться в разных подписках теоретически).
+      setDevices((prev) => prev.filter((d) => !(d.hwid === hwid && d.subscriptionId === subscriptionId)));
     } catch {
       setDevicesError(t("cabinet.profile.devices_error_disconnect"));
     } finally {
@@ -892,29 +895,61 @@ function ClassicProfilePage() {
                   ) : (
                     <div className="flex flex-col h-full">
                       <p className="text-xs text-muted-foreground mb-3">{t("cabinet.profile.devices_disconnect_hint")}</p>
-                      <div className="grid grid-cols-1 gap-2">
-                        {devices.map((d) => {
-                          const label = [d.platform, d.deviceModel].filter(Boolean).join(" · ") || (d.hwid.slice(0, 12) + (d.hwid.length > 12 ? "…" : ""));
-                          const isDeleting = deletingHwid === d.hwid;
-                          return (
-                            <div key={d.hwid} className="group flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-2xl bg-background/50 border border-border/50 transition-all hover:bg-muted/30 dark:bg-white/5 dark:border-white/5 dark:hover:bg-white/10">
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                                  <Monitor className="h-5 w-5" />
+                      {/* группируем устройства по подпискам.
+                          Заголовок группы — «Подписка #N …» (root тоже #0 для единообразия).
+                          Ключ группы — subscriptionId, чтобы корректно прокидывать удаление. */}
+                      {(() => {
+                        const groups = new Map<string, { label: string; items: typeof devices }>();
+                        for (const d of devices) {
+                          const groupKey = d.subscriptionId;
+                          const groupLabel = `Подписка #${d.subscriptionIndex}${d.tariffName ? ` — ${d.tariffName}` : ""}`;
+                          if (!groups.has(groupKey)) groups.set(groupKey, { label: groupLabel, items: [] });
+                          groups.get(groupKey)!.items.push(d);
+                        }
+                        return (
+                          <div className="flex flex-col gap-4">
+                            {Array.from(groups.entries()).map(([groupKey, group]) => (
+                              <div key={groupKey} className="flex flex-col gap-2">
+                                <div className="flex items-center gap-2 px-1">
+                                  <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{group.label}</span>
+                                  <span className="text-[11px] text-muted-foreground/70">· {group.items.length}</span>
                                 </div>
-                                <div className="min-w-0">
-                                  <span className="text-sm font-bold truncate block text-foreground" title={label}>{label}</span>
-                                  <span className="text-[10px] sm:text-xs text-muted-foreground truncate block font-mono mt-0.5">{d.hwid.slice(0, 16)}…</span>
+                                <div className="grid grid-cols-1 gap-2">
+                                  {group.items.map((d) => {
+                                    const label = [d.platform, d.deviceModel].filter(Boolean).join(" · ") || (d.hwid.slice(0, 12) + (d.hwid.length > 12 ? "…" : ""));
+                                    // Ключ строки = hwid + subscriptionId (hwid может встретиться в разных подписках).
+                                    const rowKey = `${d.subscriptionId}:${d.hwid}`;
+                                    const isDeleting = deletingHwid === d.hwid;
+                                    return (
+                                      <div key={rowKey} className="group flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-2xl bg-background/50 border border-border/50 transition-all hover:bg-muted/30 dark:bg-white/5 dark:border-white/5 dark:hover:bg-white/10">
+                                        <div className="flex items-center gap-3 min-w-0">
+                                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                                            <Monitor className="h-5 w-5" />
+                                          </div>
+                                          <div className="min-w-0">
+                                            <span className="text-sm font-bold truncate block text-foreground" title={label}>{label}</span>
+                                            {/* приложение рядом с устройством. */}
+                                            {d.appName && (
+                                              <span className="text-[11px] inline-block bg-violet-500/15 text-violet-500 dark:text-violet-300 rounded-md px-1.5 py-0.5 mt-0.5 font-medium">
+                                                {d.appName}
+                                              </span>
+                                            )}
+                                            <span className="text-[10px] sm:text-xs text-muted-foreground truncate block font-mono mt-0.5">{d.hwid.slice(0, 16)}…</span>
+                                          </div>
+                                        </div>
+                                        <Button variant="outline" size="sm" className="shrink-0 w-full sm:w-auto rounded-xl h-9 px-3 sm:px-4 shadow-sm border-destructive/20 text-destructive bg-destructive/5 hover:bg-destructive hover:text-destructive-foreground hover:border-destructive dark:bg-destructive/10 transition-all" disabled={isDeleting} onClick={() => deleteDevice(d.hwid, d.subscriptionType, d.subscriptionId)}>
+                                          {isDeleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2 opacity-80" />}
+                                          <span>{isDeleting ? t("cabinet.profile.devices_deleting") : t("cabinet.profile.device_disconnect")}</span>
+                                        </Button>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
-                              <Button variant="outline" size="sm" className="shrink-0 w-full sm:w-auto rounded-xl h-9 px-3 sm:px-4 shadow-sm border-destructive/20 text-destructive bg-destructive/5 hover:bg-destructive hover:text-destructive-foreground hover:border-destructive dark:bg-destructive/10 transition-all" disabled={isDeleting} onClick={() => deleteDevice(d.hwid)}>
-                                {isDeleting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Trash2 className="h-4 w-4 mr-2 opacity-80" />}
-                                <span>{isDeleting ? t("cabinet.profile.devices_deleting") : t("cabinet.profile.device_disconnect")}</span>
-                              </Button>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>

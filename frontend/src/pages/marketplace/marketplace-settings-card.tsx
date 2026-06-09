@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { fmtMsk } from "@/lib/datetime";
 
 /**
  * Самодостаточная карточка настроек маркетплейса для страницы /admin/settings.
@@ -162,7 +163,7 @@ export function MarketplaceSettingsCard() {
             <KeyValue label={t("admin.marketplace.settings.hub_url")} value={status?.hubUrl ?? "—"} />
             <KeyValue label={t("admin.marketplace.settings.installation_id")} value={status?.installationId ?? "—"} />
             <KeyValue label="API key" value={status?.apiKeyConnected ? "✓ connected" : "— not connected"} />
-            <KeyValue label={t("admin.marketplace.settings.last_connect")} value={status?.lastConnectAt ? `${new Date(status.lastConnectAt).toLocaleString()} (${status.lastConnectStatus ?? ""})` : "—"} />
+            <KeyValue label={t("admin.marketplace.settings.last_connect")} value={status?.lastConnectAt ? `${fmtMsk(status.lastConnectAt)} (${status.lastConnectStatus ?? ""})` : "—"} />
           </div>
         </Card>
 

@@ -18,6 +18,7 @@ import {
 import { Trophy, Plus, Pencil, Trash2, Loader2, Users, Shuffle, Send, Clock, X, MousePointerClick, Sparkles, Award } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { fmtMsk, isoToMskInputValue, mskInputValueToIso } from "@/lib/datetime";
 
 const PRIZE_TYPES: { value: ContestPrizeType; label: string }[] = [
   { value: "custom", label: "Свой текст" },
@@ -56,14 +57,7 @@ function statusBadge(status: string) {
 }
 
 function toLocalDatetime(d: string): string {
-  if (!d) return "";
-  const date = new Date(d);
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const h = String(date.getHours()).padStart(2, "0");
-  const min = String(date.getMinutes()).padStart(2, "0");
-  return `${y}-${m}-${day}T${h}:${min}`;
+  return isoToMskInputValue(d);
 }
 
 function fromFormDatetime(s: string): string {
@@ -433,7 +427,7 @@ export function ContestsPage() {
                 <Input
                   type="datetime-local"
                   value={toLocalDatetime(form.startAt)}
-                  onChange={(e) => setForm((f) => ({ ...f, startAt: e.target.value ? new Date(e.target.value).toISOString() : f.startAt }))}
+                  onChange={(e) => setForm((f) => ({ ...f, startAt: e.target.value ? (mskInputValueToIso(e.target.value) ?? f.startAt) : f.startAt }))}
                   className={inputCls}
                 />
               </div>
@@ -442,7 +436,7 @@ export function ContestsPage() {
                 <Input
                   type="datetime-local"
                   value={toLocalDatetime(form.endAt)}
-                  onChange={(e) => setForm((f) => ({ ...f, endAt: e.target.value ? new Date(e.target.value).toISOString() : f.endAt }))}
+                  onChange={(e) => setForm((f) => ({ ...f, endAt: e.target.value ? (mskInputValueToIso(e.target.value) ?? f.endAt) : f.endAt }))}
                   className={inputCls}
                 />
               </div>
@@ -673,7 +667,7 @@ export function ContestsPage() {
                       <div className="min-w-0">
                         <h3 className="text-base font-bold tracking-tight truncate">{c.name}</h3>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {new Date(c.startAt).toLocaleString("ru")} — {new Date(c.endAt).toLocaleString("ru")}
+                          {fmtMsk(c.startAt)} — {fmtMsk(c.endAt)}
                         </p>
                       </div>
                     </div>

@@ -16,6 +16,7 @@ import {
   type WebhookEventListItem,
   type WebhookEventDetail,
 } from "@/lib/admin-extras-api";
+import { fmtMsk } from "@/lib/datetime";
 
 const OUTCOME_META: Record<string, { label: string; cls: string; icon: typeof CheckCircle2 }> = {
   accepted: { label: "Принят", cls: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30", icon: CheckCircle2 },
@@ -144,7 +145,7 @@ export function AdminWebhookInboxPage() {
                 const Icon = meta.icon;
                 return (
                   <button key={ev.id} onClick={() => setSelectedId(ev.id)} className="flex w-full items-center gap-3 p-3 text-left transition-colors hover:bg-accent">
-                    <div className="text-xs text-muted-foreground font-mono w-32 shrink-0">{new Date(ev.createdAt).toLocaleString("ru")}</div>
+                    <div className="text-xs text-muted-foreground font-mono w-32 shrink-0">{fmtMsk(ev.createdAt)}</div>
                     <span className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase w-24 shrink-0 justify-center bg-muted">{ev.provider}</span>
                     <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${meta.cls}`}>
                       <Icon className="h-3 w-3" />
@@ -186,7 +187,7 @@ export function AdminWebhookInboxPage() {
                 </span>
                 <span className="text-xs text-muted-foreground">HTTP {selectedDetail.responseStatus}</span>
                 <span className="text-xs text-muted-foreground">{selectedDetail.durationMs ?? "?"} ms</span>
-                <span className="text-xs text-muted-foreground">{new Date(selectedDetail.createdAt).toLocaleString("ru")}</span>
+                <span className="text-xs text-muted-foreground">{fmtMsk(selectedDetail.createdAt)}</span>
                 <span className="text-xs text-muted-foreground font-mono">IP {selectedDetail.remoteIp ?? "—"}</span>
               </div>
               {selectedDetail.errorMessage ? (

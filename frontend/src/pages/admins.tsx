@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@/contexts/auth";
 import { api, type AdminListItem, MANAGER_SECTIONS, MANAGER_SECTION_CATEGORIES } from "@/lib/api";
+import { adminPermissionsApi, type ActionDef } from "@/lib/admin-extras-api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { motion } from "framer-motion";
-import { UserCog, Plus, Pencil, Trash2, Loader2, Crown, X, Shield, Lock } from "lucide-react";
+import { UserCog, Plus, Pencil, Trash2, Loader2, Crown, X, Shield, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { AdminPermissionsDialog } from "@/components/admin-permissions-dialog";
 
 export function AdminsPage() {
   const { state } = useAuth();
@@ -22,13 +22,18 @@ export function AdminsPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [allowedSections, setAllowedSections] = useState<string[]>([]);
+  // actions в той же форме что и секции.
+  const [selectedActions, setSelectedActions] = useState<string[]>([]);
+  const [actionCatalog, setActionCatalog] = useState<ActionDef[]>([]);
+  const [actionsLoading, setActionsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [permsDialog, setPermsDialog] = useState<{ id: string; email: string } | null>(null);
 
   useEffect(() => {
     if (!token) return;
     api.getAdmins(token).then(setList).catch(() => setError("Нет доступа")).finally(() => setLoading(false));
+    // Каталог критических action-прав — грузим один раз при заходе.
+    adminPermissionsApi.actions(token).then((r) => setActionCatalog(r.actions ?? [])).catch(() => {});
   }, [token]);
 
   function openCreate() {
@@ -38,9 +43,10 @@ export function AdminsPage() {
     setEmail("");
     setPassword("");
     setAllowedSections([]);
+    setSelectedActions([]);
   }
 
-  function openEdit(item: AdminListItem) {
+  async function openEdit(item: AdminListItem) {
     if (item.role === "ADMIN") return;
     setModal("edit");
     setEditingId(item.id);
@@ -48,10 +54,28 @@ export function AdminsPage() {
     setEmail(item.email);
     setPassword("");
     setAllowedSections(item.allowedSections ?? []);
+    // Подгружаем текущие granted actions.
+    if (token) {
+      setActionsLoading(true);
+      try {
+        const cur = await adminPermissionsApi.get(token, item.id);
+        setSelectedActions(Array.isArray(cur.actions) ? cur.actions : []);
+      } catch {
+        setSelectedActions([]);
+      } finally {
+        setActionsLoading(false);
+      }
+    }
   }
 
   function toggleSection(key: string) {
     setAllowedSections((prev) =>
+      prev.includes(key) ? prev.filter((s) => s !== key) : [...prev, key]
+    );
+  }
+
+  function toggleAction(key: string) {
+    setSelectedActions((prev) =>
       prev.includes(key) ? prev.filter((s) => s !== key) : [...prev, key]
     );
   }
@@ -69,6 +93,10 @@ export function AdminsPage() {
         password,
         allowedSections,
       });
+      // сохраняем actions сразу после создания.
+      if (selectedActions.length > 0) {
+        await adminPermissionsApi.set(token, created.id, selectedActions).catch(() => {});
+      }
       setList((prev) => [created, ...prev]);
       setModal(null);
     } catch (e) {
@@ -87,6 +115,10 @@ export function AdminsPage() {
         allowedSections,
         ...(password.trim() ? { password: password.trim() } : {}),
       });
+      // обновляем actions тем же save.
+      // На бэке PATCH /admins/:id уже сохраняет существующие actions при изменении секций
+      // (мерж), а потом PUT /admin-permissions/:adminId перезаписывает их новыми.
+      await adminPermissionsApi.set(token, editingId, selectedActions).catch(() => {});
       setList((prev) => prev.map((a) => (a.id === editingId ? { ...a, ...updated } : a)));
       setModal(null);
     } catch (e) {
@@ -211,9 +243,6 @@ export function AdminsPage() {
                   <td className="px-4 py-3">
                     {item.role === "MANAGER" && (
                       <div className="flex gap-1 justify-end">
-                        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => setPermsDialog({ id: item.id, email: item.email })} title="Granular permissions">
-                          <Lock className="h-3.5 w-3.5" />
-                        </Button>
                         <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => openEdit(item)} title="Изменить">
                           <Pencil className="h-3.5 w-3.5" />
                         </Button>
@@ -371,6 +400,124 @@ export function AdminsPage() {
                   })}
                 </div>
               </div>
+
+              {/* критические действия (action-уровень) — отдельный блок. */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Zap className="h-3.5 w-3.5 text-amber-500" />
+                    <Label className="text-xs text-muted-foreground">Критические действия</Label>
+                  </div>
+                  {actionCatalog.length > 0 && (
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 rounded-lg text-xs"
+                        onClick={() => setSelectedActions(actionCatalog.map((a) => a.key))}
+                      >
+                        Выбрать все
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 rounded-lg text-xs"
+                        onClick={() => setSelectedActions([])}
+                      >
+                        Снять все
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground/80 mb-2 pl-1">
+                  Тонкие права на чувствительные операции (возвраты, удаление устройств и т.д.). Менеджер получает доступ к ним только если есть галка.
+                </p>
+                <div className="rounded-2xl border border-amber-500/15 bg-amber-500/[0.03] p-4 space-y-4">
+                  {actionsLoading && (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                    </div>
+                  )}
+                  {!actionsLoading && actionCatalog.length === 0 && (
+                    <p className="text-xs text-muted-foreground text-center py-2">Каталог действий пока пуст</p>
+                  )}
+                  {!actionsLoading && actionCatalog.length > 0 && (() => {
+                    const groupLabels: Record<string, { label: string; color: string }> = {
+                      payments: { label: "Платежи", color: "bg-emerald-500" },
+                      clients: { label: "Клиенты", color: "bg-sky-500" },
+                      security: { label: "Безопасность", color: "bg-rose-500" },
+                      operations: { label: "Операции", color: "bg-violet-500" },
+                    };
+                    const groups = Object.keys(groupLabels);
+                    return groups.map((groupKey) => {
+                      const items = actionCatalog.filter((a) => a.group === groupKey);
+                      if (items.length === 0) return null;
+                      const meta = groupLabels[groupKey];
+                      const allChecked = items.every((a) => selectedActions.includes(a.key));
+                      const someChecked = items.some((a) => selectedActions.includes(a.key));
+                      return (
+                        <div key={groupKey} className="space-y-2">
+                          <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-1.5">
+                            <div className="flex items-center gap-2">
+                              <div className={cn("w-[2px] h-[12px]", meta.color)} />
+                              <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{meta.label}</span>
+                              <span className="text-[10px] text-muted-foreground/60">
+                                {items.filter((a) => selectedActions.includes(a.key)).length}/{items.length}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="text-[11px] text-amber-500/80 hover:text-amber-500 transition-colors"
+                              onClick={() => {
+                                const keys = items.map((a) => a.key);
+                                setSelectedActions((prev) =>
+                                  allChecked
+                                    ? prev.filter((k) => !keys.includes(k))
+                                    : Array.from(new Set([...prev, ...keys]))
+                                );
+                              }}
+                            >
+                              {allChecked ? "Снять группу" : someChecked ? "Дозаполнить" : "Выбрать группу"}
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-3">
+                            {items.map((a) => {
+                              const sevColor = a.severity === "critical"
+                                ? "text-rose-500 dark:text-rose-400"
+                                : a.severity === "warn"
+                                  ? "text-amber-500 dark:text-amber-400"
+                                  : "text-sky-500 dark:text-sky-400";
+                              return (
+                                <label key={a.key} className="flex items-start gap-2 cursor-pointer rounded-lg px-2 py-1.5 hover:bg-white/[0.03] transition-colors">
+                                  <Checkbox
+                                    checked={selectedActions.includes(a.key)}
+                                    onCheckedChange={() => toggleAction(a.key)}
+                                    className="mt-0.5"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-sm font-medium">{a.label}</span>
+                                      <span className={cn("text-[9px] uppercase tracking-wider font-bold", sevColor)}>
+                                        {a.severity}
+                                      </span>
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground/70 mt-0.5 line-clamp-2" title={a.description}>
+                                      {a.description}
+                                    </p>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+              </div>
+
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setModal(null)} className="rounded-xl">Отмена</Button>
                 <Button
@@ -387,12 +534,6 @@ export function AdminsPage() {
         </motion.div>
       )}
 
-      <AdminPermissionsDialog
-        open={permsDialog !== null}
-        adminId={permsDialog?.id ?? null}
-        adminEmail={permsDialog?.email}
-        onClose={() => setPermsDialog(null)}
-      />
     </div>
   );
 }

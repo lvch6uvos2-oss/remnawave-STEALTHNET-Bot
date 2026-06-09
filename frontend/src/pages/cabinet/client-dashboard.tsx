@@ -27,6 +27,7 @@ import {
   Tag,
   X,
   RotateCcw,
+  RefreshCw,
 } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { useCabinetConfig } from "@/contexts/cabinet-config";
@@ -34,6 +35,7 @@ import { useCabinetMiniapp } from "@/pages/cabinet/cabinet-layout";
 import { api } from "@/lib/api";
 import { formatRuDays } from "@/lib/i18n";
 import type { ClientPayment, ClientReferralStats } from "@/lib/api";
+import { TrialsPickerDialog } from "@/components/cabinet/trials-picker-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -130,6 +132,8 @@ function ClassicDashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [subscription, setSubscription] = useState<unknown>(null);
   const [secondarySubscriptions, setSecondarySubscriptions] = useState<Array<{ type: string; id: string; subscriptionIndex: number | null; subscription: unknown; tariffDisplayName: string; remnawaveUuid: string | null }>>([]);
+  // id главной подписки (#0) — для кнопки «Продлить» → /cabinet/tariffs?extend=
+  const [rootSubId, setRootSubId] = useState<string | null>(null);
   const [tariffDisplayName, setTariffDisplayName] = useState<string | null>(null);
   const [autoRenewNext, setAutoRenewNext] = useState<{ amount: number | null; at: string | null; currency: string | null }>({ amount: null, at: null, currency: null });
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
@@ -138,9 +142,15 @@ function ClassicDashboardPage() {
   const [paymentMessage, setPaymentMessage] = useState<"success_topup" | "success_tariff" | "success" | "failed" | null>(null);
   const [trialLoading, setTrialLoading] = useState(false);
   const [trialError, setTrialError] = useState<string | null>(null);
+  // новая мульти-триал система.
+  // hasMultiTrials=null → ещё не загружали; true → открываем модалку; false → legacy /trial.
+  const [hasMultiTrials, setHasMultiTrials] = useState<boolean | null>(null);
+  const [trialsPickerOpen, setTrialsPickerOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [_referralStats, setReferralStats] = useState<ClientReferralStats | null>(null);
   const [deviceCount, setDeviceCount] = useState<number | null>(null);
+  // кол-во устройств по каждой подписке (subscriptionId → count) — для доп.подписок.
+  const [devicesBySubId, setDevicesBySubId] = useState<Record<string, number>>({});
   const [autoRenewLoading, setAutoRenewLoading] = useState(false);
 
   const token = state.token;
@@ -184,8 +194,9 @@ function ClassicDashboardPage() {
       api.clientPayments(token),
       api.getClientDevices(token).catch(() => ({ total: 0 })),
       api.clientAllSubscriptions(token).catch(() => ({ items: [] })),
+      api.getMyAllDevices(token).catch(() => ({ total: 0, items: [] })),
     ])
-      .then(([subRes, payRes, devRes, allSubRes]) => {
+      .then(([subRes, payRes, devRes, allSubRes, allDevRes]) => {
         if (cancelled) return;
         setSubscription(subRes.subscription ?? null);
         setTariffDisplayName(subRes.tariffDisplayName ?? null);
@@ -198,6 +209,11 @@ function ClassicDashboardPage() {
         setPayments(payRes.items ?? []);
         setDeviceCount(devRes.total ?? null);
         setSecondarySubscriptions((allSubRes.items || []).filter(s => s.type === "secondary"));
+        setRootSubId((allSubRes.items || []).find(s => s.type === "root")?.id ?? null);
+        // счётчик устройств по subscriptionId — для отображения «использовано/лимит» на доп.подписках.
+        const devCounts: Record<string, number> = {};
+        for (const d of (allDevRes.items || [])) devCounts[d.subscriptionId] = (devCounts[d.subscriptionId] || 0) + 1;
+        setDevicesBySubId(devCounts);
       })
       .catch((e) => {
         if (!cancelled) setSubscriptionError(e instanceof Error ? e.message : t("cabinet.dashboard.error_loading"));
@@ -273,8 +289,34 @@ function ClassicDashboardPage() {
     }
   }
 
+  // при заходе грузим список доступных триалов.
+  // Если их > 0 → кнопка «Бесплатный Тест» откроет модалку выбора.
+  // Если бэк вернул items=[] AND hasAnyEnabled=false → нет новых триалов вообще, fallback на legacy /trial.
+  // Если items=[] AND hasAnyEnabled=true → юзер уже всё использовал, модалку показывать не надо.
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    api.getClientAvailableTrials(token)
+      .then((res) => {
+        if (cancelled) return;
+        setHasMultiTrials(res.items.length > 0);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setHasMultiTrials(false); // не смогли загрузить → не блокируем legacy
+      });
+    return () => { cancelled = true; };
+  }, [token, refreshKey]);
+
   async function activateTrial() {
     if (!token) return;
+    // Новый флоу: открываем модалку выбора.
+    if (hasMultiTrials === true) {
+      setTrialError(null);
+      setTrialsPickerOpen(true);
+      return;
+    }
+    // Legacy фоллбэк (старая single-trial система).
     setTrialError(null);
     setTrialLoading(true);
     try {
@@ -288,15 +330,28 @@ function ClassicDashboardPage() {
     }
   }
 
+  async function handleTrialActivated() {
+    // После активации триала через модалку — обновляем профиль и подписку.
+    await refreshProfile();
+    setRefreshKey((k) => k + 1);
+  }
+
   if (!client) return null;
 
   const subParsed = parseSubscription(subscription);
   const hasActiveSubscription =
     subscription && typeof subscription === "object" && (subParsed.status === "ACTIVE" || subParsed.status === undefined);
   const vpnUrl = subParsed.subscriptionUrl || null;
-  // Триал предлагаем только если подписки нет (vpnUrl пуст) и юзер ещё не использовал триал.
-  // Без проверки vpnUrl кнопка триала висела даже после покупки тарифа.
-  const showTrial = config?.trialEnabled && !client?.trialUsed && !vpnUrl;
+  // если включена настройка «Страница подписки Remna» —
+  // кнопки «Подключиться» ведут напрямую на remna subscriptionUrl, а не на /cabinet/subscribe.
+  const useRemnaPage = config?.useRemnaSubscriptionPage === true;
+  // новые мульти-триалы могут показываться
+  // ВМЕСТЕ с активной подпиской — юзер мог взять Trial #1, потом купить тариф и захотеть
+  // ещё пробников. Legacy single-trial (`config.trialEnabled`) — старая система,
+  // показываем только когда нет активной подписки.
+  const showMultiTrials = hasMultiTrials === true;
+  const showLegacyTrial = !hasActiveSubscription && Boolean(config?.trialEnabled) && !client?.trialUsed && !showMultiTrials;
+  const showAnyTrial = showMultiTrials || showLegacyTrial;
   const [referralCopied, setReferralCopied] = useState<"site" | "bot" | null>(null);
   const siteOrigin = config?.publicAppUrl?.replace(/\/$/, "") || (typeof window !== "undefined" ? window.location.origin : "");
   const referralLinkSite =
@@ -342,11 +397,32 @@ function ClassicDashboardPage() {
           <span className="inline-flex items-center leading-none">{t("cabinet.dashboard.choose_tariff")}</span>
         </Link>
       </Button>
+      {/* T-expired-extend : если главная подписка #0 истекла — даём продлить ИМЕННО её,
+          а не только «Выбрать тариф». rootSubId есть всегда пока подписка #0 существует в БД (даже EXPIRED). */}
+      {rootSubId && (
+        <Button variant="outline" className="gap-2 h-11 px-6 rounded-xl border-primary/30 hover:bg-primary/10 [&_svg]:self-center [&_span]:leading-none" asChild>
+          <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-2">
+            <RefreshCw className="h-4 w-4 shrink-0" />
+            <span className="inline-flex items-center leading-none">Продлить подписку #0</span>
+          </Link>
+        </Button>
+      )}
     </div>
+  );
+
+  // модалка выбора триала — общая для mobile и desktop.
+  const trialsPickerNode = (
+    <TrialsPickerDialog
+      open={trialsPickerOpen}
+      token={token}
+      onOpenChange={setTrialsPickerOpen}
+      onActivated={handleTrialActivated}
+    />
   );
 
   if (isMiniapp) {
     return (
+      <>
       <div className="w-full min-w-0 overflow-hidden space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
         {(paymentMessage === "success" || paymentMessage === "success_topup" || paymentMessage === "success_tariff") && (
           <div className="rounded-xl bg-green-500/15 backdrop-blur-md border border-green-500/30 px-4 py-3 text-sm font-medium text-green-700 dark:text-green-400 shadow-sm">
@@ -386,15 +462,22 @@ function ClassicDashboardPage() {
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-8 w-8 animate-spin text-primary/50" />
             </div>
-          ) : subscriptionError || !hasActiveSubscription ? (
+          ) : subscriptionError || !subscription || typeof subscription !== "object" ? (
             <NoSubscriptionState />
           ) : (
             <div className="space-y-4 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold bg-green-500/20 text-green-700 dark:text-green-400 border border-green-500/20">
-                  <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                  {t("cabinet.dashboard.active")}
-                </span>
+                {hasActiveSubscription ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold bg-green-500/20 text-green-700 dark:text-green-400 border border-green-500/20">
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    {t("cabinet.dashboard.active")}
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold bg-red-500/20 text-red-600 dark:text-red-400 border border-red-500/20">
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    Истекла
+                  </span>
+                )}
                 {daysLeft != null && (
                   <span className="text-sm font-semibold text-foreground bg-foreground/5 px-3 py-1.5 rounded-full border border-border/50">
                     {t("cabinet.dashboard.days_left")} {daysLeft} {daysLeft === 1 ? t("cabinet.common.day_one") : daysLeft < 5 ? t("cabinet.common.day_few") : t("cabinet.common.day_many")}
@@ -458,6 +541,30 @@ function ClassicDashboardPage() {
                   )}
                 </div>
               </div>
+              {/* Кнопки основной подписки: Подключиться + Продлить (как у доп. подписок) */}
+              <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                <Button className="flex-1 gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
+                  {useRemnaPage && vpnUrl ? (
+                    <a href={vpnUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center gap-2">
+                      <Wifi className="h-5 w-5 shrink-0" />
+                      <span className="inline-flex items-center leading-none">Подключиться</span>
+                    </a>
+                  ) : (
+                    <Link to="/cabinet/subscribe" className="inline-flex w-full items-center justify-center gap-2">
+                      <Wifi className="h-5 w-5 shrink-0" />
+                      <span className="inline-flex items-center leading-none">Подключиться</span>
+                    </Link>
+                  )}
+                </Button>
+                {rootSubId && (
+                  <Button variant="outline" className="sm:w-auto gap-2 h-12 rounded-xl text-md border-indigo-500/30 hover:bg-indigo-500/10 [&_svg]:self-center [&_span]:leading-none" asChild>
+                    <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-2">
+                      <RefreshCw className="h-5 w-5 shrink-0" />
+                      <span className="inline-flex items-center leading-none">Продлить</span>
+                    </Link>
+                  </Button>
+                )}
+              </div>
             </div>
           )}
         </section>
@@ -498,7 +605,7 @@ function ClassicDashboardPage() {
                   )}
                   {secParsed.hwidDeviceLimit != null && secParsed.hwidDeviceLimit > 0 && (
                     <span className="text-sm font-semibold text-foreground bg-indigo-500/10 text-indigo-400 px-3 py-1.5 rounded-full border border-indigo-500/20 flex items-center gap-1.5">
-                      <Smartphone className="h-4 w-4" /> {secParsed.hwidDeviceLimit}
+                      <Smartphone className="h-4 w-4" /> {devicesBySubId[sec.id] ?? 0} / {secParsed.hwidDeviceLimit}
                     </span>
                   )}
                 </div>
@@ -555,11 +662,36 @@ function ClassicDashboardPage() {
                   </div>
                 </div>
 
-                <div className="pt-2">
-                  <Button className="w-full gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
-                    <Link to={`/cabinet/subscribe?uuid=${sec.remnawaveUuid}`} className="inline-flex w-full items-center justify-center gap-2">
-                      <Wifi className="h-5 w-5 shrink-0" />
-                      <span className="inline-flex items-center leading-none">Подключиться</span>
+                {/* T-sub-link : ссылка подписки доп.подписки + копирование прямо на главной (без захода в «Подключиться»). */}
+                {secParsed.subscriptionUrl && (
+                  <div className="flex gap-2 min-w-0 pt-1">
+                    <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={secParsed.subscriptionUrl}>
+                      {secParsed.subscriptionUrl}
+                    </code>
+                    <Button size="icon" variant="outline" className="shrink-0 h-auto w-11 rounded-xl bg-background/50 hover:bg-background/80 transition-transform hover:scale-105" onClick={() => { navigator.clipboard.writeText(secParsed.subscriptionUrl || ""); window.Telegram?.WebApp?.showPopup?.({ title: t("cabinet.dashboard.copied_title"), message: t("cabinet.dashboard.copied_message") }); }}>
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
+                <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                  <Button className="flex-1 gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
+                    {useRemnaPage && secParsed.subscriptionUrl ? (
+                      <a href={secParsed.subscriptionUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center gap-2">
+                        <Wifi className="h-5 w-5 shrink-0" />
+                        <span className="inline-flex items-center leading-none">Подключиться</span>
+                      </a>
+                    ) : (
+                      <Link to={`/cabinet/subscribe?uuid=${sec.remnawaveUuid}`} className="inline-flex w-full items-center justify-center gap-2">
+                        <Wifi className="h-5 w-5 shrink-0" />
+                        <span className="inline-flex items-center leading-none">Подключиться</span>
+                      </Link>
+                    )}
+                  </Button>
+                  {/* T-unify-cabinet: продлить ИМЕННО эту доп. подписку */}
+                  <Button variant="outline" className="sm:w-auto gap-2 h-12 rounded-xl text-md border-indigo-500/30 hover:bg-indigo-500/10 [&_svg]:self-center [&_span]:leading-none" asChild>
+                    <Link to={`/cabinet/tariffs?extend=${sec.id}`} className="inline-flex items-center justify-center gap-2">
+                      <RefreshCw className="h-5 w-5 shrink-0" />
+                      <span className="inline-flex items-center leading-none">Продлить</span>
                     </Link>
                   </Button>
                 </div>
@@ -601,14 +733,33 @@ function ClassicDashboardPage() {
                   <span className="inline-flex items-center leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
                 </Link>
               </Button>
+              {/* продлить главную подписку (#0) — как в боте */}
+              {rootSubId && (
+                <Button variant="outline" className="w-full gap-2 h-12 rounded-xl text-md border-primary/30 hover:bg-primary/10 [&_svg]:self-center [&_span]:leading-none" asChild>
+                  <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex w-full items-center justify-center gap-2">
+                    <RefreshCw className="h-5 w-5 shrink-0" />
+                    <span className="inline-flex items-center leading-none">Продлить подписку #0</span>
+                  </Link>
+                </Button>
+              )}
+              {/* дополнительные пробники доступны рядом с активной подпиской. */}
+              {showMultiTrials && (
+                <Button className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white shadow-lg h-12 rounded-xl hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none" onClick={activateTrial} disabled={trialLoading}>
+                  {trialLoading ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" /> : <Gift className="h-5 w-5 shrink-0" />}
+                  <span className="inline-flex items-center leading-none font-medium text-base">{t("cabinet.dashboard.free_trial")}</span>
+                </Button>
+              )}
+              {trialError && <p className="text-sm text-destructive break-words text-center">{trialError}</p>}
             </div>
-          ) : showTrial ? (
+          ) : showAnyTrial ? (
             <div className="space-y-4 text-center">
               <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10 text-green-600 mb-2">
                  <Gift className="h-6 w-6" />
               </div>
               <p className="text-[14px] text-muted-foreground">
-                {t("cabinet.dashboard.free_trial_desc")} {formatRuDays(trialDays)}.
+                {showMultiTrials
+                  ? "Возьми бесплатный пробник — попробуй VPN без оплаты"
+                  : `${t("cabinet.dashboard.free_trial_desc")} ${formatRuDays(trialDays)}.`}
               </p>
               <Button className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white shadow-lg h-12 rounded-xl hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none" onClick={activateTrial} disabled={trialLoading}>
                 {trialLoading ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" /> : <Gift className="h-5 w-5 shrink-0" />}
@@ -719,11 +870,14 @@ function ClassicDashboardPage() {
           </Button>
         </section>
       </div>
+      {trialsPickerNode}
+      </>
     );
   }
 
   // DESKTOP LAYOUT
   return (
+    <>
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 max-w-6xl mx-auto">
       {/* Hero + CTA */}
       <motion.section
@@ -767,19 +921,39 @@ function ClassicDashboardPage() {
           </div>
 
           <div className="flex flex-col sm:flex-row md:flex-col gap-3 shrink-0 min-w-[240px]">
-            {showTrial ? (
+            {/* «Бесплатный Тест» (мульти-триал) и
+                «Подключиться» могут показываться ВМЕСТЕ. Legacy single-trial — только когда нет подписки. */}
+            {vpnUrl && (
+              <Button size="lg" className="w-full gap-2 shadow-xl rounded-xl h-14 hover:scale-105 transition-transform bg-primary text-primary-foreground [&_svg]:self-center [&_span]:leading-none" asChild>
+                {useRemnaPage ? (
+                  <a href={vpnUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 leading-none">
+                    <Wifi className="h-5 w-5 shrink-0" />
+                    <span className="inline-flex items-center text-base font-medium leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
+                  </a>
+                ) : (
+                  <Link to="/cabinet/subscribe" className="inline-flex items-center justify-center gap-2 leading-none">
+                    <Wifi className="h-5 w-5 shrink-0" />
+                    <span className="inline-flex items-center text-base font-medium leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
+                  </Link>
+                )}
+              </Button>
+            )}
+            {/* продлить главную подписку (#0) */}
+            {vpnUrl && rootSubId && (
+              <Button variant="outline" size="lg" className="w-full gap-2 rounded-xl h-14 hover:scale-105 transition-transform border-primary/30 hover:bg-primary/10 [&_svg]:self-center [&_span]:leading-none" asChild>
+                <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-2 leading-none">
+                  <RefreshCw className="h-5 w-5 shrink-0" />
+                  <span className="inline-flex items-center text-base font-medium leading-none">Продлить #0</span>
+                </Link>
+              </Button>
+            )}
+            {showAnyTrial && (
               <Button size="lg" className="w-full gap-2 shadow-xl bg-green-600 hover:bg-green-700 text-white rounded-xl h-14 hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none" onClick={activateTrial} disabled={trialLoading}>
                 {trialLoading ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" /> : <Gift className="h-5 w-5 shrink-0" />}
                 <span className="inline-flex items-center text-base font-medium leading-none">{t("cabinet.dashboard.free_trial")}</span>
               </Button>
-            ) : vpnUrl ? (
-              <Button size="lg" className="w-full gap-2 shadow-xl rounded-xl h-14 hover:scale-105 transition-transform bg-primary text-primary-foreground [&_svg]:self-center [&_span]:leading-none" asChild>
-                <Link to="/cabinet/subscribe" className="inline-flex items-center justify-center gap-2 leading-none">
-                  <Wifi className="h-5 w-5 shrink-0" />
-                  <span className="inline-flex items-center text-base font-medium leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
-                </Link>
-              </Button>
-            ) : (
+            )}
+            {!vpnUrl && !showAnyTrial && (
               <Button size="lg" variant="default" className="w-full gap-2 shadow-xl rounded-xl h-14 hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none" asChild>
                 <Link to="/cabinet/tariffs" className="inline-flex items-center justify-center gap-2 leading-none">
                   <Package className="h-5 w-5 shrink-0" />
@@ -818,15 +992,22 @@ function ClassicDashboardPage() {
           <CardContent className="flex-1 flex flex-col justify-center">
             {loading ? (
               <div className="flex justify-center py-6"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>
-            ) : subscriptionError || !hasActiveSubscription ? (
+            ) : subscriptionError || !subscription || typeof subscription !== "object" ? (
               <NoSubscriptionState />
             ) : (
               <div className="space-y-4">
                 <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-green-500/15 text-green-700 dark:text-green-400 border border-green-500/20">
-                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                    {t("cabinet.dashboard.active")}
-                  </span>
+                  {hasActiveSubscription ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-green-500/15 text-green-700 dark:text-green-400 border border-green-500/20">
+                      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                      {t("cabinet.dashboard.active")}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20">
+                      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                      Истекла
+                    </span>
+                  )}
                   {daysLeft != null && (
                     <span className="text-sm font-semibold text-foreground bg-foreground/5 px-3 py-1.5 rounded-full border border-border/50 shadow-sm">
                       {daysLeft} {daysLeft === 1 ? t("cabinet.common.day_one") : daysLeft < 5 ? t("cabinet.common.day_few") : t("cabinet.common.day_many")}
@@ -1109,7 +1290,7 @@ function ClassicDashboardPage() {
                         )}
                         {secParsed.hwidDeviceLimit != null && secParsed.hwidDeviceLimit > 0 && (
                           <span className="text-sm font-semibold text-foreground bg-indigo-500/10 text-indigo-400 px-3 py-1.5 rounded-full border border-indigo-500/20 shadow-sm flex items-center gap-1.5">
-                            <Smartphone className="h-4 w-4" /> {secParsed.hwidDeviceLimit}
+                            <Smartphone className="h-4 w-4" /> {devicesBySubId[sec.id] ?? 0} / {secParsed.hwidDeviceLimit}
                           </span>
                         )}
                       </div>
@@ -1166,11 +1347,36 @@ function ClassicDashboardPage() {
                         )}
                       </div>
 
-                      <div className="pt-2">
+                      {/* T-sub-link : ссылка подписки доп.подписки + копирование прямо на главной (без захода в «Подключиться»). */}
+                      {secParsed.subscriptionUrl && (
+                        <div className="flex gap-2 min-w-0 pt-1 mb-2">
+                          <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={secParsed.subscriptionUrl}>
+                            {secParsed.subscriptionUrl}
+                          </code>
+                          <Button size="icon" variant="outline" className="shrink-0 h-auto w-11 rounded-xl bg-background/50 hover:bg-background/80 transition-transform hover:scale-105" onClick={() => { navigator.clipboard.writeText(secParsed.subscriptionUrl || ""); window.Telegram?.WebApp?.showPopup?.({ title: t("cabinet.dashboard.copied_title"), message: t("cabinet.dashboard.copied_message") }); }}>
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )}
+                      <div className="pt-2 flex flex-col gap-2">
                         <Button variant="default" size="lg" className="w-full gap-2 rounded-xl shadow-lg h-14 text-[16px] hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
-                          <Link to={`/cabinet/subscribe?uuid=${sec.remnawaveUuid}`} className="inline-flex items-center justify-center gap-2 leading-none">
-                            <Wifi className="h-5 w-5 shrink-0" />
-                            <span className="inline-flex items-center leading-none">Подключиться</span>
+                          {useRemnaPage && secParsed.subscriptionUrl ? (
+                            <a href={secParsed.subscriptionUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 leading-none">
+                              <Wifi className="h-5 w-5 shrink-0" />
+                              <span className="inline-flex items-center leading-none">Подключиться</span>
+                            </a>
+                          ) : (
+                            <Link to={`/cabinet/subscribe?uuid=${sec.remnawaveUuid}`} className="inline-flex items-center justify-center gap-2 leading-none">
+                              <Wifi className="h-5 w-5 shrink-0" />
+                              <span className="inline-flex items-center leading-none">Подключиться</span>
+                            </Link>
+                          )}
+                        </Button>
+                        {/* продлить ИМЕННО эту доп. подписку */}
+                        <Button variant="outline" size="lg" className="w-full gap-2 rounded-xl h-14 text-[16px] hover:scale-105 transition-transform border-indigo-500/30 hover:bg-indigo-500/10 [&_svg]:self-center [&_span]:leading-none" asChild>
+                          <Link to={`/cabinet/tariffs?extend=${sec.id}`} className="inline-flex items-center justify-center gap-2 leading-none">
+                            <RefreshCw className="h-5 w-5 shrink-0" />
+                            <span className="inline-flex items-center leading-none">Продлить</span>
                           </Link>
                         </Button>
                       </div>
@@ -1184,5 +1390,7 @@ function ClassicDashboardPage() {
         </motion.section>
       )}
     </div>
+    {trialsPickerNode}
+    </>
   );
 }

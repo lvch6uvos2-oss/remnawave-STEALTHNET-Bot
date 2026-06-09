@@ -23,6 +23,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { fmtMsk, fmtMskDate } from "@/lib/datetime";
 
 // --- Helpers ---
 
@@ -45,10 +46,10 @@ function formatExpiry(iso: string | null): { label: string; tone: "ok" | "warn" 
   if (!iso) return { label: "Без срока", tone: "none" };
   const d = new Date(iso);
   const ms = d.getTime() - Date.now();
-  if (ms < 0) return { label: `Истёк ${d.toLocaleDateString("ru-RU")}`, tone: "bad" };
+  if (ms < 0) return { label: `Истёк ${fmtMskDate(d)}`, tone: "bad" };
   const days = Math.floor(ms / 86_400_000);
   if (days < 7) return { label: `Истекает через ${days} дн.`, tone: "warn" };
-  return { label: `Истекает ${d.toLocaleDateString("ru-RU")}`, tone: "ok" };
+  return { label: `Истекает ${fmtMskDate(d)}`, tone: "ok" };
 }
 
 function presetExpiry(preset: "30d" | "90d" | "180d" | "365d" | "never"): string | null {
@@ -444,7 +445,7 @@ function ApiKeyRow({
               {k.description && <div className="text-xs text-muted-foreground mt-0.5">{k.description}</div>}
               {k.lastUsedAt && (
                 <div className="text-[10px] text-muted-foreground/80 mt-0.5">
-                  Последний запрос: {new Date(k.lastUsedAt).toLocaleString("ru-RU")}
+                  Последний запрос: {fmtMsk(k.lastUsedAt)}
                   {k.lastUsedIp && ` · ${k.lastUsedIp}`}
                 </div>
               )}
@@ -664,7 +665,7 @@ function UsageModal({
                     {u.path}
                   </span>
                   <span className="text-muted-foreground tabular-nums whitespace-nowrap">
-                    {new Date(u.ts).toLocaleString("ru-RU")}
+                    {fmtMsk(u.ts)}
                   </span>
                   {u.ip && (
                     <span className="font-mono text-muted-foreground hidden md:inline">{u.ip}</span>

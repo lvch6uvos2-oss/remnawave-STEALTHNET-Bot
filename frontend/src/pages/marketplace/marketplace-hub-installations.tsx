@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { BannerCard } from "./marketplace-layout";
+import { fmtMsk } from "@/lib/datetime";
 
 export function MarketplaceHubInstallationsPage() {
   const { t } = useTranslation();
@@ -105,7 +106,7 @@ export function MarketplaceHubInstallationsPage() {
                   </div>
                 </td>
                 <td className="px-4 py-3 text-sm">{i.totalListings}</td>
-                <td className="px-4 py-3 text-xs text-muted-foreground">{new Date(i.lastSeenAt).toLocaleString()}</td>
+                <td className="px-4 py-3 text-xs text-muted-foreground">{fmtMsk(i.lastSeenAt)}</td>
                 <td className="px-4 py-3">
                   {i.isBanned ? (
                     <span className="rounded-full px-2 py-0.5 text-[11px] font-medium bg-red-500/10 text-red-600 dark:text-red-300 border border-red-500/30">
