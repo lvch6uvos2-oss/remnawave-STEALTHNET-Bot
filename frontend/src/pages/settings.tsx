@@ -439,6 +439,8 @@ export function SettingsPage() {
         defaultReferralPercent: data.defaultReferralPercent ?? 30,
         referralPercentLevel2: (data as AdminSettings).referralPercentLevel2 ?? 10,
         referralPercentLevel3: (data as AdminSettings).referralPercentLevel3 ?? 10,
+        withdrawalsEnabled: (data as AdminSettings).withdrawalsEnabled ?? true,
+        withdrawalMinAmount: (data as AdminSettings).withdrawalMinAmount ?? 3000,
         plategaMethods: (data as AdminSettings).plategaMethods ?? DEFAULT_PLATEGA_METHODS,
         botButtons: (() => {
           const raw = (data as AdminSettings).botButtons;
@@ -753,6 +755,8 @@ export function SettingsPage() {
         defaultReferralPercent: settings.defaultReferralPercent,
         referralPercentLevel2: settings.referralPercentLevel2 ?? 10,
         referralPercentLevel3: settings.referralPercentLevel3 ?? 10,
+        withdrawalsEnabled: settings.withdrawalsEnabled ?? true,
+        withdrawalMinAmount: settings.withdrawalMinAmount ?? 3000,
         trialDays: settings.trialDays,
         trialSquadUuid: settings.trialSquadUuid ?? null,
         trialDeviceLimit: settings.trialDeviceLimit ?? null,
@@ -796,6 +800,12 @@ export function SettingsPage() {
         notificationTopicPayments: settings.notificationTopicPayments ?? null,
         notificationTopicTickets: settings.notificationTopicTickets ?? null,
         notificationTopicBackups: settings.notificationTopicBackups ?? null,
+        notificationTopicTrials: settings.notificationTopicTrials ?? null,
+        notificationTopicConversions: settings.notificationTopicConversions ?? null,
+        notificationTopicWithdrawals: settings.notificationTopicWithdrawals ?? null,
+        notificationTopicPromo: settings.notificationTopicPromo ?? null,
+        notificationTopicGifts: settings.notificationTopicGifts ?? null,
+        notificationTopicAutoRenew: settings.notificationTopicAutoRenew ?? null,
         plategaMerchantId: settings.plategaMerchantId ?? null,
         plategaSecret: settings.plategaSecret && settings.plategaSecret !== "********" ? settings.plategaSecret : undefined,
         plategaMethods: settings.plategaMethods != null ? JSON.stringify(settings.plategaMethods) : undefined,
@@ -874,6 +884,10 @@ export function SettingsPage() {
         blacklistEnabled: settings.blacklistEnabled ?? false,
         botAutoDeleteUnknownMessages: settings.botAutoDeleteUnknownMessages ?? false,
         botInfoBlock: settings.botInfoBlock ?? null,
+        // тогглы кнопок экрана «Тарифы» бота (default true)
+        botTariffsShowExtraDevicesButton: settings.botTariffsShowExtraDevicesButton !== false,
+        botTariffsShowBalanceButton: settings.botTariffsShowBalanceButton !== false,
+        botShowTariffCategories: settings.botShowTariffCategories !== false,
         allowUserThemeChange: (settings as any).allowUserThemeChange ?? true,
         sellOptionsEnabled: settings.sellOptionsEnabled ?? false,
         sellOptionsTrafficEnabled: settings.sellOptionsTrafficEnabled ?? false,
@@ -1262,6 +1276,60 @@ export function SettingsPage() {
                           <Input
                             value={settings.notificationTopicBackups ?? ""}
                             onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicBackups: e.target.value.trim() || null } : s))}
+                            placeholder={t("admin.settings.topic_id_placeholder")}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_trials")}</Label>
+                          <Input
+                            value={settings.notificationTopicTrials ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicTrials: e.target.value.trim() || null } : s))}
+                            placeholder={t("admin.settings.topic_id_placeholder")}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_conversions")}</Label>
+                          <Input
+                            value={settings.notificationTopicConversions ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicConversions: e.target.value.trim() || null } : s))}
+                            placeholder={t("admin.settings.topic_id_placeholder")}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_withdrawals")}</Label>
+                          <Input
+                            value={settings.notificationTopicWithdrawals ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicWithdrawals: e.target.value.trim() || null } : s))}
+                            placeholder={t("admin.settings.topic_id_placeholder")}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_promo")}</Label>
+                          <Input
+                            value={settings.notificationTopicPromo ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicPromo: e.target.value.trim() || null } : s))}
+                            placeholder={t("admin.settings.topic_id_placeholder")}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_gifts")}</Label>
+                          <Input
+                            value={settings.notificationTopicGifts ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicGifts: e.target.value.trim() || null } : s))}
+                            placeholder={t("admin.settings.topic_id_placeholder")}
+                            className="h-9 text-sm"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] uppercase tracking-wider text-muted-foreground">{t("admin.settings.topic_auto_renew")}</Label>
+                          <Input
+                            value={settings.notificationTopicAutoRenew ?? ""}
+                            onChange={(e) => setSettings((s) => (s ? { ...s, notificationTopicAutoRenew: e.target.value.trim() || null } : s))}
                             placeholder={t("admin.settings.topic_id_placeholder")}
                             className="h-9 text-sm"
                           />
@@ -2088,6 +2156,50 @@ export function SettingsPage() {
                       </div>
                     </div>
 
+                    {/* Тогглы сервисных кнопок на экране «Тарифы» бота */}
+                    <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 p-5 space-y-4 backdrop-blur">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-xl bg-teal-500/20 flex items-center justify-center"><Bot className="h-4 w-4 text-teal-500" /></div>
+                        <h3 className="text-base font-semibold">Кнопки на экране «Тарифы»</h3>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Сервисные кнопки под списком тарифов в боте. Выключи, если не продаёшь доп. устройства
+                        или не хочешь показывать баланс на этом экране.
+                      </p>
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-background/40 border border-white/5">
+                        <Switch
+                          checked={settings.botTariffsShowExtraDevicesButton !== false}
+                          onCheckedChange={(checked: boolean) =>
+                            setSettings((s) => (s ? { ...s, botTariffsShowExtraDevicesButton: checked === true } : s))
+                          }
+                        />
+                        <Label className="text-sm">Кнопка «➕ Докупить устройство» в Тарифах</Label>
+                      </div>
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-background/40 border border-white/5">
+                        <Switch
+                          checked={settings.botTariffsShowBalanceButton !== false}
+                          onCheckedChange={(checked: boolean) =>
+                            setSettings((s) => (s ? { ...s, botTariffsShowBalanceButton: checked === true } : s))
+                          }
+                        />
+                        <Label className="text-sm">Кнопка «💼 Мой баланс» в Тарифах</Label>
+                      </div>
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-background/40 border border-white/5">
+                        <Switch
+                          checked={settings.botShowTariffCategories !== false}
+                          onCheckedChange={(checked: boolean) =>
+                            setSettings((s) => (s ? { ...s, botShowTariffCategories: checked === true } : s))
+                          }
+                        />
+                        <div className="space-y-0.5">
+                          <Label className="text-sm">Меню выбора категорий</Label>
+                          <p className="text-[11px] text-muted-foreground">
+                            Включено — при входе в «Тарифы» бот сначала покажет категории. Выключено — сразу плоский список тарифов.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="rounded-2xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 via-teal-500/5 to-cyan-500/5 p-5 space-y-4">
                       <div className="flex items-center gap-2.5">
                         <div className="h-8 w-8 rounded-xl bg-cyan-500/20 flex items-center justify-center"><Bell className="h-4 w-4 text-cyan-500" /></div>
@@ -2565,6 +2677,37 @@ export function SettingsPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* заявки на вывод реф. баланса: вкл/выкл + мин. сумма.
+                    Выключение прячет кнопку в боте и блок в кабинете/на сайте. */}
+                <div className="rounded-2xl border border-white/10 bg-card/50 p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <Label className="text-base font-semibold">💸 Заявки на вывод</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Вывод реферального баланса (USDT TRC20). Выключено — кнопка в боте и блок
+                        в кабинете/на сайте скрываются, API отклоняет новые заявки.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={settings.withdrawalsEnabled ?? true}
+                      onCheckedChange={(v) => setSettings((s) => (s ? { ...s, withdrawalsEnabled: v } : s))}
+                    />
+                  </div>
+                  {(settings.withdrawalsEnabled ?? true) && (
+                    <div className="grid gap-1.5 max-w-xs">
+                      <Label className="text-xs text-muted-foreground">Минимальная сумма заявки (₽)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        className="h-11 rounded-xl tabular-nums"
+                        value={settings.withdrawalMinAmount ?? 3000}
+                        onChange={(e) => setSettings((s) => (s ? { ...s, withdrawalMinAmount: Math.max(1, Number(e.target.value) || 1) } : s))}
+                      />
+                    </div>
+                  )}
+                </div>
+
                 {message && <p className="text-sm text-muted-foreground">{message}</p>}
                 <Button type="submit" disabled={saving} className="w-full sm:w-auto h-11 px-6 rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:opacity-90 text-white font-semibold shadow-lg shadow-violet-500/20">
                   {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}

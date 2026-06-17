@@ -606,9 +606,11 @@ function CabinetShell() {
   return (
     <div className="min-h-svh flex flex-col bg-transparent">
       <FloatingChat />
-      <header className="sticky top-0 z-50 border-b border-border shadow-sm transition-all duration-300">
-        <div className="absolute inset-0 bg-card/40 backdrop-blur-xl -z-10 pointer-events-none" />
-        <div className="relative w-full max-w-7xl mx-auto flex h-16 items-center justify-between gap-4 px-4">
+      {/* левитирующая glass-капсула: отступ сверху, скруглённые
+          края, контейнер шире (100rem против прежних 80rem) — лого уезжает левее,
+          правый блок правее, в центре больше места под пункты навигации. */}
+      <header className="sticky top-2 sm:top-3 z-50 px-2 sm:px-4 transition-all duration-300">
+        <div className="relative w-full max-w-[100rem] mx-auto flex h-16 items-center justify-between gap-4 px-3 sm:px-5 rounded-2xl border border-border/60 bg-card/55 backdrop-blur-xl shadow-lg shadow-black/5">
           <Link to="/cabinet/dashboard" className="flex items-center gap-2.5 font-semibold text-lg tracking-tight shrink-0 hover:opacity-80 transition-opacity">
             {logo ? (
               <span className="flex items-center justify-center h-9 px-2 rounded-lg shrink-0">

@@ -11,10 +11,36 @@ const basePrisma =
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = basePrisma;
 
 /**
- * Тонкая обёртка над prisma.payment.create — оставлена для совместимости после
- * выпила multi-bot в v5.0.0 (раньше делала автоподстановку botId по clientId).
+ * Обёртка над prisma.payment.create. После выпила multi-bot (v5.0.0) botId-подстановки нет.
+ * T-tariff-restriction (портировано из WolfVPN): бэкстоп — не создаём платёж за тариф,
+ * запрещённый клиенту. Покрывает ВСЕ внешние платёжки (они создают pending-платёж здесь).
+ * app.ts ловит code "TARIFF_RESTRICTED" → 403.
  */
 export async function createPayment(args: Prisma.PaymentCreateArgs) {
+  const data = args.data as Prisma.PaymentUncheckedCreateInput;
+  if (data.tariffId && typeof data.clientId === "string") {
+    const cl = await basePrisma.client.findUnique({
+      where: { id: data.clientId },
+      select: { restrictedTariffIds: true, tariffRestrictionReason: true },
+    });
+    if (cl?.restrictedTariffIds) {
+      let ids: string[] = [];
+      try {
+        const p = JSON.parse(cl.restrictedTariffIds);
+        if (Array.isArray(p)) ids = p.map((x) => String(x));
+      } catch { /* битый JSON → ограничений нет */ }
+      if (ids.includes(String(data.tariffId))) {
+        let reason = (cl.tariffRestrictionReason ?? "").trim();
+        if (!reason) {
+          const s = await basePrisma.systemSetting.findUnique({ where: { key: "tariff_restriction_message" } });
+          reason = (s?.value ?? "").trim() || "Покупка этого тарифа ограничена в связи с нарушением условий оферты. Выберите другой тариф.";
+        }
+        const err = new Error(reason) as Error & { code?: string };
+        err.code = "TARIFF_RESTRICTED";
+        throw err;
+      }
+    }
+  }
   return basePrisma.payment.create(args);
 }
 

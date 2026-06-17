@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, KeyRound, Mail, Shield, Check, Eye, EyeOff, Loader2, ChevronRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
@@ -8,9 +8,10 @@ import { useCabinetConfig } from "@/contexts/cabinet-config";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 
-// добавлен обязательный шаг "email"
+// T-onb-email (26.05.2026, WolfVPN): добавлен обязательный шаг "email"
 // для TG-юзеров без привязанной почты.
 type Step = "welcome" | "email" | "password" | "2fa" | "done";
 
@@ -26,7 +27,7 @@ const slideVariants = {
   }),
 };
 
-// декоративные элементы для онбординга.
+// T-onb-polish (26.05.2026, WolfVPN): декоративные элементы для онбординга.
 
 /** Pulsing glow за иконкой шага — добавляет «дыхание» главному визуалу. */
 function IconGlow({ color = "bg-primary/40" }: { color?: string }) {
@@ -141,18 +142,19 @@ export function ClientOnboardingPage() {
   const navigate = useNavigate();
   const token = state.token;
   const client = state.client;
-  // нужна ли верификация email через письмо.
+  // T-onb-email (27.05.2026, WolfVPN): нужна ли верификация email через письмо.
   // Если SMTP не настроен ИЛИ админ выключил верификацию — пользуем direct-привязку.
   const emailVerificationRequired = Boolean(config?.smtpConfigured && !config?.skipEmailVerification);
 
   const [step, setStep] = useState<Step>("welcome");
   const [direction, setDirection] = useState(1);
 
-  // Email step (T-onb-email 26.05.2026)
+  // Email step (T-onb-email 26.05.2026, WolfVPN)
   const [emailInput, setEmailInput] = useState("");
   const [emailError, setEmailError] = useState("");
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
+  const [agreedToPrivacy, setAgreedToPrivacy] = useState(false);
 
   // Password step
   const [newPassword, setNewPassword] = useState("");
@@ -168,7 +170,7 @@ export function ClientOnboardingPage() {
   const [twoFaError, setTwoFaError] = useState("");
   const [twoFaSetupLoading, setTwoFaSetupLoading] = useState(false);
 
-  // динамический список шагов.
+  // T-onb-email (26.05.2026, WolfVPN): динамический список шагов.
   // Шаг "email" появляется только если у клиента email ещё не привязан.
   // Welcome / 2fa / done — всегда; password — всегда (для TG-юзеров пароль отсутствует,
   // для email-регистрации он уже стоит, но бэк позволяет переустановить пока onboardingCompleted=false).
@@ -266,7 +268,7 @@ export function ClientOnboardingPage() {
     goTo("done");
   }
 
-  // отправка ссылки или мгновенная привязка.
+  // T-onb-email (26.05.2026, WolfVPN): отправка ссылки или мгновенная привязка.
   // Если верификация требуется → /link-email-request (письмо со ссылкой).
   // Если нет (SMTP не настроен или skipEmailVerification=true) → /link-email-direct
   // (привязка мгновенная, юзер сразу идёт дальше).
@@ -277,6 +279,10 @@ export function ClientOnboardingPage() {
       setEmailError("Введите корректный email");
       return;
     }
+    if (!agreedToPrivacy) {
+      setEmailError("Необходимо согласие с Политикой обработки персональных данных");
+      return;
+    }
     setEmailError("");
     setEmailLoading(true);
     try {
@@ -284,9 +290,21 @@ export function ClientOnboardingPage() {
         await api.clientLinkEmailRequest(token, { email: value });
         setEmailSent(true);
       } else {
-        await api.clientLinkEmailDirect(token, { email: value });
-        await refreshProfile();
-        goTo(nextStepAfter("email"));
+        try {
+          await api.clientLinkEmailDirect(token, { email: value });
+          await refreshProfile();
+          goTo(nextStepAfter("email"));
+        } catch (e) {
+          // страховка от рассинхрона с бэком: если direct
+          // отвечает «Требуется верификация» (конфиг SMTP изменился / закэширован),
+          // не показываем юзеру тупик — переключаемся на письмо со ссылкой.
+          if (e instanceof Error && /верификац/i.test(e.message)) {
+            await api.clientLinkEmailRequest(token, { email: value });
+            setEmailSent(true);
+          } else {
+            throw e;
+          }
+        }
       }
     } catch (e) {
       setEmailError(e instanceof Error ? e.message : "Не удалось сохранить email");
@@ -486,10 +504,18 @@ export function ClientOnboardingPage() {
                         </motion.p>
                       )}
                     </div>
+                    {/* Согласие с обработкой персональных данных (обязательно) */}
+                    <div className="flex items-start gap-2.5 rounded-xl border border-white/10 bg-background/30 p-3 mb-4 w-full text-left">
+                      <Checkbox id="agree-privacy-onb" checked={agreedToPrivacy} onCheckedChange={(v) => setAgreedToPrivacy(v === true)} className="mt-0.5 shrink-0 border-white/50 bg-white/10 data-[state=checked]:bg-fuchsia-500 data-[state=checked]:border-fuchsia-500 data-[state=checked]:text-white" />
+                      <label htmlFor="agree-privacy-onb" className="text-xs font-normal leading-relaxed text-muted-foreground cursor-pointer">
+                        Я ознакомился и согласен с{" "}
+                        <Link to="/cabinet/documents/privacy" target="_blank" rel="noopener noreferrer" className="font-medium text-primary hover:underline">Политикой обработки персональных данных</Link>.
+                      </label>
+                    </div>
                     <Button
                       className="w-full h-14 rounded-2xl text-base font-bold shadow-xl hover:scale-[1.02] transition-all gap-2"
                       onClick={handleSubmitEmail}
-                      disabled={emailLoading || !emailInput.trim()}
+                      disabled={emailLoading || !emailInput.trim() || !agreedToPrivacy}
                     >
                       {emailLoading ? (
                         <Loader2 className="h-5 w-5 animate-spin" />

@@ -24,10 +24,11 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Wallet, Bitcoin, Check, AlertCircle, Loader2, Sparkles } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { motion } from "framer-motion";
+import { Wallet, Bitcoin, Check, AlertCircle, Loader2, Sparkles, RefreshCw } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
-import { api, type PublicTariffCategory, type PublicConfig } from "@/lib/api";
+import { api, type PublicTariffCategory, type PublicConfig, type TariffConversionPreview } from "@/lib/api";
 import { StadiumButton } from "@/components/stealth/stadium-button";
 import { cn } from "@/lib/utils";
 
@@ -71,6 +72,15 @@ function fmtPricePerDay(n: number, currency: string) {
 export function StealthTariffs() {
   const { state, refreshProfile } = useClientAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // режим продления конкретной подписки (?extend=<subId> с дашборда).
+  // Механика как в основном кабинете: каталог фильтруется до тарифа подписки,
+  // оплата уходит с extendsSecondarySubId — единый код для любой подписки.
+  const extendParam = searchParams.get("extend");
+  const [extendTarget, setExtendTarget] = useState<{ id: string; label: string; tariffId: string | null; isTrial: boolean; convertTariffIds: string[]; trialConvertAllTariffs: boolean; extraDevices: number; extraDevicesMonthlyPrice: number } | null>(null);
+  // судьба доп. устройств при продлении (true = сохранить, цена выше).
+  const [extKeepExtras, setExtKeepExtras] = useState(true);
 
   const [categories, setCategories] = useState<PublicTariffCategory[]>([]);
   const [config, setConfig] = useState<PublicConfig | null>(null);
@@ -88,6 +98,10 @@ export function StealthTariffs() {
   const [selectedMethod, setSelectedMethod] = useState<PayMethod | null>(null);
   const [paying, setPaying] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
+  // превью конвертации (режим «одна подписка из категории»).
+  const [convPreview, setConvPreview] = useState<TariffConversionPreview | null>(null);
+  // судьба доп. устройств при конвертации (true = оставить).
+  const [convKeepExtras, setConvKeepExtras] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -118,12 +132,102 @@ export function StealthTariffs() {
     return () => { alive = false; };
   }, []);
 
-  const currentCat = categories.find((c) => c.id === selectedCatId);
+  // Все подписки клиента: для режима продления (?extend) и для подсказки
+  // «у вас уже есть подписка с этим тарифом — продлить или купить ещё одну».
+  const [mySubs, setMySubs] = useState<{ id: string; label: string; tariffId: string | null; expireAt: string | null; isTrial: boolean; trialName: string | null }[]>([]);
+  // покупка заменяет триал: выбор какого (если несколько).
+  const [replaceTrialChoice, setReplaceTrialChoice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!state.token) { setExtendTarget(null); setMySubs([]); return; }
+    let alive = true;
+    api.clientAllSubscriptions(state.token).then((r) => {
+      if (!alive) return;
+      const items = r.items ?? [];
+      setMySubs(items.map((it) => {
+        const raw = it.subscription as Record<string, unknown> | null;
+        const payload = (raw && typeof raw === "object" && raw.response && typeof raw.response === "object")
+          ? (raw.response as Record<string, unknown>)
+          : raw;
+        return {
+          id: it.id,
+          label: it.tariffDisplayName?.trim() || `Подписка #${it.subscriptionIndex ?? 0}`,
+          tariffId: it.tariffId ?? null,
+          expireAt: payload && typeof payload.expireAt === "string" ? payload.expireAt : null,
+          isTrial: Boolean(it.trialId),
+          trialName: it.trialName ?? null,
+        };
+      }));
+      if (!extendParam) { setExtendTarget(null); return; }
+      const it = items.find((s) => s.id === extendParam);
+      if (!it) { setExtendTarget(null); return; }
+      const idx = it.subscriptionIndex ?? 0;
+      setExtendTarget({
+        id: it.id,
+        label: it.tariffDisplayName?.trim() || `Подписка #${idx}`,
+        tariffId: it.tariffId ?? null,
+        isTrial: Boolean(it.trialId),
+        convertTariffIds: it.convertTariffIds ?? [],
+        trialConvertAllTariffs: it.trialConvertAllTariffs ?? false,
+        extraDevices: it.extraDevices ?? 0,
+        extraDevicesMonthlyPrice: it.extraDevicesMonthlyPrice ?? 0,
+      });
+      setExtKeepExtras(true);
+    }).catch(() => { if (alive) { setExtendTarget(null); setMySubs([]); } });
+    return () => { alive = false; };
+  }, [extendParam, state.token]);
+
+  // В режиме продления каталог сужается до тарифа подписки (как в основном
+  // кабинете). Для триальной подписки добавляются тарифы из настройки триала
+  // convertTariffIds — переход с пробного сквада на боевой; convertAllTariffs —
+  // каталог не фильтруется вовсе. Standalone-триал (без тарифа) — только разрешённые.
+  const displayCategories = useMemo(() => {
+    if (!extendTarget) return categories;
+    if (extendTarget.isTrial && extendTarget.trialConvertAllTariffs) return categories;
+    const allowed = [
+      ...(extendTarget.tariffId ? [extendTarget.tariffId] : []),
+      ...(extendTarget.isTrial ? extendTarget.convertTariffIds : []),
+    ];
+    if (allowed.length === 0) return categories;
+    const filtered = categories
+      .map((c) => ({ ...c, tariffs: c.tariffs.filter((t) => allowed.includes(t.id)) }))
+      .filter((c) => c.tariffs.length > 0);
+    // Тариф подписки удалён из каталога — fallback на полный список.
+    return filtered.length > 0 ? filtered : categories;
+  }, [categories, extendTarget]);
+
+  // Предвыбор категории/тарифа подписки при входе в режим продления.
+  useEffect(() => {
+    if (!extendTarget?.tariffId || categories.length === 0) return;
+    const cat = categories.find((c) => c.tariffs.some((t) => t.id === extendTarget.tariffId));
+    const tariff = cat?.tariffs.find((t) => t.id === extendTarget.tariffId) as TariffLite | undefined;
+    if (!cat || !tariff) return;
+    setSelectedCatId(cat.id);
+    setSelectedTariffId(tariff.id);
+    const opts = tariff.priceOptions ?? [];
+    if (opts.length > 0) {
+      const def = opts.find((o) => o.durationDays === 30) ?? opts[0];
+      setSelectedPriceOptionId(def.id);
+    }
+  }, [extendTarget?.tariffId, categories]);
+
+  const currentCat = displayCategories.find((c) => c.id === selectedCatId);
   const currentTariff = currentCat?.tariffs.find((t) => t.id === selectedTariffId) as TariffLite | undefined;
   const priceOptions: PriceOption[] = currentTariff?.priceOptions ?? [];
   const currentOption = priceOptions.find((o) => o.id === selectedPriceOptionId);
-  const totalPrice = currentOption?.price ?? currentTariff?.price ?? 0;
+  const basePrice = currentOption?.price ?? currentTariff?.price ?? 0;
   const days = currentOption?.durationDays ?? currentTariff?.durationDays ?? 30;
+  // доплата за СОХРАНЯЕМЫЕ доп. устройства при продлении
+  // (цена хранится за 30 дней — масштабируем на выбранный срок). Раньше stealth
+  // не показывал её, и бэк списывал больше, чем юзер видел в «Итого».
+  const extendExtrasCost = extendTarget && extKeepExtras && extendTarget.extraDevices > 0
+    ? Math.round(extendTarget.extraDevicesMonthlyPrice * (Math.max(1, days) / 30))
+    : 0;
+  // same-tariff продление (single-режим, без ?extend): доплата за
+  // сохраняемые устройства из превью — чтобы «Итого» совпадало со списанием.
+  const convExtendExtrasCost = !extendTarget && convPreview?.mode === "extend" && convKeepExtras && (convPreview.extras?.extraDevices ?? 0) > 0
+    ? Math.round((convPreview.extras?.extraDevicesMonthlyPrice ?? 0) * (Math.max(1, days) / 30))
+    : 0;
+  const totalPrice = basePrice + extendExtrasCost + convExtendExtrasCost;
   const pricePerDay = days > 0 ? totalPrice / days : 0;
   const currency = currentTariff?.currency ?? "rub";
 
@@ -149,9 +253,42 @@ export function StealthTariffs() {
     }
   }, [availableMethods, selectedMethod]);
 
+  // Свежий баланс: профиль мог быть не загружен/устаревшим — без этого тайл
+  // «Баланс» показывал 0 и решение о доступности оплаты было неверным.
+  useEffect(() => {
+    refreshProfile().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Balance available?
   const balance = state.client?.balance ?? 0;
   const canPayByBalance = balance >= totalPrice && totalPrice > 0;
+
+  // Если выбран «Баланс», а юзер переключился на тариф дороже остатка —
+  // мягко возвращаем первый доступный метод, чтобы не отправлять заведомо
+  // провальную оплату.
+  useEffect(() => {
+    if (selectedMethod?.kind === "balance" && !canPayByBalance) {
+      setSelectedMethod(availableMethods[0] ?? null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canPayByBalance]);
+
+  // Превью конвертации: если тариф из single-категории и у клиента уже есть
+  // подписка этой категории — покупка обновит её, а не создаст вторую. Показываем
+  // юзеру расчёт до оплаты. В режиме явного продления (?extend) превью не нужно.
+  useEffect(() => {
+    if (!state.token || !selectedTariffId || extendTarget) { setConvPreview(null); return; }
+    let alive = true;
+    setConvKeepExtras(true);
+    api.clientTariffConversionPreview(state.token, {
+      tariffId: selectedTariffId,
+      priceOptionId: selectedPriceOptionId ?? undefined,
+    })
+      .then((p) => { if (alive) setConvPreview(p); })
+      .catch(() => { if (alive) setConvPreview(null); });
+    return () => { alive = false; };
+  }, [state.token, selectedTariffId, selectedPriceOptionId, extendTarget]);
 
   async function applyPromo() {
     if (!state.token || !promoInput.trim()) return;
@@ -179,6 +316,35 @@ export function StealthTariffs() {
         tariffId: selectedTariffId,
         tariffPriceOptionId: selectedPriceOptionId,
         promoCode: promoApplied ?? undefined,
+        // режим продления конкретной подписки (?extend=) —
+        // оплата продлевает ИМЕННО её, а не создаёт новую.
+        ...(extendTarget ? { extendsSecondarySubId: extendTarget.id } : {}),
+        // юзер выбрал продлить БЕЗ доп. устройств — бэк удалит их
+        // после успешной оплаты и не начислит доплату.
+        ...(extendTarget && extendTarget.extraDevices > 0 && !extKeepExtras
+          ? { removeExtrasOnActivate: true }
+          : {}),
+        // same-tariff (single-режим): покупка того же тарифа = честное
+        // продление через extend-флоу (единая логика доплаты/устройств).
+        ...(!extendTarget && convPreview?.mode === "extend" && convPreview.subscription
+          ? {
+              extendsSecondarySubId: convPreview.subscription.id,
+              ...(((convPreview.extras?.extraDevices ?? 0) > 0 && !convKeepExtras) ? { removeExtrasOnActivate: true } : {}),
+            }
+          : {}),
+        // конвертация: юзер выбрал убрать доп. устройства —
+        // их остаточная ценность уйдёт в дни нового тарифа.
+        ...(convPreview?.willConvert && convPreview.mode !== "extend" && (convPreview.extras?.extraDevices ?? 0) > 0 && !convKeepExtras
+          ? { removeExtrasOnActivate: true }
+          : {}),
+        // покупка заменяет активный триал (выбор при нескольких).
+        ...(() => {
+          if (extendTarget || convPreview?.willConvert) return {};
+          const trialsOwned = mySubs.filter((s) => s.isTrial);
+          return trialsOwned.length > 0
+            ? { replaceTrialSubId: replaceTrialChoice ?? trialsOwned[0].id }
+            : {};
+        })(),
       };
       let url: string | null = null;
       if (selectedMethod.kind === "platega") {
@@ -215,9 +381,37 @@ export function StealthTariffs() {
   }
 
   if (loading) {
+    // Shimmer-скелетоны вместо спиннера — силуэт будущего контента.
     return (
-      <div className="px-4 pt-10 flex justify-center">
-        <Loader2 className="h-7 w-7 animate-spin text-rose-500" />
+      <div className="px-4 pt-2 space-y-4 pb-2">
+        <div className="flex gap-2">
+          {[88, 104, 96].map((w, i) => (
+            <div
+              key={i}
+              className="h-9 rounded-full bg-white/[0.04] border border-white/[0.06] overflow-hidden relative"
+              style={{ width: w }}
+            >
+              <motion.div
+                className="absolute inset-y-0 w-1/2 bg-gradient-to-r from-transparent via-white/[0.07] to-transparent"
+                animate={{ x: ["-100%", "250%"] }}
+                transition={{ duration: 1.4, repeat: Infinity, ease: "linear", delay: i * 0.15 }}
+              />
+            </div>
+          ))}
+        </div>
+        {[164, 56, 120].map((h, i) => (
+          <div
+            key={i}
+            className="rounded-3xl bg-white/[0.03] border border-white/[0.06] overflow-hidden relative"
+            style={{ height: h }}
+          >
+            <motion.div
+              className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent"
+              animate={{ x: ["-100%", "400%"] }}
+              transition={{ duration: 1.6, repeat: Infinity, ease: "linear", delay: 0.2 + i * 0.2 }}
+            />
+          </div>
+        ))}
       </div>
     );
   }
@@ -232,10 +426,58 @@ export function StealthTariffs() {
 
   return (
     <div className="px-4 pt-2 space-y-4 pb-2">
+      {/* Режим продления: бейдж с подпиской, каталог сужен до её тарифа */}
+      {extendTarget && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+          className="relative overflow-hidden rounded-2xl border border-rose-500/25 bg-rose-500/[0.07] backdrop-blur-xl p-3.5 shadow-[0_0_36px_-14px_rgba(255,35,87,0.4)]"
+        >
+          <div className="absolute inset-0 bg-gradient-to-r from-rose-500/10 to-transparent pointer-events-none" />
+          <div className="relative flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-rose-500/15 shrink-0">
+              <RefreshCw className="h-3.5 w-3.5 text-rose-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-bold">Продление подписки</p>
+              <p className="text-[11px] text-zinc-400 truncate">{extendTarget.label} — выберите срок и способ оплаты</p>
+            </div>
+          </div>
+          {/* доп. устройства подписки: сохранить (доплата) или убрать. */}
+          {extendTarget.extraDevices > 0 && (
+            <div className="relative mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setExtKeepExtras(true)}
+                className={cn(
+                  "rounded-xl border p-2.5 text-left transition-all",
+                  extKeepExtras ? "border-rose-500/50 bg-rose-500/10" : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                )}
+              >
+                <p className="text-[11px] font-bold">📱 +{extendTarget.extraDevices} устройств</p>
+                <p className="text-[10px] text-zinc-400">сохранить (+{fmtPrice(Math.round(extendTarget.extraDevicesMonthlyPrice * (Math.max(1, days) / 30)), currency)})</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExtKeepExtras(false)}
+                className={cn(
+                  "rounded-xl border p-2.5 text-left transition-all",
+                  !extKeepExtras ? "border-rose-500/50 bg-rose-500/10" : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                )}
+              >
+                <p className="text-[11px] font-bold">⚡ Убрать</p>
+                <p className="text-[10px] text-zinc-400">без доплаты, устройства отключатся</p>
+              </button>
+            </div>
+          )}
+        </motion.div>
+      )}
+
       {/* Category tabs (только если >1) */}
-      {categories.length > 1 && (
+      {displayCategories.length > 1 && (
         <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1" style={{ scrollbarWidth: "none" }}>
-          {categories.map((c) => {
+          {displayCategories.map((c) => {
             const active = c.id === selectedCatId;
             return (
               <button
@@ -250,8 +492,10 @@ export function StealthTariffs() {
                   }
                 }}
                 className={cn(
-                  "shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-all",
-                  active ? "bg-white text-black border-white" : "bg-zinc-900/60 text-zinc-300 border-white/[0.08] hover:border-white/20",
+                  "shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-all duration-300 active:scale-95",
+                  active
+                    ? "bg-white text-black border-white shadow-[0_0_28px_-8px_rgba(255,255,255,0.5)]"
+                    : "bg-white/[0.03] text-zinc-300 border-white/[0.08] backdrop-blur-xl hover:border-white/25 hover:bg-white/[0.06]",
                 )}
               >
                 {c.emoji ? `${c.emoji} ` : ""}{c.name}
@@ -275,8 +519,10 @@ export function StealthTariffs() {
                   setSelectedPriceOptionId((opts.find((o) => o.durationDays === 30) ?? opts[0])?.id ?? null);
                 }}
                 className={cn(
-                  "shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all",
-                  active ? "bg-zinc-900/80 text-white border-rose-500/40 shadow-[0_0_16px_-4px_rgba(255,35,87,0.3)]" : "bg-zinc-900/40 text-zinc-400 border-white/[0.06] hover:border-white/20",
+                  "shrink-0 rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all duration-300 active:scale-95",
+                  active
+                    ? "bg-white/[0.06] text-white border-rose-500/45 backdrop-blur-xl shadow-[0_0_24px_-4px_rgba(255,35,87,0.45)]"
+                    : "bg-white/[0.02] text-zinc-400 border-white/[0.06] backdrop-blur-xl hover:border-white/20 hover:bg-white/[0.04]",
                 )}
               >
                 {t.name}
@@ -287,22 +533,30 @@ export function StealthTariffs() {
       )}
 
       {/* Period selector card */}
-      <div className="rounded-3xl border border-white/[0.08] bg-zinc-900/60 p-5 space-y-4">
+      <motion.div
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+        className="relative rounded-3xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-2xl p-5 space-y-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_24px_48px_-24px_rgba(0,0,0,0.8)] before:absolute before:inset-0 before:rounded-3xl before:bg-gradient-to-b before:from-white/[0.04] before:to-transparent before:pointer-events-none"
+      >
         {priceOptions.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {priceOptions.sort((a, b) => a.durationDays - b.durationDays).map((opt) => {
               const active = opt.id === selectedPriceOptionId;
               return (
-                <button
+                <motion.button
                   key={opt.id}
                   onClick={() => setSelectedPriceOptionId(opt.id)}
+                  whileTap={{ scale: 0.94 }}
                   className={cn(
-                    "rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all min-w-[58px]",
-                    active ? "bg-white text-black border-white" : "bg-zinc-900/60 text-zinc-300 border-white/[0.08] hover:border-white/20",
+                    "rounded-full border px-3.5 py-1.5 text-xs font-medium transition-all duration-300 min-w-[58px]",
+                    active
+                      ? "bg-white text-black border-white shadow-[0_0_24px_-6px_rgba(255,255,255,0.45)]"
+                      : "bg-white/[0.03] text-zinc-300 border-white/[0.08] backdrop-blur-xl hover:border-white/25 hover:bg-white/[0.06]",
                   )}
                 >
                   {opt.durationDays} дн.
-                </button>
+                </motion.button>
               );
             })}
           </div>
@@ -321,22 +575,217 @@ export function StealthTariffs() {
 
         <div className="border-t border-white/[0.06] pt-3 flex items-center justify-between">
           <span className="text-sm text-zinc-400">Итого:</span>
-          <span className="text-2xl font-bold tabular-nums">{fmtPrice(totalPrice, currency)}</span>
+          <motion.span
+            key={totalPrice}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, ease: "easeOut" }}
+            className="text-2xl font-bold tabular-nums bg-gradient-to-r from-rose-400 via-rose-300 to-fuchsia-400 bg-clip-text text-transparent drop-shadow-[0_0_18px_rgba(255,35,87,0.35)]"
+          >
+            {fmtPrice(totalPrice, currency)}
+          </motion.span>
         </div>
-      </div>
+      </motion.div>
+
+      {/* покупка заменяет активный триал (выбор при нескольких). */}
+      {!extendTarget && !convPreview?.willConvert && (() => {
+        const trialsOwned = mySubs.filter((s) => s.isTrial);
+        if (trialsOwned.length === 0) return null;
+        const chosen = replaceTrialChoice ?? trialsOwned[0].id;
+        return (
+          <div className="relative overflow-hidden rounded-2xl border border-amber-500/25 bg-amber-500/[0.07] p-4">
+            <div className="absolute inset-0 bg-gradient-to-r from-amber-500/10 to-transparent pointer-events-none" />
+            <div className="relative space-y-2">
+              <p className="text-sm font-bold">
+                {trialsOwned.length === 1 ? "Пробная подписка будет заменена этой покупкой" : "Покупка заменит один из пробных периодов"}
+              </p>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Триал удалится полностью (дни и трафик пробного периода не переносятся).
+              </p>
+              {trialsOwned.length > 1 && (
+                <div className="space-y-1.5">
+                  {trialsOwned.map((tr) => (
+                    <button
+                      key={tr.id}
+                      type="button"
+                      onClick={() => setReplaceTrialChoice(tr.id)}
+                      className={cn(
+                        "w-full text-left rounded-xl border px-3 py-2 text-xs transition-all",
+                        chosen === tr.id ? "border-amber-500/50 bg-amber-500/10 font-bold" : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                      )}
+                    >
+                      🎁 {tr.trialName ?? tr.label}
+                      {tr.expireAt ? ` — до ${new Date(tr.expireAt).toLocaleDateString("ru-RU")}` : ""}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* без single-режима: подписка с этим тарифом уже есть —
+          предлагаем продлить её, либо продолжить покупку ещё одной. */}
+      {!extendTarget && !convPreview?.willConvert && (() => {
+        // среди ВСЕХ подписок с этим тарифом предлагаем «самую живую».
+        // Триалы исключены: их «продление» — конвертация, покупка их заменяет.
+        const matches = selectedTariffId ? mySubs.filter((s) => s.tariffId === selectedTariffId && !s.isTrial) : [];
+        const dup = matches.length > 0
+          ? [...matches].sort((a, b) => (b.expireAt ? Date.parse(b.expireAt) : 0) - (a.expireAt ? Date.parse(a.expireAt) : 0))[0]
+          : null;
+        if (!dup) return null;
+        return (
+          <div className="relative overflow-hidden rounded-2xl border border-indigo-500/25 bg-indigo-500/[0.07] p-4">
+            <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/10 to-transparent pointer-events-none" />
+            <div className="relative space-y-2">
+              <p className="text-sm font-bold">У вас уже есть подписка с этим тарифом</p>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                «{dup.label}»{dup.expireAt ? ` — до ${new Date(dup.expireAt).toLocaleDateString("ru-RU")}` : ""}.
+                Можно продлить её (дни сложатся) — или продолжить ниже и купить ещё одну отдельную подписку.
+              </p>
+              <button
+                onClick={() => navigate(`/cabinet/tariffs?extend=${encodeURIComponent(dup.id)}`)}
+                className="rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 px-3.5 py-2 text-xs font-bold text-indigo-300 transition inline-flex items-center gap-1.5"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Продлить «{dup.label}»
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Конвертация: покупка из single-категории обновляет существующую подписку */}
+      {convPreview?.willConvert && convPreview.subscription && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, ease: "easeOut" }}
+          className="relative overflow-hidden rounded-2xl border border-rose-500/20 bg-rose-500/[0.06] backdrop-blur-xl p-4 shadow-[0_0_36px_-14px_rgba(255,35,87,0.35)]"
+        >
+          <div className="absolute inset-0 bg-gradient-to-br from-rose-500/10 via-transparent to-transparent pointer-events-none" />
+          <div className="relative flex items-start gap-3">
+            <div className="p-2 rounded-xl bg-rose-500/15 shrink-0">
+              <RefreshCw className="h-4 w-4 text-rose-400" />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm font-bold">
+                {convPreview.mode === "extend"
+                  ? "Этот тариф у вас уже есть — подписка будет продлена"
+                  : convPreview.subscription.isTrial ? "Пробная подписка станет платной" : "Подписка будет обновлена"}
+              </p>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                {convPreview.mode === "extend"
+                  ? `Вторая подписка не создастся — дни сложатся: остаток ${convPreview.remainingDays ?? 0} дн. + покупка ${convPreview.purchasedDays ?? 0} дн. = ${convPreview.totalDays ?? 0} дн. Устройства и серверы останутся как есть.`
+                  : <>Покупка не создаст вторую подписку — она обновит
+                {convPreview.subscription.tariffName ? ` «${convPreview.subscription.tariffName}»` : " текущую"} до нового тарифа.
+                {(convPreview.convertedDays ?? 0) > 0 && (convPreview.remainingDays ?? 0) > 0 && !(convPreview.extras && convPreview.extras.extraDevices > 0)
+                  ? ` Остаток ${convPreview.remainingDays} дн. превратится в ${convPreview.convertedDays} дн. по цене нового тарифа.`
+                  : ""}</>}
+              </p>
+              {convPreview.mode !== "extend" && (convPreview.extras?.extraDevices ?? 0) === 0 && (convPreview.totalDays ?? 0) > 0 && (
+                <p className="text-xs font-bold text-rose-400">Итого: {convPreview.totalDays} дн. нового тарифа</p>
+              )}
+
+              {/* same-tariff продление: устройства — сохранить (доплата) или убрать. */}
+              {convPreview.mode === "extend" && convPreview.extras && convPreview.extras.extraDevices > 0 && (
+                <div className="space-y-2 pt-1">
+                  <p className="text-xs font-bold">
+                    У вас докуплено +{convPreview.extras.extraDevices} доп. устройств — что с ними сделать?
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setConvKeepExtras(true)}
+                    className={cn(
+                      "w-full text-left rounded-xl border p-3 transition-all",
+                      convKeepExtras ? "border-rose-500/50 bg-rose-500/10" : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                    )}
+                  >
+                    <p className="text-xs font-bold">📱 Сохранить устройства (+{fmtPrice(convPreview.extras.keep.extraCost ?? 0, currency)})</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 leading-relaxed">
+                      Всего {convPreview.extras.keep.totalDevices} устройств. Доплата за устройства
+                      добавится к «Итого» выше.
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConvKeepExtras(false)}
+                    className={cn(
+                      "w-full text-left rounded-xl border p-3 transition-all",
+                      !convKeepExtras ? "border-rose-500/50 bg-rose-500/10" : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                    )}
+                  >
+                    <p className="text-xs font-bold">⚡ Убрать устройства — без доплаты</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 leading-relaxed">
+                      Останется {convPreview.extras.drop.totalDevices} устройств (только из тарифа).
+                    </p>
+                  </button>
+                </div>
+              )}
+
+              {/* выбор судьбы доп. устройств при конвертации. */}
+              {convPreview.mode !== "extend" && convPreview.extras && convPreview.extras.extraDevices > 0 && (
+                <div className="space-y-2 pt-1">
+                  <p className="text-xs font-bold">
+                    У вас докуплено +{convPreview.extras.extraDevices} доп. устройств — что с ними сделать?
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setConvKeepExtras(true)}
+                    className={cn(
+                      "w-full text-left rounded-xl border p-3 transition-all",
+                      convKeepExtras
+                        ? "border-rose-500/50 bg-rose-500/10"
+                        : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                    )}
+                  >
+                    <p className="text-xs font-bold">📱 Оставить устройства</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 leading-relaxed">
+                      Всего {convPreview.extras.keep.totalDevices} устройств
+                      ({convPreview.extras.newIncludedDevices} в тарифе + {convPreview.extras.extraDevices} доп.).
+                      Конвертация остатка: +{convPreview.extras.keep.convertedDays} дн. —
+                      итого {convPreview.extras.keep.totalDays} дн.
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConvKeepExtras(false)}
+                    className={cn(
+                      "w-full text-left rounded-xl border p-3 transition-all",
+                      !convKeepExtras
+                        ? "border-rose-500/50 bg-rose-500/10"
+                        : "border-white/[0.08] bg-zinc-900/40 hover:border-white/20",
+                    )}
+                  >
+                    <p className="text-xs font-bold">⚡ Убрать устройства — больше дней</p>
+                    <p className="text-[11px] text-zinc-400 mt-0.5 leading-relaxed">
+                      Останется {convPreview.extras.drop.totalDevices} устройств (только из тарифа).
+                      Стоимость устройств тоже превратится в дни: +{convPreview.extras.drop.convertedDays} дн. —
+                      итого {convPreview.extras.drop.totalDays} дн.
+                    </p>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Promo */}
-      <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/40 p-2 flex items-center gap-2">
+      {/* min-w-0 на input обязателен: flex-item с дефолтным min-width:auto
+          не сжимался на узких экранах и выталкивал кнопку за край контейнера. */}
+      <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-xl p-2 flex items-center gap-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] focus-within:border-rose-500/35 focus-within:shadow-[0_0_28px_-10px_rgba(255,35,87,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] transition-all duration-300">
         <input
           value={promoInput}
           onChange={(e) => { setPromoInput(e.target.value); setPromoMsg(null); }}
           placeholder="Введите промокод"
-          className="flex-1 bg-transparent px-3 py-2.5 text-sm placeholder-zinc-500 outline-none"
+          className="flex-1 min-w-0 bg-transparent px-3 py-2.5 text-sm placeholder-zinc-500 outline-none"
         />
         <button
           onClick={applyPromo}
           disabled={promoBusy || !promoInput.trim()}
-          className="rounded-xl bg-zinc-800/80 hover:bg-zinc-800 px-4 py-2 text-xs font-medium border border-white/[0.06] disabled:opacity-50 transition"
+          className="shrink-0 whitespace-nowrap rounded-xl bg-zinc-800/80 hover:bg-zinc-800 px-4 py-2 text-xs font-medium border border-white/[0.06] disabled:opacity-50 transition"
         >
           {promoBusy ? "..." : promoApplied ? <Check className="h-4 w-4 inline" /> : "Активировать"}
         </button>
@@ -355,30 +804,49 @@ export function StealthTariffs() {
             );
             const Icon = m.icon;
             return (
-              <button
+              <motion.button
                 key={`${m.kind}-${m.kind === "platega" ? m.id : ""}`}
                 onClick={() => setSelectedMethod(m)}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.97 }}
                 className={cn(
-                  "rounded-2xl border p-4 transition-all flex flex-col items-center gap-2",
-                  active ? "bg-zinc-900/80 border-white/30" : "bg-zinc-900/30 border-white/[0.06] hover:border-white/15",
+                  "rounded-2xl border p-4 transition-colors duration-300 flex flex-col items-center gap-2 backdrop-blur-xl",
+                  active
+                    ? "bg-white/[0.06] border-rose-500/45 shadow-[0_0_36px_-10px_rgba(255,35,87,0.5),inset_0_1px_0_rgba(255,255,255,0.08)]"
+                    : "bg-white/[0.02] border-white/[0.06] hover:border-white/20 hover:bg-white/[0.04]",
                 )}
               >
-                <Icon className={cn("h-5 w-5", active ? "text-rose-400" : "text-zinc-500")} />
+                <Icon className={cn("h-5 w-5 transition-colors duration-300", active ? "text-rose-400 drop-shadow-[0_0_8px_rgba(255,35,87,0.6)]" : "text-zinc-500")} />
                 <span className="text-[11px] font-bold uppercase tracking-wider">{m.label}</span>
-              </button>
+              </motion.button>
             );
           })}
-          {canPayByBalance && (
-            <button
-              onClick={() => setSelectedMethod({ kind: "balance", label: `Баланс (${balance.toFixed(0)}${fmtPrice(0, currency).slice(-1)})`, icon: Wallet })}
+          {/* Тайл «Баланс» виден всегда (раньше прятался при нехватке средств,
+              и юзеры думали, что оплаты с баланса в приложении нет вовсе). */}
+          {state.client && (
+            <motion.button
+              onClick={() => canPayByBalance && setSelectedMethod({ kind: "balance", label: `Баланс (${balance.toFixed(0)}${fmtPrice(0, currency).slice(-1)})`, icon: Wallet })}
+              disabled={!canPayByBalance}
+              whileHover={canPayByBalance ? { scale: 1.02 } : undefined}
+              whileTap={canPayByBalance ? { scale: 0.97 } : undefined}
               className={cn(
-                "rounded-2xl border p-4 transition-all flex flex-col items-center gap-2",
-                selectedMethod?.kind === "balance" ? "bg-emerald-500/[0.08] border-emerald-500/30" : "bg-zinc-900/30 border-white/[0.06] hover:border-white/15",
+                "rounded-2xl border p-4 transition-colors duration-300 flex flex-col items-center gap-1.5 backdrop-blur-xl",
+                selectedMethod?.kind === "balance"
+                  ? "bg-emerald-500/[0.08] border-emerald-500/35 shadow-[0_0_32px_-10px_rgba(52,211,153,0.45),inset_0_1px_0_rgba(255,255,255,0.07)]"
+                  : canPayByBalance
+                    ? "bg-white/[0.02] border-white/[0.06] hover:border-white/20 hover:bg-white/[0.04]"
+                    : "bg-zinc-900/20 border-white/[0.04] opacity-60 cursor-not-allowed",
               )}
             >
-              <Wallet className={cn("h-5 w-5", selectedMethod?.kind === "balance" ? "text-emerald-400" : "text-zinc-500")} />
+              <Wallet className={cn("h-5 w-5", selectedMethod?.kind === "balance" ? "text-emerald-400" : canPayByBalance ? "text-zinc-500" : "text-zinc-600")} />
               <span className="text-[11px] font-bold uppercase tracking-wider">Баланс</span>
-            </button>
+              <span className={cn(
+                "text-[10px] font-medium tabular-nums",
+                canPayByBalance ? "text-emerald-400/90" : "text-zinc-500",
+              )}>
+                {canPayByBalance ? fmtPrice(balance, currency) : `${fmtPrice(balance, currency)} — не хватает`}
+              </span>
+            </motion.button>
           )}
         </div>
       ) : (

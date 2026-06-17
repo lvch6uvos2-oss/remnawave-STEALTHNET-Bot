@@ -14,7 +14,7 @@ import { sendEmail } from "../mail/mail.service.js";
 import { proxyFetch } from "../proxy-util/proxy-fetch.js";
 import { getProxyUrl } from "../proxy-util/get-proxy-url.js";
 
-// параметры throughput'а:
+// 25.05.2026, WolfVPN — параметры throughput'а:
 // • Для ТЕКСТА Telegram global rate ~30 msg/sec — можно агрессивно.
 // • Для МЕДИА (video/photo/document) практический лимит ~5-8/sec на бота;
 //   при превышении Telegram возвращает 429 retry_after=60s (видели на практике).
@@ -24,7 +24,7 @@ import { getProxyUrl } from "../proxy-util/get-proxy-url.js";
 // 429-retry с respect retry_after — страховка если всё равно превысим.
 const TELEGRAM_TEXT_CONCURRENCY = 4;
 const TELEGRAM_TEXT_DELAY_MS = 50;
-// после file_id-reuse upload пропадает → можем увеличить.
+// 25.05.2026, WolfVPN — после file_id-reuse upload пропадает → можем увеличить.
 // 1 worker для первой отправки (upload бинаря), потом file_id ускоряет всё в 20x.
 // delay 150ms = ~6.5 msg/sec безопасно под media-throttle Telegram (~5-8/sec).
 const TELEGRAM_MEDIA_CONCURRENCY = 1;
@@ -73,7 +73,8 @@ function buildReplyMarkup(buttonText?: string, buttonAction?: string, publicAppU
 }
 
 /**
- * Отправить текстовое сообщение в Telegram. * принимает proxy parameter (берём 1 раз перед циклом, не на каждое сообщение)
+ * Отправить текстовое сообщение в Telegram. 25.05.2026, WolfVPN —
+ * принимает proxy parameter (берём 1 раз перед циклом, не на каждое сообщение)
  * и retry на 429 с уважением retry_after.
  */
 async function sendTelegramMessage(
@@ -101,12 +102,184 @@ async function sendTelegramMessage(
   });
 }
 
+// T-direct-send (WolfVPN): отправка ОДНОГО сообщения конкретному юзеру по telegram_id
+// (точечная рассылка из админки). Переиспользует sendTelegramMessage + токен/прокси из настроек.
+// T-direct-send: доп. опции точечной отправки. channel telegram (по умолч.) / email; subject — для email.
+export type DirectSendExtras = {
+  channel?: "telegram" | "email";
+  subject?: string;
+  buttonText?: string;
+  buttonUrl?: string;
+  attachment?: BroadcastAttachment;
+};
+
+function isValidEmail(s: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(s);
+}
+
+// Готовит SMTP-конфиг, тему и HTML-тело письма (1-в-1 как email-ветка runBroadcast).
+function buildEmailParts(config: Awaited<ReturnType<typeof getSystemConfig>>, subject: string | undefined, message: string, attachment: BroadcastAttachment | undefined) {
+  const smtpConfig = {
+    host: config.smtpHost || "",
+    port: config.smtpPort ?? 587,
+    secure: config.smtpSecure ?? false,
+    user: config.smtpUser ?? null,
+    password: config.smtpPassword ?? null,
+    fromEmail: config.smtpFromEmail ?? null,
+    fromName: config.smtpFromName ?? null,
+  };
+  const serviceName = config.serviceName || "Сервис";
+  const subj = subject?.trim() || `Сообщение от ${serviceName}`;
+  const html = message.trim().replace(/\n/g, "<br>\n");
+  const htmlBody = `<!DOCTYPE html><html><body style="font-family: sans-serif;">${html}</body></html>`;
+  const emailAttachments = attachment ? [{ filename: attachment.originalname || "file", content: attachment.buffer }] : undefined;
+  return { smtpConfig, subj, htmlBody, emailAttachments };
+}
+
+export async function sendDirectEmail(to: string, subject: string | undefined, message: string, attachment?: BroadcastAttachment): Promise<{ ok: boolean; error?: string }> {
+  const config = await getSystemConfig();
+  const { smtpConfig, subj, htmlBody, emailAttachments } = buildEmailParts(config, subject, message, attachment);
+  if (!smtpConfig.host || !smtpConfig.fromEmail) return { ok: false, error: "Не настроен SMTP (Настройки → Почта)" };
+  const send = await sendEmail(smtpConfig, to, subj, htmlBody, emailAttachments);
+  return send.ok ? { ok: true } : { ok: false, error: send.error };
+}
+
+// Одноразовая подготовка media-параметров (тип + probe видео + thumbnail) перед отправкой.
+function prepareMedia(att: BroadcastAttachment | undefined) {
+  const isImage = att?.mimetype?.startsWith("image/") ?? false;
+  const isVideo = att?.mimetype?.startsWith("video/") ?? false;
+  const videoMeta = isVideo && att ? probeVideoMetaSync(att.buffer, att.originalname) : {};
+  const videoThumb = isVideo && att ? generateVideoThumbnail(att.buffer, att.originalname) : null;
+  return { isImage, isVideo, videoMeta, videoThumb };
+}
+
+// Один rich-send: photo/video/document/text + клавиатура. fileIdOrBuffer — для reuse file_id в списке.
+async function richSendOne(
+  botToken: string,
+  chatId: string,
+  text: string,
+  replyMarkup: InlineKeyboard | undefined,
+  att: BroadcastAttachment | undefined,
+  media: ReturnType<typeof prepareMedia>,
+  fileIdOrBuffer: string | Buffer | null,
+  proxy: string | null,
+): Promise<TgSendResult> {
+  if (!att) return sendTelegramMessage(botToken, chatId, text, replyMarkup, proxy);
+  const fileArg: Buffer | string = fileIdOrBuffer ?? att.buffer;
+  if (media.isImage) return sendTelegramPhoto(botToken, chatId, text, fileArg, att.mimetype, att.originalname, replyMarkup, proxy);
+  if (media.isVideo) return sendTelegramVideo(botToken, chatId, text, fileArg, att.mimetype, att.originalname, replyMarkup, media.videoMeta, media.videoThumb, proxy);
+  return sendTelegramDocument(botToken, chatId, text, fileArg, att.mimetype, att.originalname, replyMarkup, proxy);
+}
+
+export async function sendDirectTelegramMessage(chatId: string, text: string, extras?: DirectSendExtras): Promise<{ ok: boolean; error?: string }> {
+  const config = await getSystemConfig();
+  const botToken = config.telegramBotToken?.trim();
+  if (!botToken) return { ok: false, error: "Не задан токен бота (Настройки → Почта и Telegram)" };
+  const proxy = await getProxyUrl("telegram");
+  const replyMarkup = buildReplyMarkup(extras?.buttonText, extras?.buttonUrl, config.publicAppUrl);
+  const media = prepareMedia(extras?.attachment);
+  const res = await richSendOne(botToken, chatId, text, replyMarkup, extras?.attachment, media, null, proxy);
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
+}
+
+// T-list-send (WolfVPN): рассылка по ЯВНОМУ списку Telegram ID. In-memory job в api-процессе
+// (ID могут быть не из нашей БД → обычный broadcast через worker+prisma.client сюда не подходит).
+// Запрос мгновенно отдаёт jobId, отправка идёт в фоне, фронт опрашивает прогресс.
+export type ListSendJob = {
+  id: string;
+  total: number;
+  sent: number;
+  failed: number;
+  done: boolean;
+  errors: Array<{ telegramId: string; error: string }>;
+};
+const listSendJobs = new Map<string, ListSendJob>();
+
+export function getListSendJob(jobId: string): ListSendJob | null {
+  return listSendJobs.get(jobId) ?? null;
+}
+
+export function startListSendJob(recipients: string[], message: string, extras?: DirectSendExtras): { jobId: string; total: number } {
+  const channel = extras?.channel ?? "telegram";
+  // дедуп + валидные получатели по каналу (TG — числовые ID, email — адреса)
+  const ids = Array.from(new Set(
+    recipients
+      .map((s) => String(s).trim())
+      .filter((s) => (channel === "email" ? isValidEmail(s) : /^\d+$/.test(s))),
+  ));
+  const jobId = randomUUID();
+  const job: ListSendJob = { id: jobId, total: ids.length, sent: 0, failed: 0, done: ids.length === 0, errors: [] };
+  listSendJobs.set(jobId, job);
+  if (ids.length === 0) return { jobId, total: 0 };
+
+  void (async () => {
+    try {
+      const config = await getSystemConfig();
+
+      // ── EMAIL ──
+      if (channel === "email") {
+        const { smtpConfig, subj, htmlBody, emailAttachments } = buildEmailParts(config, extras?.subject, message, extras?.attachment);
+        if (!smtpConfig.host || !smtpConfig.fromEmail) {
+          job.failed = ids.length;
+          job.errors.push({ telegramId: "—", error: "Не настроен SMTP (Настройки → Почта)" });
+          return;
+        }
+        for (const to of ids) {
+          const send = await sendEmail(smtpConfig, to, subj, htmlBody, emailAttachments);
+          if (send.ok) job.sent++;
+          else {
+            job.failed++;
+            if (job.errors.length < 200) job.errors.push({ telegramId: to, error: send.error ?? "Ошибка отправки" });
+          }
+          await delay(EMAIL_SEND_DELAY_MS);
+        }
+        return;
+      }
+
+      // ── TELEGRAM ──
+      const botToken = config.telegramBotToken?.trim();
+      if (!botToken) {
+        job.failed = ids.length;
+        job.errors.push({ telegramId: "—", error: "Не задан токен бота (Настройки → Почта и Telegram)" });
+        return;
+      }
+      const proxy = await getProxyUrl("telegram");
+      const replyMarkup = buildReplyMarkup(extras?.buttonText, extras?.buttonUrl, config.publicAppUrl);
+      const att = extras?.attachment;
+      const media = prepareMedia(att);
+      let cachedFileId: string | null = null; // file_id reuse: вложение грузим 1 раз, дальше шлём строкой
+      for (const id of ids) {
+        const res = await richSendOne(botToken, id, message, replyMarkup, att, media, cachedFileId, proxy);
+        if (res.ok) {
+          job.sent++;
+          if (att && !cachedFileId) {
+            const fid = extractFileId(media.isImage ? "photo" : media.isVideo ? "video" : "document", res.result);
+            if (fid) cachedFileId = fid;
+          }
+        } else {
+          job.failed++;
+          if (job.errors.length < 200) job.errors.push({ telegramId: id, error: res.error });
+        }
+        await delay(40); // ~25 msg/sec — бережём rate limit Telegram (429 retry уже внутри sendTelegram*)
+      }
+    } catch (e) {
+      job.errors.push({ telegramId: "—", error: e instanceof Error ? e.message : "Внутренняя ошибка" });
+    } finally {
+      job.done = true;
+      const t = setTimeout(() => listSendJobs.delete(jobId), 30 * 60 * 1000); // уборка через 30 мин
+      t.unref?.();
+    }
+  })();
+
+  return { jobId, total: ids.length };
+}
+
 /**
  * Универсальная обёртка с retry на 429. Telegram при превышении rate возвращает
  * 429 + parameters.retry_after (sec). Мы спим столько и повторяем — не теряем
  * сообщения. До TELEGRAM_429_MAX_RETRIES попыток.
  *
- * возвращаем result-объект Telegram при success
+ * 25.05.2026, WolfVPN — возвращаем result-объект Telegram при success
  * (нужно для извлечения file_id и переиспользования его в следующих отправках).
  */
 type TgSendResult = { ok: true; result: TgSendResultData } | { ok: false; error: string };
@@ -168,7 +341,7 @@ function extractFileId(kind: "photo" | "video" | "document", result: TgSendResul
  * Отправить фото в Telegram (caption = текст сообщения).
  */
 /**
- * теперь принимает либо Buffer (первая отправка, upload),
+ * 25.05.2026, WolfVPN — теперь принимает либо Buffer (первая отправка, upload),
  * либо string (file_id из предыдущей успешной отправки этого же бота — Telegram
  * хранит файл и принимает его строкой без upload). Каноничный приём для broadcast.
  */
@@ -199,7 +372,7 @@ async function sendTelegramPhoto(
 
 /**
  * Запускает ffprobe и возвращает {width, height, duration} видео с учётом rotation.
- * нужно для sendVideo, иначе Telegram рисует квадрат-плейсхолдер
+ * 25.05.2026, WolfVPN — нужно для sendVideo, иначе Telegram рисует квадрат-плейсхолдер
  * вместо корректного аспекта (особенно для 9:16 рилсов и нестандартных размеров).
  *
  * iPhone и др. шлют mp4 где stream-размеры landscape (1920×1080), а в metadata
@@ -273,7 +446,7 @@ function probeVideoMetaSync(buffer: Buffer, fileName: string): { width?: number;
 
 /**
  * Генерирует thumbnail (превью первого «не-чёрного» кадра) для видео.
- * Telegram автогенерит thumb из 1-го кадра, но не всегда:
+ * 25.05.2026, WolfVPN — Telegram автогенерит thumb из 1-го кадра, но не всегда:
  * для некоторых H264/HEVC контейнеров получается чёрный screen. Делаем сами:
  *   • -ss 00:00:01 — берём 1-ю секунду (часто там уже есть контент, не fade-in)
  *   • -vframes 1 — один кадр
@@ -323,7 +496,7 @@ function generateVideoThumbnail(buffer: Buffer, fileName: string): Buffer | null
 /**
  * Отправить видео в Telegram (caption = текст сообщения). Telegram отрисует
  * нативный плеер с превью; для документа (sendDocument) видео будет просто файлом.
- * 25.05.2026,.
+ * 25.05.2026, WolfVPN.
  *   • Передаём width / height / duration из ffprobe — иначе Telegram рисует квадрат.
  *   • supports_streaming=true — позволяет смотреть без полной загрузки.
  */
@@ -353,7 +526,7 @@ async function sendTelegramVideo(
     if (meta?.width) form.append("width", String(meta.width));
     if (meta?.height) form.append("height", String(meta.height));
     if (meta?.duration) form.append("duration", String(meta.duration));
-    // thumbnail передаём ТОЛЬКО при upload бинаря.
+    // 25.05.2026, WolfVPN — thumbnail передаём ТОЛЬКО при upload бинаря.
     // Для file_id Telegram уже знает превью.
     if (typeof video !== "string" && thumbnail && thumbnail.length > 0) {
       form.append("thumbnail", new Blob([thumbnail], { type: "image/jpeg" }), "thumb.jpg");
@@ -414,8 +587,8 @@ export type BroadcastProgress = {
  * каждого отправленного/зафейленного получателя и в момент переключения канала).
  */
 /**
- * группы получателей для broadcast.
- * точные фильтры через Subscription.expireAt.
+ * T-unify (12.05.2026, WolfVPN): группы получателей для broadcast.
+ * T-expire-sync (13.05.2026, WolfVPN): точные фильтры через Subscription.expireAt.
  */
 export type BroadcastTargetGroup =
   | "all"               // Все клиенты (с telegramId/email)
@@ -485,9 +658,9 @@ export async function runBroadcast(options: {
   buttonUrl?: string;
   targetGroup?: BroadcastTargetGroup;
   onProgress?: (p: BroadcastProgress) => void;
-  /** проверяется перед каждой отправкой. Если вернёт true, рассылка прерывается. */
+  /** 19.05.2026, WolfVPN — проверяется перед каждой отправкой. Если вернёт true, рассылка прерывается. */
   isCancelled?: () => boolean;
-  /** id записи в broadcast_history. Нужно для persistent log
+  /** 25.05.2026, WolfVPN — id записи в broadcast_history. Нужно для persistent log
    *  и auto-resume (skip уже отправленных tgid'ов). Без него log пишется не будет. */
   broadcastId?: string;
 }): Promise<BroadcastResult & { cancelled?: boolean }> {
@@ -505,14 +678,14 @@ export async function runBroadcast(options: {
   const doTelegram = channel === "telegram" || channel === "both";
   const doEmail = channel === "email" || channel === "both";
   const isImage = attachment?.mimetype?.startsWith("image/") ?? false;
-  // добавили ветку video/* → sendVideo (нативный плеер
+  // 25.05.2026, WolfVPN — добавили ветку video/* → sendVideo (нативный плеер
   // с превью в Telegram, в отличие от sendDocument где видео — просто файл).
   const isVideo = attachment?.mimetype?.startsWith("video/") ?? false;
-  // одноразовый probe видео для width/height/duration:
+  // 25.05.2026, WolfVPN — одноразовый probe видео для width/height/duration:
   // иначе Telegram рисует квадрат-плейсхолдер при отсутствии явных размеров.
   // Делается ОДИН раз перед циклом (не на каждого получателя).
   const videoMeta = isVideo && attachment ? probeVideoMetaSync(attachment.buffer, attachment.originalname) : {};
-  // также генерим thumbnail (первый «не-чёрный» кадр).
+  // 25.05.2026, WolfVPN — также генерим thumbnail (первый «не-чёрный» кадр).
   // Telegram сам автогенерит, но не всегда — иногда превью чёрное. Делаем сами.
   const videoThumb = isVideo && attachment ? generateVideoThumbnail(attachment.buffer, attachment.originalname) : null;
   if (isVideo) {
@@ -520,7 +693,7 @@ export async function runBroadcast(options: {
   }
   const replyMarkup = buildReplyMarkup(buttonText, buttonUrl, config.publicAppUrl);
 
-  // применяем фильтр targetGroup к where-clause.
+  // T-unify (12.05.2026, WolfVPN): применяем фильтр targetGroup к where-clause.
   const whereTelegram = buildClientWhereForGroup(targetGroup, { telegramId: { not: null } });
   const whereEmail = buildClientWhereForGroup(targetGroup, { email: { not: null } });
   // Предварительно считаем получателей, чтобы фронт мог сразу показать "X из Y".
@@ -553,7 +726,7 @@ export async function runBroadcast(options: {
       result.errors.push("Telegram: не задан токен бота (Настройки → Почта и Telegram)");
       result.ok = false;
     } else {
-      // proxy URL берём ОДИН раз перед циклом
+      // 25.05.2026, WolfVPN — proxy URL берём ОДИН раз перед циклом
       // (раньше каждое сообщение делало getSystemConfig() → 50k DB roundtrips).
       const telegramProxy = await getProxyUrl("telegram");
       console.log(`[broadcast] telegram proxy: ${telegramProxy ? "configured" : "direct"}`);
@@ -583,13 +756,13 @@ export async function runBroadcast(options: {
       }
 
       const queue = clients.filter((c) => c.telegramId && !alreadySent.has(c.telegramId!.trim()));
-      // выбираем concurrency/delay по типу вложения.
+      // 25.05.2026, WolfVPN — выбираем concurrency/delay по типу вложения.
       const hasMedia = isImage || isVideo || (attachment && !isImage && !isVideo);
       const concurrency = hasMedia ? TELEGRAM_MEDIA_CONCURRENCY : TELEGRAM_TEXT_CONCURRENCY;
       const sendDelay = hasMedia ? TELEGRAM_MEDIA_DELAY_MS : TELEGRAM_TEXT_DELAY_MS;
       console.log(`[broadcast] telegram: ${clients.length} matched, ${queue.length} to send (media=${hasMedia}, concurrency=${concurrency}, delay=${sendDelay}ms)`);
 
-      // file_id reuse: первая отправка загружает binary,
+      // 25.05.2026, WolfVPN — file_id reuse: первая отправка загружает binary,
       // получаем file_id из ответа Telegram, дальнейшие отправки идут строкой
       // (без upload). Снижает bandwidth в N раз и нагрузку на Telegram bot API.
       let cachedFileId: string | null = null;
@@ -733,7 +906,7 @@ export type BroadcastJob = {
   error?: string;
   result?: BroadcastResult & { cancelled?: boolean };
   progress: BroadcastProgress;
-  /** флаг ставится cancelBroadcastJob() и проверяется в runBroadcast() */
+  /** 19.05.2026, WolfVPN — флаг ставится cancelBroadcastJob() и проверяется в runBroadcast() */
   cancelRequested: boolean;
 };
 
@@ -748,7 +921,7 @@ setInterval(() => {
 }, 10 * 60 * 1000).unref?.();
 
 /**
- * путь к общему диску для attachment'ов между api и
+ * 25.05.2026, WolfVPN — путь к общему диску для attachment'ов между api и
  * broadcast-worker. Объявлен как shared volume в docker-compose.
  */
 const ATTACHMENT_DIR = process.env.BROADCAST_ATTACHMENT_DIR || "/data/broadcast-attachments";
@@ -763,7 +936,7 @@ async function saveAttachmentToDisk(jobId: string, attachment: BroadcastAttachme
 }
 
 /**
- * рассылка теперь обрабатывается ОТДЕЛЬНЫМ контейнером
+ * 25.05.2026, WolfVPN — рассылка теперь обрабатывается ОТДЕЛЬНЫМ контейнером
  * stealthnet-broadcast-worker. API только кладёт задачу в очередь (DB row
  * status='pending' + attachment на shared volume) и сразу возвращает jobId.
  * Worker polling'ом подхватит и запустит runBroadcast в своём процессе —
@@ -776,7 +949,7 @@ export async function startBroadcastJob(options: {
   attachment?: BroadcastAttachment;
   buttonText?: string;
   buttonUrl?: string;
-  /** целевая группа получателей. */
+  /** T-unify (12.05.2026, WolfVPN): целевая группа получателей. */
   targetGroup?: BroadcastTargetGroup;
   startedByAdmin?: string;
   /** Resume: переиспользуем существующую запись broadcast_history. */
@@ -840,7 +1013,7 @@ export async function startBroadcastJob(options: {
 }
 
 /**
- * статус ТЕПЕРЬ читается из DB, а не из in-memory map
+ * 25.05.2026, WolfVPN — статус ТЕПЕРЬ читается из DB, а не из in-memory map
  * (рассылка теперь в отдельном worker-процессе, in-memory map api не виден).
  */
 export async function getBroadcastJob(jobId: string): Promise<BroadcastJob | null> {
@@ -865,13 +1038,13 @@ export async function getBroadcastJob(jobId: string): Promise<BroadcastJob | nul
 }
 
 /**
- * попросить активную рассылку остановиться.
+ * 19.05.2026, WolfVPN — попросить активную рассылку остановиться.
  * Реальное прерывание произойдёт **между сообщениями** (после текущего sendMessage),
  * так что cancel почти мгновенный (≤ TELEGRAM_SEND_DELAY_MS).
  * Возвращает причину если отмена невозможна.
  */
 /**
- * cancel ТЕПЕРЬ через БД (рассылка в отдельном worker'е).
+ * 25.05.2026, WolfVPN — cancel ТЕПЕРЬ через БД (рассылка в отдельном worker'е).
  * SET cancel_requested=true → worker увидит при следующем чекинге и прервётся.
  */
 export async function cancelBroadcastJob(jobId: string): Promise<{ ok: boolean; reason?: "not_found" | "not_running" | "already_cancelled" }> {

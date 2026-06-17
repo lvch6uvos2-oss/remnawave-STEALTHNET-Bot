@@ -56,6 +56,26 @@ export function verifyAdmin2FAPendingToken(token: string, secret: string): Admin
   }
 }
 
+// T-pwd-reset (портировано из WolfVPN): одноразовый JWT для сброса пароля клиента (pv = последние 12 символов хэша).
+export interface ClientPasswordResetPayload {
+  clientId: string;
+  pv: string;
+  type: "client_pwd_reset";
+}
+
+export function signClientPasswordResetToken(payload: { clientId: string; pv: string }, secret: string, expiresIn = "1h"): string {
+  return jwt.sign({ ...payload, type: "client_pwd_reset" } as ClientPasswordResetPayload, secret, { expiresIn } as jwt.SignOptions);
+}
+
+export function verifyClientPasswordResetToken(token: string, secret: string): ClientPasswordResetPayload | null {
+  try {
+    const decoded = jwt.verify(token, secret) as ClientPasswordResetPayload;
+    return decoded?.type === "client_pwd_reset" ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function createAdmin(email: string, password: string) {
   const passwordHash = await hashPassword(password);
   return prisma.admin.create({

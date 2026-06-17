@@ -194,8 +194,26 @@ function TrialFormDialog({
   const token = state.accessToken ?? null;
 
   const [name, setName] = useState(trial?.name ?? "");
+  // источник триала: существующий тариф ИЛИ standalone из сквада.
+  const [source, setSource] = useState<"tariff" | "squad">(trial && !trial.tariffId ? "squad" : "tariff");
   const [tariffId, setTariffId] = useState(trial?.tariffId ?? tariffs[0]?.id ?? "");
+  const [squadUuid, setSquadUuid] = useState<string>(trial?.squadUuids?.[0] ?? "");
+  const [deviceLimit, setDeviceLimit] = useState<number>(trial?.deviceLimit ?? 1);
+  const [squads, setSquads] = useState<{ uuid: string; name?: string }[]>([]);
+  // конвертация триала: тоггл + «в любой тариф».
+  const [convertEnabled, setConvertEnabled] = useState<boolean>(trial?.convertEnabled ?? true);
+  const [convertAllTariffs, setConvertAllTariffs] = useState<boolean>(trial?.convertAllTariffs ?? false);
   const [durationDays, setDurationDays] = useState<number>(trial?.durationDays ?? 3);
+
+  // сквады из Remna — для standalone-источника.
+  useEffect(() => {
+    if (!token) return;
+    api.getRemnaSquadsInternal(token).then((r) => {
+      const res = r as { response?: { internalSquads?: { uuid?: string; name?: string }[] } };
+      const list = res?.response?.internalSquads ?? [];
+      setSquads(Array.isArray(list) ? list.map((s) => ({ uuid: s.uuid ?? "", name: s.name })) : []);
+    }).catch(() => setSquads([]));
+  }, [token]);
   // отдельный лимит трафика триала в ГБ (пусто = из тарифа).
   // BigInt в БД, в UI работаем в ГБ для удобства администратора.
   const initialTrialGb = trial?.trafficLimitBytes != null
@@ -205,14 +223,19 @@ function TrialFormDialog({
   const [enabled, setEnabled] = useState(trial?.enabled ?? true);
   const [sortOrder, setSortOrder] = useState<number>(trial?.sortOrder ?? 0);
   const [description, setDescription] = useState(trial?.description ?? "");
+  // тарифы, в которые можно конвертировать триал после
+  // пробного периода (переход на их сквады). Пусто — только тариф триала.
+  const [convertIds, setConvertIds] = useState<string[]>(trial?.convertTariffIds ?? []);
 
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const handleSave = async () => {
     if (!token) return;
-    if (!name.trim() || !tariffId || durationDays < 1) {
-      setErr("Заполните название, выберите тариф и укажите длительность ≥ 1.");
+    if (!name.trim() || durationDays < 1 || (source === "tariff" ? !tariffId : !squadUuid)) {
+      setErr(source === "tariff"
+        ? "Заполните название, выберите тариф и укажите длительность ≥ 1."
+        : "Заполните название, выберите сквад и укажите длительность ≥ 1.");
       return;
     }
     setSaving(true);
@@ -229,12 +252,18 @@ function TrialFormDialog({
       }
       const payload: CreateTrialPayload = {
         name: name.trim(),
-        tariffId,
+        tariffId: source === "tariff" ? tariffId : null,
+        squadUuids: source === "squad" ? [squadUuid] : null,
+        deviceLimit: source === "squad" ? Math.max(1, deviceLimit) : null,
         durationDays,
         trafficLimitBytes,
         enabled,
         sortOrder,
         description: description.trim() || null,
+        convertEnabled,
+        convertAllTariffs,
+        // сам тариф триала всегда доступен — храним только дополнительные.
+        convertTariffIds: convertAllTariffs ? null : convertIds.filter((id) => id !== tariffId),
       };
       if (mode === "edit" && trial) {
         await api.updateTrial(token, trial.id, payload);
@@ -272,6 +301,31 @@ function TrialFormDialog({
           />
         </div>
 
+        {/* источник: тариф или standalone-сквад. */}
+        <div className="grid gap-1.5">
+          <Label className="text-xs">Источник триала</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setSource("tariff")}
+              className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${source === "tariff" ? "border-primary/60 bg-primary/10 text-primary" : "border-input bg-background text-muted-foreground"}`}
+            >
+              Из тарифа
+            </button>
+            <button
+              type="button"
+              onClick={() => setSource("squad")}
+              className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${source === "squad" ? "border-primary/60 bg-primary/10 text-primary" : "border-input bg-background text-muted-foreground"}`}
+            >
+              Из сквада (не тариф)
+            </button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            «Из сквада» — псевдо-тариф: в каталоге тарифов не отображается, сквад и лимиты задаются прямо здесь.
+          </p>
+        </div>
+
+        {source === "tariff" ? (
         <div className="grid gap-1">
           <Label htmlFor="trial-tariff" className="text-xs">Тариф (наследует squads, устройства, трафик)</Label>
           <select
@@ -288,6 +342,35 @@ function TrialFormDialog({
             ))}
           </select>
         </div>
+        ) : (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-1">
+            <Label htmlFor="trial-squad" className="text-xs">Сквад (Remna)</Label>
+            <select
+              id="trial-squad"
+              value={squadUuid}
+              onChange={(e) => setSquadUuid(e.target.value)}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            >
+              <option value="">— Выберите сквад —</option>
+              {squads.map((s) => (
+                <option key={s.uuid} value={s.uuid}>{s.name ?? s.uuid}</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid gap-1">
+            <Label htmlFor="trial-devlimit" className="text-xs">Лимит устройств</Label>
+            <Input
+              id="trial-devlimit"
+              type="number"
+              min={1}
+              max={100}
+              value={deviceLimit}
+              onChange={(e) => setDeviceLimit(Math.max(1, parseInt(e.target.value) || 1))}
+            />
+          </div>
+        </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1">
@@ -329,6 +412,70 @@ function TrialFormDialog({
             Если задан — на время триала клиент получит именно столько ГБ. При конвертации в платную подписку выставляется полный лимит из тарифа.
           </p>
         </div>
+
+        {/* настройки конвертации триала. */}
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={convertEnabled}
+            onChange={(e) => setConvertEnabled(e.target.checked)}
+            className="h-4 w-4"
+          />
+          Разрешить конвертацию в платный тариф
+        </label>
+        <p className="text-[10px] text-muted-foreground -mt-2">
+          Включено — у триала кнопка «Конвертировать» (дни и остаток трафика сохраняются).
+          Выключено — у триальной подписки не будет кнопок продления/конвертации вовсе.
+        </p>
+
+        {convertEnabled && (
+        <>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={convertAllTariffs}
+            onChange={(e) => setConvertAllTariffs(e.target.checked)}
+            className="h-4 w-4"
+          />
+          Конвертировать можно в ЛЮБОЙ тариф
+        </label>
+
+        {!convertAllTariffs && (
+        <div className="grid gap-1.5">
+          <Label className="text-xs">
+            Конвертация после триала <span className="text-[10px] opacity-60">в какие тарифы можно перейти</span>
+          </Label>
+          <div className="flex flex-wrap gap-1.5">
+            {tariffs.filter((t) => t.id !== tariffId).map((t) => {
+              const on = convertIds.includes(t.id);
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setConvertIds((prev) => on ? prev.filter((x) => x !== t.id) : [...prev, t.id])}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-all ${
+                    on
+                      ? "border-primary/50 bg-primary/10 text-primary"
+                      : "border-input bg-background text-muted-foreground hover:border-primary/30"
+                  }`}
+                >
+                  {on ? "✓ " : ""}{t.categoryName} — {t.name}
+                </button>
+              );
+            })}
+            {tariffs.filter((t) => t.id !== tariffId).length === 0 && (
+              <span className="text-[11px] text-muted-foreground">Других тарифов нет.</span>
+            )}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            После пробного периода клиент сможет перейти на выбранные тарифы (сквады
+            обновятся под новый тариф, дни и остаток трафика триала сохранятся).
+            Тариф самого триала доступен всегда. Пусто — только он.
+          </p>
+        </div>
+        )}
+        </>
+        )}
 
         <div className="grid gap-1">
           <Label htmlFor="trial-desc" className="text-xs">Описание (опц., показывается клиенту)</Label>

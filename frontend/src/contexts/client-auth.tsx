@@ -1,9 +1,28 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ClientProfile, ClientAuthResponse } from "@/lib/api";
-import { api } from "@/lib/api";
+import { api, setClientTokenRefreshFn } from "@/lib/api";
 
 const STORAGE_TOKEN = "stealthnet_client_token";
 const STORAGE_CLIENT = "stealthnet_client_profile";
+
+/**
+ * Проверяет, что JWT ещё «живой» по полю exp (с запасом 10с).
+ * Используется на старте, чтобы НЕ грузить протухший токен из localStorage:
+ * иначе миниаппка не переобменивала бы initData и ловила 401 на каждом запросе
+ * («Invalid or expired token» на вкладке Поддержка и др.).
+ */
+function isJwtFresh(token: string | null): boolean {
+  if (!token) return false;
+  try {
+    const part = token.split(".")[1];
+    if (!part) return false;
+    const json = JSON.parse(atob(part.replace(/-/g, "+").replace(/_/g, "/"))) as { exp?: number };
+    if (typeof json.exp !== "number") return true; // нет exp — считаем пригодным
+    return json.exp * 1000 > Date.now() + 10_000;
+  } catch {
+    return false;
+  }
+}
 
 type ClientAuthState = {
   token: string | null;
@@ -41,7 +60,11 @@ type ClientAuthValue = {
 const ClientAuthContext = createContext<ClientAuthValue | null>(null);
 
 function loadState(): Pick<ClientAuthState, "token" | "client"> {
-  const token = localStorage.getItem(STORAGE_TOKEN);
+  const stored = localStorage.getItem(STORAGE_TOKEN);
+  // протухший токен не используем — отдаём null, чтобы сработал
+  // переобмен initData (миниаппка) или редирект на логин (браузер).
+  const token = isJwtFresh(stored) ? stored : null;
+  if (!token && stored) localStorage.removeItem(STORAGE_TOKEN);
   const raw = localStorage.getItem(STORAGE_CLIENT);
   const client = raw ? (JSON.parse(raw) as ClientProfile) : null;
   return { token, client };
@@ -68,6 +91,29 @@ export function ClientAuthProvider({ children }: { children: React.ReactNode }) 
       window.Telegram.WebApp.ready?.();
       window.Telegram.WebApp.expand?.();
     }
+  }, []);
+
+  // КЛИЕНТСКИЙ refresh: при 401 на /client/* api-слой дёрнет эту функцию —
+  // переобмениваем СВЕЖИЙ Telegram initData на новый JWT. Лечит протухший токен
+  // прямо в полёте, без видимой пользователю ошибки. Вне миниаппки (нет initData)
+  // возвращаем null → запрос честно падает 401 (юзер на логин).
+  useEffect(() => {
+    setClientTokenRefreshFn(async () => {
+      const initData = typeof window !== "undefined" ? window.Telegram?.WebApp?.initData : null;
+      if (!initData?.trim()) return null;
+      try {
+        const res = await api.clientAuthByTelegramMiniapp(initData);
+        if (isAuthResponse(res)) {
+          setState((prev) => ({ ...prev, token: res.token, client: res.client, miniappAuthLoading: false, miniappAuthAttempted: true, pending2FAToken: null }));
+          saveState(res.token, res.client);
+          return res.token;
+        }
+      } catch {
+        /* initData протух/невалиден — null, запрос упадёт штатно */
+      }
+      return null;
+    });
+    return () => setClientTokenRefreshFn(null);
   }, []);
 
   useEffect(() => {
@@ -103,6 +149,9 @@ export function ClientAuthProvider({ children }: { children: React.ReactNode }) 
         return next;
       });
     } catch {
+      // сбрасываем флаг попытки, чтобы эффект обмена initData
+      // мог переавторизовать миниаппку (иначе при невалидном токене юзер застрянет).
+      miniappAttemptedRef.current = false;
       setState({ token: null, client: null, miniappAuthLoading: false, miniappAuthAttempted: false, pending2FAToken: null, isNewTelegramUser: false });
       saveState(null, null);
     }
@@ -252,6 +301,8 @@ export function ClientAuthProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   const logout = useCallback(() => {
+    // позволяем эффекту обмена initData снова авторизовать миниаппку после ручного выхода/сброса.
+    miniappAttemptedRef.current = false;
     setState({ token: null, client: null, miniappAuthLoading: false, miniappAuthAttempted: false, pending2FAToken: null, isNewTelegramUser: false });
     saveState(null, null);
   }, []);

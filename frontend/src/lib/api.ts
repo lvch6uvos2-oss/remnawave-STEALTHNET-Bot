@@ -6,6 +6,15 @@ export function setTokenRefreshFn(fn: (() => Promise<string | null>) | null) {
   tokenRefreshFn = fn;
 }
 
+// КЛИЕНТСКИЙ refresh (миниаппка/кабинет): отдельная функция, т.к. tokenRefreshFn
+// занят админкой. Для путей /client/* при 401 переобмениваем СВЕЖИЙ Telegram initData
+// на новый JWT — лечит «Invalid or expired token» при переоткрытии миниаппки со
+// старым 7-дневным токеном в localStorage (или после ротации JWT_SECRET на деплое).
+let clientTokenRefreshFn: (() => Promise<string | null>) | null = null;
+export function setClientTokenRefreshFn(fn: (() => Promise<string | null>) | null) {
+  clientTokenRefreshFn = fn;
+}
+
 // отчёт по массовой операции над клиентом.
 export interface BulkOpItem {
   subscriptionId: string;
@@ -83,6 +92,7 @@ export const MANAGER_SECTIONS: { key: string; label: string; category: ManagerSe
   { key: "promo-codes", label: "Промокоды", category: "subscription" },
   { key: "marketing", label: "Маркетинг", category: "subscription" },
   { key: "referral-network", label: "Реф. сеть", category: "subscription" },
+  { key: "referrals", label: "Рефералка", category: "subscription" },
   { key: "secondary-subscriptions", label: "Доп. подписки", category: "subscription" },
   // Инструменты
   { key: "video-instructions", label: "Видео-инструкции", category: "tools" },
@@ -292,8 +302,14 @@ async function request<T>(
     throw new Error(res.statusText || "Request failed");
   }
 
-  if (res.status === 401 && token && !_retry && tokenRefreshFn && !path.startsWith("/auth/")) {
-    const newToken = await tokenRefreshFn();
+  // выбор refresh-функции по типу пути: /client/* (кроме /client/auth/* —
+  // там сами эндпоинты выдают токены) → клиентский refresh через initData; остальное → админский.
+  // Без этого клиентский 401 либо не рефрешился, либо ошибочно дёргал админский refresh.
+  const isClientPath = path.startsWith("/client/");
+  const isTokenIssuingAuthPath = path.startsWith("/auth/") || path.startsWith("/client/auth/");
+  const refreshFn = isClientPath ? clientTokenRefreshFn : tokenRefreshFn;
+  if (res.status === 401 && token && !_retry && refreshFn && !isTokenIssuingAuthPath) {
+    const newToken = await refreshFn();
     if (newToken) {
       return request<T>(path, { ...options, token: newToken, _retry: true });
     }
@@ -679,6 +695,26 @@ export const api = {
     });
   },
 
+  // T-tariff-restriction (портировано из WolfVPN): задать/снять запрет тарифов клиенту.
+  async setClientTariffRestrictions(token: string, clientId: string, tariffIds: string[], reason: string | null): Promise<{ ok: boolean; restrictedTariffIds: string[]; tariffRestrictionReason: string | null }> {
+    return request(`/admin/clients/${clientId}/tariff-restrictions`, {
+      method: "PATCH",
+      body: JSON.stringify({ tariffIds, reason }),
+      token,
+    });
+  },
+
+  // T-admin-services (портировано из WolfVPN): вкладка «Услуги» — выдать/забрать доп. устройства.
+  async getClientServices(token: string, clientId: string): Promise<{ items: ClientServiceItem[] }> {
+    return request(`/admin/clients/${clientId}/services`, { method: "GET", token });
+  },
+  async grantClientDevices(token: string, clientId: string, payload: { subscriptionId: string; deviceCount: number; monthlyPrice: number }): Promise<{ ok: boolean; newDeviceLimit: number }> {
+    return request(`/admin/clients/${clientId}/services/grant-devices`, { method: "POST", body: JSON.stringify(payload), token });
+  },
+  async removeClientServiceDevices(token: string, clientId: string, subscriptionId: string): Promise<{ ok: boolean; extraDevicesRemoved: number; newDeviceLimit: number; hwidKicked: number }> {
+    return request(`/admin/clients/${clientId}/services/remove-devices`, { method: "POST", body: JSON.stringify({ subscriptionId }), token });
+  },
+
   async deleteClient(token: string, id: string): Promise<{ success: boolean }> {
     return request(`/admin/clients/${id}`, { method: "DELETE", token });
   },
@@ -768,6 +804,34 @@ export const api = {
       customDurationDays?: number }
   ): Promise<{ ok: boolean; paymentId: string | null; tariff: { id: string; name: string; durationDays: number }; message?: string }> {
     return request(`/admin/clients/${clientId}/grant-tariff`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      token,
+    });
+  },
+
+  /** привязать клиенту подписку на существующего Remna-юзера
+   *  (по username или uuid), не создавая нового. */
+  async adminAttachRemnaSubscription(
+    token: string,
+    clientId: string,
+    payload: { query: string; tariffId?: string },
+  ): Promise<{ ok: boolean; subscriptionId: string; subscriptionIndex: number; remnawaveUuid: string; expireAt: string | null; message?: string }> {
+    return request(`/admin/clients/${clientId}/attach-remna-subscription`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+      token,
+    });
+  },
+
+  /** ручное продление КОНКРЕТНОЙ подписки админом (компенсация/бонус).
+   *  Единый механизм с оплаченным продлением — для любой подписки (включая index 0). */
+  async adminGrantExtendSubscription(
+    token: string,
+    subscriptionId: string,
+    payload: { tariffId?: string; tariffPriceOptionId?: string; customDurationDays?: number; note?: string; createPaymentRecord?: boolean },
+  ): Promise<{ ok: boolean; paymentId: string | null; subscriptionId: string; tariff: { id: string; name: string; durationDays: number }; message?: string }> {
+    return request(`/admin/subscriptions/${encodeURIComponent(subscriptionId)}/grant-extend`, {
       method: "POST",
       body: JSON.stringify(payload),
       token,
@@ -1281,6 +1345,65 @@ export const api = {
   },
 
   /** История рассылок (пагинация). */
+  // T-direct-send (портировано из WolfVPN): точечная рассылка одному + по списку ID (+ email-канал, вложения).
+  async sendBroadcastToUser(
+    token: string,
+    body: { channel?: "telegram" | "email"; telegramId: string; subject?: string; message: string; buttonText?: string; buttonUrl?: string },
+    attachment?: File | null
+  ): Promise<{ ok: true }> {
+    const form = new FormData();
+    form.append("channel", body.channel ?? "telegram");
+    form.append("telegramId", body.telegramId);
+    form.append("message", body.message);
+    if (body.subject?.trim()) form.append("subject", body.subject.trim());
+    if (body.buttonText?.trim()) form.append("buttonText", body.buttonText.trim());
+    if (body.buttonUrl?.trim()) form.append("buttonUrl", body.buttonUrl.trim());
+    if (attachment) form.append("attachment", attachment, attachment.name);
+    const headers = new Headers();
+    headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}/admin/broadcast/send-to-user`, { method: "POST", headers, body: form });
+    const text = await res.text();
+    let data: unknown;
+    try { data = text ? JSON.parse(text) : undefined; } catch { throw new Error(res.statusText || "Request failed"); }
+    if (res.status === 401 && token && tokenRefreshFn && !res.url.includes("/auth/")) {
+      const newToken = await tokenRefreshFn();
+      if (newToken) return api.sendBroadcastToUser(newToken, body, attachment);
+    }
+    if (!res.ok) throw new Error((data as { message?: string })?.message ?? res.statusText);
+    return data as { ok: true };
+  },
+
+  async startSendToList(
+    token: string,
+    body: { channel?: "telegram" | "email"; telegramIds: string[]; subject?: string; message: string; buttonText?: string; buttonUrl?: string },
+    attachment?: File | null
+  ): Promise<{ jobId: string; total: number }> {
+    const form = new FormData();
+    form.append("channel", body.channel ?? "telegram");
+    form.append("telegramIds", JSON.stringify(body.telegramIds));
+    form.append("message", body.message);
+    if (body.subject?.trim()) form.append("subject", body.subject.trim());
+    if (body.buttonText?.trim()) form.append("buttonText", body.buttonText.trim());
+    if (body.buttonUrl?.trim()) form.append("buttonUrl", body.buttonUrl.trim());
+    if (attachment) form.append("attachment", attachment, attachment.name);
+    const headers = new Headers();
+    headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`${API_BASE}/admin/broadcast/send-to-list`, { method: "POST", headers, body: form });
+    const text = await res.text();
+    let data: unknown;
+    try { data = text ? JSON.parse(text) : undefined; } catch { throw new Error(res.statusText || "Request failed"); }
+    if (res.status === 401 && token && tokenRefreshFn && !res.url.includes("/auth/")) {
+      const newToken = await tokenRefreshFn();
+      if (newToken) return api.startSendToList(newToken, body, attachment);
+    }
+    if (!res.ok) throw new Error((data as { message?: string })?.message ?? res.statusText);
+    return data as { jobId: string; total: number };
+  },
+
+  async getSendToListStatus(token: string, jobId: string): Promise<ListSendJobStatus> {
+    return request(`/admin/broadcast/send-to-list/${encodeURIComponent(jobId)}`, { token });
+  },
+
   async getBroadcastHistory(token: string, limit = 50, offset = 0): Promise<{ items: BroadcastHistoryItem[]; total: number }> {
     return request(`/admin/broadcast/history?limit=${limit}&offset=${offset}`, { token });
   },
@@ -1427,11 +1550,11 @@ export const api = {
     return request("/admin/tariff-categories", { token });
   },
 
-  async createTariffCategory(token: string, data: { name: string; sortOrder?: number; emojiKey?: string | null }): Promise<TariffCategoryRecord> {
+  async createTariffCategory(token: string, data: { name: string; sortOrder?: number; emojiKey?: string | null; singleSubscriptionMode?: boolean }): Promise<TariffCategoryRecord> {
     return request("/admin/tariff-categories", { method: "POST", body: JSON.stringify(data), token });
   },
 
-  async updateTariffCategory(token: string, id: string, data: { name?: string; sortOrder?: number; emojiKey?: string | null }): Promise<TariffCategoryRecord> {
+  async updateTariffCategory(token: string, id: string, data: { name?: string; sortOrder?: number; emojiKey?: string | null; singleSubscriptionMode?: boolean }): Promise<TariffCategoryRecord> {
     return request(`/admin/tariff-categories/${id}`, { method: "PATCH", body: JSON.stringify(data), token });
   },
 
@@ -1589,6 +1712,11 @@ export const api = {
     const qs = status ? `?status=${status}` : "";
     return request(`/admin/withdrawals${qs}`, { token });
   },
+
+  // T-withdrawal (портировано из WolfVPN): заявка клиента на вывод реферального баланса.
+  async createWithdrawal(token: string, data: { amount: number; walletTrc20: string }): Promise<{ message: string; id: string; amount: number; walletTrc20: string; status: string }> {
+    return request("/client/withdrawals", { method: "POST", body: JSON.stringify(data), token });
+  },
   async approveWithdrawal(token: string, id: string, comment?: string): Promise<{ message: string }> {
     return request(`/admin/withdrawals/${id}/approve`, { method: "POST", body: JSON.stringify({ comment: comment ?? null }), token });
   },
@@ -1602,6 +1730,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
+  },
+
+  // T-pwd-reset (портировано из WolfVPN): запрос ссылки сброса + установка нового пароля.
+  async clientForgotPassword(email: string): Promise<{ ok: boolean }> {
+    return request("/client/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
+  },
+  async clientResetPassword(token: string, password: string): Promise<{ ok: boolean }> {
+    return request("/client/auth/reset-password", { method: "POST", body: JSON.stringify({ token, password }) });
+  },
+
+  // T-pay-wait (портировано из WolfVPN): статус платежа для polling на странице ожидания оплаты.
+  async getPaymentStatus(token: string, id: string): Promise<{ id: string; status: string; amount: number; currency: string; paidAt: string | null }> {
+    return request(`/client/payments/${encodeURIComponent(id)}/status`, { token });
   },
 
   async clientRegister(data: ClientRegisterPayload): Promise<ClientAuthResponse | ClientAuthRequires2FA | { message: string; requiresVerification: true }> {
@@ -1670,6 +1811,10 @@ export const api = {
     /** ISO-дата следующего списания (за N дней до истечения, N из config.autoRenewDaysBeforeExpiry). */
     autoRenewNextChargeAt?: string | null;
     autoRenewCurrency?: string | null;
+    /** root-подписка — триал: лейбл «TRIAL», кнопка «Конвертировать» (или ничего). */
+    isTrial?: boolean;
+    trialName?: string | null;
+    trialConvertEnabled?: boolean;
     message?: string;
   }> {
     return request("/client/subscription", { token });
@@ -1695,6 +1840,14 @@ export const api = {
       tariffMenuEmoji?: string | null;
       extraDevices?: number;
       extraDevicesMonthlyPrice?: number;
+      /** для триальных — тарифы, в которые можно конвертировать. */
+      convertTariffIds?: string[];
+      /** имя триала (карточка показывает «TRIAL: имя»). */
+      trialName?: string | null;
+      /** false → никаких кнопок продления/конвертации у триала. */
+      trialConvertEnabled?: boolean;
+      /** конвертация триала разрешена в любой тариф. */
+      trialConvertAllTariffs?: boolean;
     }>;
   }> {
     return request("/client/subscription/all", { token });
@@ -1759,6 +1912,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentUrl: string; orderId: string; paymentId: string; discountApplied?: boolean; finalAmount?: number }> {
     return request("/client/payments/platega", { method: "POST", body: JSON.stringify(data), token });
@@ -1820,6 +1975,18 @@ export const api = {
     return request("/client/payments/balance", { method: "POST", body: JSON.stringify(data), token });
   },
 
+  /** Превью конвертации для режима «одна подписка из категории»:
+   *  узнаём ДО оплаты, конвертирует ли покупка существующую подписку, и как
+   *  пересчитается остаток дней. */
+  async clientTariffConversionPreview(
+    token: string,
+    params: { tariffId: string; priceOptionId?: string }
+  ): Promise<TariffConversionPreview> {
+    const q = new URLSearchParams({ tariffId: params.tariffId });
+    if (params.priceOptionId) q.set("priceOptionId", params.priceOptionId);
+    return request(`/client/tariff-conversion-preview?${q.toString()}`, { token });
+  },
+
   /** Оплата опции (доп. трафик/устройства/сервер) с баланса.
    *  targetSubscriptionId — к какой подписке применить (на верхнем уровне body, как в schema). */
   async clientPayOptionByBalance(
@@ -1861,6 +2028,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; paymentUrl: string; form: { receiver: string; sum: number; label: string; paymentType: string; successURL: string }; successURL: string }> {
     return request("/client/yoomoney/create-form-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -1899,6 +2068,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; confirmationUrl: string; yookassaPaymentId: string }> {
     return request("/client/yookassa/create-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -1930,6 +2101,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; payUrl: string; miniAppPayUrl?: string; webAppPayUrl?: string }> {
     return request("/client/cryptopay/create-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -1956,6 +2129,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; payUrl: string }> {
     return request("/client/heleket/create-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -1982,6 +2157,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; payUrl: string }> {
     return request("/client/lava/create-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -2010,6 +2187,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; payUrl: string }> {
     return request("/client/lavatop/create-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -2036,6 +2215,8 @@ export const api = {
       asAdditional?: boolean;
       asGift?: boolean;
       removeExtrasOnActivate?: boolean;
+      /** какой триал заменить этой покупкой. */
+      replaceTrialSubId?: string;
     }
   ): Promise<{ paymentId: string; payUrl: string }> {
     return request("/client/overpay/create-payment", { method: "POST", body: JSON.stringify(data), token });
@@ -2055,6 +2236,20 @@ export const api = {
 
   async clientUpdateProfile(token: string, data: { preferredLang?: string; preferredCurrency?: string }): Promise<ClientProfile> {
     return request("/client/profile", { method: "PATCH", body: JSON.stringify(data), token });
+  },
+
+  /** Тоггл автосписания для КОНКРЕТНОЙ подписки (root|secondary). Бэк: POST /client/subscription/:type/:id/auto-renew */
+  async clientSetSubscriptionAutoRenew(
+    token: string,
+    type: "root" | "secondary",
+    subscriptionId: string,
+    enabled: boolean,
+  ): Promise<{ ok: boolean; enabled: boolean; type: "root" | "secondary" }> {
+    return request(`/client/subscription/${type}/${encodeURIComponent(subscriptionId)}/auto-renew`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+      token,
+    });
   },
 
   async clientUpdateAutoRenew(token: string, data: { enabled?: boolean; tariffId?: string | null; promoCode?: string | null }): Promise<ClientProfile> {
@@ -2643,6 +2838,16 @@ export interface SyncCreateRemnaForMissingResult {
   errors: string[];
 }
 
+// T-direct-send (портировано из WolfVPN): статус job рассылки по списку.
+export interface ListSendJobStatus {
+  id: string;
+  total: number;
+  sent: number;
+  failed: number;
+  done: boolean;
+  errors: Array<{ telegramId: string; error: string }>;
+}
+
 export interface BroadcastResult {
   ok: boolean;
   sentTelegram: number;
@@ -2768,6 +2973,9 @@ export type UpdateSettingsPayload = {
   defaultReferralPercent?: number;
   referralPercentLevel2?: number;
   referralPercentLevel3?: number;
+  /** заявки на вывод: вкл/выкл + мин. сумма. */
+  withdrawalsEnabled?: boolean;
+  withdrawalMinAmount?: number;
   trialDays?: number;
   trialSquadUuid?: string | null;
   trialDeviceLimit?: number | null;
@@ -2796,6 +3004,12 @@ export type UpdateSettingsPayload = {
   notificationTopicPayments?: string | null;
   notificationTopicTickets?: string | null;
   notificationTopicBackups?: string | null;
+  notificationTopicTrials?: string | null;
+  notificationTopicConversions?: string | null;
+  notificationTopicWithdrawals?: string | null;
+  notificationTopicPromo?: string | null;
+  notificationTopicGifts?: string | null;
+  notificationTopicAutoRenew?: string | null;
   autoBackupEnabled?: boolean;
   autoBackupCron?: string | null;
   plategaMerchantId?: string | null;
@@ -2875,6 +3089,11 @@ export type UpdateSettingsPayload = {
   blacklistEnabled?: boolean;
   botAutoDeleteUnknownMessages?: boolean;
   botInfoBlock?: string | null;
+  /** тогглы кнопок на экране «Тарифы» бота (default true) */
+  botTariffsShowExtraDevicesButton?: boolean;
+  botTariffsShowBalanceButton?: boolean;
+  /** меню выбора категорий перед списком тарифов в боте (default true) */
+  botShowTariffCategories?: boolean;
   sellOptionsEnabled?: boolean;
   sellOptionsTrafficEnabled?: boolean;
   sellOptionsTrafficProducts?: string | null;
@@ -3040,6 +3259,18 @@ export type UpdateSettingsPayload = {
   giftMessageMaxLength?: number;
 }
 
+// T-admin-services (портировано из WolfVPN): услуга «доп. устройства» на подписке.
+export interface ClientServiceItem {
+  subscriptionId: string;
+  subscriptionIndex: number;
+  tariffName: string | null;
+  tariffEmoji: string | null;
+  includedDevices: number;
+  extraDevices: number;
+  extraDevicesMonthlyPrice: number;
+  linked: boolean;
+}
+
 export interface ClientRecord {
   id: string;
   email: string | null;
@@ -3058,6 +3289,9 @@ export interface ClientRecord {
   personalDiscountPercent: number | null;
   /** если true, скидка сгорит после первой продуктовой покупки. */
   personalDiscountIsOneTime?: boolean;
+  /** T-tariff-restriction: JSON-массив запрещённых клиенту tariffId + текст причины. */
+  restrictedTariffIds?: string | null;
+  tariffRestrictionReason?: string | null;
   createdAt: string;
   /** Количество приглашённых рефералов (приходит с бэкенда) */
   _count?: { referrals: number };
@@ -3257,6 +3491,12 @@ export interface AdminSettings {
   notificationTopicPayments?: string | null;
   notificationTopicTickets?: string | null;
   notificationTopicBackups?: string | null;
+  notificationTopicTrials?: string | null;
+  notificationTopicConversions?: string | null;
+  notificationTopicWithdrawals?: string | null;
+  notificationTopicPromo?: string | null;
+  notificationTopicGifts?: string | null;
+  notificationTopicAutoRenew?: string | null;
   autoBackupEnabled?: boolean;
   autoBackupCron?: string | null;
   plategaMerchantId?: string | null;
@@ -3351,6 +3591,12 @@ export interface AdminSettings {
   botAutoDeleteUnknownMessages?: boolean;
   /** Кастомный инфо-блок: показывается в главном меню бота и в кабинете. Пусто = скрыт. */
   botInfoBlock?: string | null;
+  /** Кнопка «➕ Докупить устройство» на экране Тарифов бота (default true) */
+  botTariffsShowExtraDevicesButton?: boolean;
+  /** Кнопка «💼 Мой баланс» на экране Тарифов бота (default true) */
+  botTariffsShowBalanceButton?: boolean;
+  /** Меню выбора категорий перед списком тарифов в боте (default true) */
+  botShowTariffCategories?: boolean;
   /** Продажа опций: доп. трафик, устройства, серверы */
   sellOptionsEnabled?: boolean;
   sellOptionsTrafficEnabled?: boolean;
@@ -3369,6 +3615,10 @@ export interface AdminSettings {
   adminFrontNotificationsEnabled?: boolean;
   /** Регистрация без подтверждения почты */
   skipEmailVerification?: boolean;
+  /** заявки на вывод реф. баланса: вкл/выкл. */
+  withdrawalsEnabled?: boolean;
+  /** мин. сумма заявки на вывод (₽). */
+  withdrawalMinAmount?: number;
   /** Master switch для антибот-защиты регистраций */
   signupProtectionEnabled?: boolean;
   /** Доп. список заблокированных email-доменов (через запятую) */
@@ -3995,6 +4245,8 @@ export interface TariffCategoryRecord {
   name: string;
   emojiKey: string | null;
   sortOrder: number;
+  /** Режим «одна подписка из категории» — покупка конвертирует существующую подписку. */
+  singleSubscriptionMode?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -4048,27 +4300,44 @@ export interface TariffRecord {
 export interface TrialRecord {
   id: string;
   name: string;
-  tariffId: string;
+  /** null = standalone-триал из сквада (без тарифа). */
+  tariffId: string | null;
   tariffName: string | null;
+  /** сквады standalone-триала. */
+  squadUuids?: string[];
+  /** лимит устройств standalone-триала. */
+  deviceLimit?: number | null;
   durationDays: number;
   /** T16 (12.05.2026) — опциональный лимит трафика триала в байтах (null = из тарифа). */
   trafficLimitBytes: number | null;
   enabled: boolean;
   sortOrder: number;
   description: string | null;
+  /** можно ли конвертировать триал. */
+  convertEnabled?: boolean;
+  /** конвертация в любой тариф. */
+  convertAllTariffs?: boolean;
+  /** тарифы, в которые можно конвертировать триал (переход на их сквады). */
+  convertTariffIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
 
 export type CreateTrialPayload = {
   name: string;
-  tariffId: string;
+  tariffId?: string | null;
+  squadUuids?: string[] | null;
+  deviceLimit?: number | null;
   durationDays: number;
   /** T16 (12.05.2026) — опциональный лимит трафика триала в байтах. */
   trafficLimitBytes?: number | null;
   enabled?: boolean;
   sortOrder?: number;
   description?: string | null;
+  convertEnabled?: boolean;
+  convertAllTariffs?: boolean;
+  /** тарифы, в которые можно конвертировать триал. */
+  convertTariffIds?: string[] | null;
 };
 
 export type UpdateTrialPayload = Partial<CreateTrialPayload>;
@@ -4277,7 +4546,37 @@ export interface PublicTariffCategory {
   name: string;
   emojiKey: string | null;
   emoji: string;
+  /** Режим «одна подписка из категории»: покупка конвертирует существующую подписку. */
+  singleSubscriptionMode?: boolean;
   tariffs: PublicTariff[];
+}
+
+/** Превью конвертации (режим «одна подписка из категории»). */
+export interface TariffConversionPreview {
+  willConvert: boolean;
+  /** extend — куплен ТОТ ЖЕ тариф: подписка просто продлевается (дни складываются);
+   *  convert — другой тариф: конвертация (смена тарифа/сквадов, pro-rata остатка). */
+  mode?: "extend" | "convert";
+  subscription?: {
+    id: string;
+    index: number;
+    tariffName: string | null;
+    expireAt: string | null;
+    isTrial: boolean;
+  };
+  remainingDays?: number;
+  convertedDays?: number;
+  purchasedDays?: number;
+  totalDays?: number;
+  /** выбор судьбы доп. устройств (конвертация и same-tariff продление). */
+  extras?: {
+    extraDevices: number;
+    extraDevicesMonthlyPrice: number;
+    newIncludedDevices: number;
+    /** extraCost — доплата за устройства на купленный период (mode=extend). */
+    keep: { totalDevices: number; convertedDays: number; totalDays: number; extraCost?: number };
+    drop: { totalDevices: number; convertedDays: number; totalDays: number; extraCost?: number };
+  };
 }
 
 export type PublicTariff = {
@@ -4552,6 +4851,11 @@ export interface PublicConfig {
   googleAnalyticsId?: string | null;
   yandexMetrikaId?: string | null;
   skipEmailVerification?: boolean;
+  /** заявки на вывод реф. баланса: вкл/выкл + мин. сумма. */
+  withdrawalsEnabled?: boolean;
+  withdrawalMinAmount?: number;
+  /** T-pwd-reset: вкл/выкл восстановление пароля клиента (по умолчанию выкл). */
+  passwordResetEnabled?: boolean;
   /** true = SMTP настроен и можно слать письма верификации. */
   smtpConfigured?: boolean;
   useRemnaSubscriptionPage?: boolean;

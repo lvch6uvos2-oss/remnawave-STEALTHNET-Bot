@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
 import { User, Wallet, Copy, Check, CreditCard, Loader2, Link2, Mail, Fingerprint, CalendarDays, Shield, KeyRound, Monitor, Trash2, Zap } from "lucide-react";
@@ -69,7 +70,8 @@ function ClassicProfilePage() {
   const [topUpModalOpen, setTopUpModalOpen] = useState(false);
   const [topUpLoading, setTopUpLoading] = useState(false);
   const [topUpError, setTopUpError] = useState<string | null>(null);
-  const [readyUrl, setReadyUrl] = useState<{ url: string; provider: string } | null>(null);
+  const navigate = useNavigate();
+  const [readyUrl, setReadyUrl] = useState<{ url: string; provider: string; paymentId?: string } | null>(null);
   const [linkTelegramCode, setLinkTelegramCode] = useState<string | null>(null);
   const [linkTelegramLoading, setLinkTelegramLoading] = useState(false);
   const [linkTelegramError, setLinkTelegramError] = useState<string | null>(null);
@@ -120,7 +122,7 @@ function ClassicProfilePage() {
     }
   }, [token]);
 
-  // грузим устройства ВСЕХ подписок (root + secondary).
+  // T-devices-multi (27.05.2026, WolfVPN): грузим устройства ВСЕХ подписок (root + secondary).
   // Бэк уже исключает дубли (root vs Subscription с тем же remnawaveUuid).
   useEffect(() => {
     if (!token) return;
@@ -341,7 +343,7 @@ function ClassicProfilePage() {
         paymentMethod: methodId,
         description: t("cabinet.profile.top_up_description"),
       });
-      if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "Platega" });
+      if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "Platega", paymentId: res.paymentId });
     } catch (e) {
       setTopUpError(e instanceof Error ? e.message : t("cabinet.profile.top_up_error"));
     } finally {
@@ -361,7 +363,7 @@ function ClassicProfilePage() {
     try {
       const res = await api.yoomoneyCreateFormPayment(token, { amount, paymentType });
       if (res.paymentUrl) {
-        setReadyUrl({ url: res.paymentUrl, provider: "ЮMoney" });
+        setReadyUrl({ url: res.paymentUrl, provider: "ЮMoney", paymentId: res.paymentId });
       } else if (res.form) {
         const f = res.form;
         const yoomoneyUrl = `https://yoomoney.ru/quickpay/confirm.xml?quickpay-form=shop&receiver=${encodeURIComponent(f.receiver)}&sum=${f.sum}&label=${encodeURIComponent(f.label)}&paymentType=${f.paymentType}&successURL=${encodeURIComponent(f.successURL)}`;
@@ -385,7 +387,7 @@ function ClassicProfilePage() {
     setTopUpLoading(true);
     try {
       const res = await api.yookassaCreatePayment(token, { amount, currency: "RUB" });
-      if (res.confirmationUrl) setReadyUrl({ url: res.confirmationUrl, provider: "ЮKassa" });
+      if (res.confirmationUrl) setReadyUrl({ url: res.confirmationUrl, provider: "ЮKassa", paymentId: res.paymentId });
     } catch (e) {
       setTopUpError(e instanceof Error ? e.message : t("cabinet.profile.top_up_error"));
     } finally {
@@ -404,7 +406,7 @@ function ClassicProfilePage() {
     setTopUpLoading(true);
     try {
       const res = await api.cryptopayCreatePayment(token, { amount, currency });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Crypto Bot" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Crypto Bot", paymentId: res.paymentId });
     } catch (e) {
       setTopUpError(e instanceof Error ? e.message : t("cabinet.profile.top_up_error"));
     } finally {
@@ -423,7 +425,7 @@ function ClassicProfilePage() {
     setTopUpLoading(true);
     try {
       const res = await api.heleketCreatePayment(token, { amount, currency });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Heleket" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Heleket", paymentId: res.paymentId });
     } catch (e) {
       setTopUpError(e instanceof Error ? e.message : t("cabinet.profile.top_up_error"));
     } finally {
@@ -442,7 +444,7 @@ function ClassicProfilePage() {
     setTopUpLoading(true);
     try {
       const res = await api.lavaCreatePayment(token, { amount, currency });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "LAVA" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "LAVA", paymentId: res.paymentId });
     } catch (e) {
       setTopUpError(e instanceof Error ? e.message : t("cabinet.profile.top_up_error"));
     } finally {
@@ -464,7 +466,7 @@ function ClassicProfilePage() {
     setTopUpLoading(true);
     try {
       const res = await api.overpayCreatePayment(token, { amount, currency });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Overpay" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Overpay", paymentId: res.paymentId });
     } catch (e) {
       setTopUpError(e instanceof Error ? e.message : t("cabinet.profile.top_up_error"));
     } finally {
@@ -895,7 +897,7 @@ function ClassicProfilePage() {
                   ) : (
                     <div className="flex flex-col h-full">
                       <p className="text-xs text-muted-foreground mb-3">{t("cabinet.profile.devices_disconnect_hint")}</p>
-                      {/* группируем устройства по подпискам.
+                      {/* T-devices-multi (27.05.2026, WolfVPN): группируем устройства по подпискам.
                           Заголовок группы — «Подписка #N …» (root тоже #0 для единообразия).
                           Ключ группы — subscriptionId, чтобы корректно прокидывать удаление. */}
                       {(() => {
@@ -928,7 +930,7 @@ function ClassicProfilePage() {
                                           </div>
                                           <div className="min-w-0">
                                             <span className="text-sm font-bold truncate block text-foreground" title={label}>{label}</span>
-                                            {/* приложение рядом с устройством. */}
+                                            {/* T-device-app (27.05.2026, WolfVPN): приложение рядом с устройством. */}
                                             {d.appName && (
                                               <span className="text-[11px] inline-block bg-violet-500/15 text-violet-500 dark:text-violet-300 rounded-md px-1.5 py-0.5 mt-0.5 font-medium">
                                                 {d.appName}
@@ -1202,7 +1204,12 @@ function ClassicProfilePage() {
               url={readyUrl.url}
               provider={readyUrl.provider}
               onBack={() => setReadyUrl(null)}
-              onPaid={() => { setTopUpModalOpen(false); setReadyUrl(null); }}
+              onPaid={() => {
+                const pid = readyUrl.paymentId;
+                const u = readyUrl.url, prov = readyUrl.provider;
+                setTopUpModalOpen(false); setReadyUrl(null);
+                if (pid) navigate(`/cabinet/payment-wait?id=${encodeURIComponent(pid)}&kind=topup`, { state: { url: u, provider: prov } });
+              }}
             />
           ) : (
           <div className="flex flex-col gap-3">

@@ -36,10 +36,18 @@ export async function remnaFetch<T>(
   }
 
   const url = `${REMNA_API_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  // таймаут на запрос к Remna. Без него медленная/мёртвая нода
+  // (или ProxyCheck, рвущий сокет) подвешивала клиентские эндпоинты (/client/subscription,
+  // /client/devices синхронно ходят в Remna) до дефолтного undici-таймаута — фронт ловил
+  // «fetch failed», и API «как будто отваливался». Теперь — быстрый контролируемый отказ.
+  const REMNA_TIMEOUT_MS = 12_000;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REMNA_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       ...options,
       headers: { ...getHeaders(), ...(options.headers as object) },
+      signal: ctrl.signal,
     });
     const text = await res.text();
     let data: T | undefined;
@@ -58,8 +66,15 @@ export async function remnaFetch<T>(
     }
     return { data: data as T, status: res.status };
   } catch (e) {
+    // AbortError = таймаут: отдаём 504, чтобы вызывающий код отличал «Remna не ответила вовремя»
+    // от прочих сетевых ошибок (и не возвращал клиенту туманное «fetch failed»).
+    if (e instanceof Error && e.name === "AbortError") {
+      return { error: "Remna API timeout", status: 504 };
+    }
     const message = e instanceof Error ? e.message : String(e);
     return { error: message, status: 500 };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { Laptop, Download, Key, Copy, Check, ArrowRight, Smartphone, MonitorSmartphone, Apple, Tv, ExternalLink, Plus } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { api, type SubscriptionPageConfig } from "@/lib/api";
@@ -48,6 +49,18 @@ function platformIcon(p: Platform) {
     case "ios": return Apple;
     case "linux": return Tv;
   }
+}
+
+/** Unwrap Remnawave-обёртки (.response / .data.response) до плоского payload. */
+function unwrapSubPayload(sub: unknown): Record<string, unknown> | null {
+  if (!sub || typeof sub !== "object") return null;
+  const o = sub as Record<string, unknown>;
+  if (o.response && typeof o.response === "object") return o.response as Record<string, unknown>;
+  if (o.data && typeof o.data === "object") {
+    const d = o.data as Record<string, unknown>;
+    if (d.response && typeof d.response === "object") return d.response as Record<string, unknown>;
+  }
+  return o;
 }
 
 function getSubscriptionUrl(sub: unknown): string | null {
@@ -108,6 +121,7 @@ function buildDeeplinkHref(rawLink: string, subUrl: string, baseUrl: string, isM
 export function StealthSubscribe() {
   const { state } = useClientAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [step, setStep] = useState(1);
   const [platform, setPlatform] = useState<Platform>(() => detectPlatform());
@@ -115,10 +129,19 @@ export function StealthSubscribe() {
   const [selectedAppIdx, setSelectedAppIdx] = useState(0);
   const [copied, setCopied] = useState(false);
 
-  const [subUrl, setSubUrl] = useState<string | null>(null);
+  // мультиподписки. Грузим ВСЕ подписки клиента (единый код
+  // для любой — без спецслучаев на «нулевую») и даём выбрать, какую настраивать.
+  // ?sub=<id> (с дашборда) — предвыбор конкретной подписки.
+  const [subsList, setSubsList] = useState<{ id: string; label: string; emoji: string | null; url: string | null; isActive: boolean }[]>([]);
+  const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
   const [pageConfig, setPageConfig] = useState<SubscriptionPageConfig | null>(null);
   const [publicAppUrl, setPublicAppUrl] = useState<string>("");
   const [loading, setLoading] = useState(true);
+
+  const subUrl = useMemo(
+    () => subsList.find((s) => s.id === selectedSubId)?.url ?? null,
+    [subsList, selectedSubId],
+  );
 
   const isMiniapp = useMemo(() => {
     if (typeof window === "undefined") return false;
@@ -131,17 +154,37 @@ export function StealthSubscribe() {
     let alive = true;
     setLoading(true);
     Promise.all([
-      api.clientSubscription(state.token).catch(() => null),
+      api.clientAllSubscriptions(state.token).catch((): { items: [] } => ({ items: [] })),
       api.getPublicSubscriptionPageConfig().catch(() => null),
       api.getPublicConfig().catch(() => null),
-    ]).then(([sub, cfg, pub]) => {
+    ]).then(([all, cfg, pub]) => {
       if (!alive) return;
-      setSubUrl(getSubscriptionUrl(sub?.subscription));
+      const list = (all.items ?? []).map((it) => {
+        const raw = unwrapSubPayload(it.subscription);
+        const expireAt = typeof raw?.expireAt === "string" ? new Date(raw.expireAt as string) : null;
+        const idx = it.subscriptionIndex ?? 0;
+        return {
+          id: it.id,
+          label: it.tariffDisplayName?.trim() || `Подписка #${idx}`,
+          emoji: it.tariffMenuEmoji ?? null,
+          url: getSubscriptionUrl(it.subscription),
+          isActive: !!expireAt && !Number.isNaN(expireAt.getTime()) && expireAt.getTime() > Date.now(),
+        };
+      }).filter((s) => s.url);
+      setSubsList(list);
+      // Предвыбор: ?sub из URL → первая активная → первая.
+      const requested = searchParams.get("sub");
+      const preselect = (requested && list.find((s) => s.id === requested))
+        || list.find((s) => s.isActive)
+        || list[0]
+        || null;
+      setSelectedSubId(preselect?.id ?? null);
       setPageConfig(cfg);
       const u = (pub as { publicAppUrl?: string | null } | null)?.publicAppUrl ?? "";
       setPublicAppUrl(u || (typeof window !== "undefined" ? window.location.origin : ""));
     }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.token]);
 
   const apps: AppEntry[] = useMemo(() => {
@@ -207,9 +250,17 @@ export function StealthSubscribe() {
         onClose={() => navigate("/cabinet/dashboard")}
       />
 
+      <AnimatePresence mode="wait">
       {/* Step 1: choose client */}
       {step === 1 && (
-        <div className="space-y-5">
+        <motion.div
+          key="step-1"
+          initial={{ opacity: 0, x: 24 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -24 }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+          className="space-y-5"
+        >
           <div className="pt-4">
             <ConcentricRings icon={PlatformIcon} />
           </div>
@@ -218,6 +269,34 @@ export function StealthSubscribe() {
             <h2 className="text-2xl font-bold">Настройка на {PLATFORM_LABELS[platform]}</h2>
             <p className="text-sm text-zinc-400">3 шага для завершения настройки</p>
           </div>
+
+          {/* выбор подписки (если их несколько) — какую настраиваем */}
+          {subsList.length > 1 && (
+            <div className="space-y-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500 text-center">Какую подписку настроить</p>
+              <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+                {subsList.map((s) => {
+                  const active = s.id === selectedSubId;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setSelectedSubId(s.id)}
+                      className={cn(
+                        "shrink-0 rounded-2xl border px-3.5 py-2 text-xs font-bold transition-all inline-flex items-center gap-2",
+                        active
+                          ? "border-rose-500 bg-rose-500/[0.1] text-white shadow-[0_0_20px_-6px_rgba(255,35,87,0.5)]"
+                          : "border-white/[0.08] bg-zinc-900/60 text-zinc-400 hover:border-white/20",
+                      )}
+                    >
+                      <span className={cn("h-1.5 w-1.5 rounded-full", s.isActive ? "bg-emerald-400" : "bg-zinc-600")} />
+                      {s.emoji ? `${s.emoji} ` : ""}{s.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="space-y-2.5">
             <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500 text-center">Выберите клиент</p>
@@ -232,18 +311,27 @@ export function StealthSubscribe() {
                   const active = idx === selectedAppIdx;
                   const isFeatured = idx === featuredIdx || app.isFeatured;
                   return (
-                    <button
+                    <motion.button
                       key={`${app.name}-${idx}`}
                       type="button"
                       onClick={() => setSelectedAppIdx(idx)}
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0, scale: active ? 1.02 : 1 }}
+                      whileHover={{ scale: 1.035 }}
+                      whileTap={{ scale: 0.97 }}
+                      transition={{
+                        opacity: { duration: 0.3, delay: idx * 0.05, ease: "easeOut" },
+                        y: { duration: 0.3, delay: idx * 0.05, ease: "easeOut" },
+                        scale: { duration: 0.2, ease: "easeOut" },
+                      }}
                       className={cn(
-                        "relative rounded-2xl border-2 bg-zinc-900/60 p-3.5 text-left transition-all duration-200",
+                        "relative rounded-2xl border-2 bg-white/[0.03] backdrop-blur-xl p-3.5 text-left transition-colors duration-300",
                         // Активный (не featured) → ярко-розовый акцент
-                        active && !isFeatured && "border-rose-500 bg-rose-500/[0.08] shadow-[0_0_28px_-4px_rgba(255,35,87,0.45)] scale-[1.02]",
+                        active && !isFeatured && "border-rose-500 bg-rose-500/[0.08] shadow-[0_0_32px_-4px_rgba(255,35,87,0.5),inset_0_1px_0_rgba(255,255,255,0.08)]",
                         // Активный + featured → фиолетовый акцент
-                        active && isFeatured && "border-violet-500 bg-violet-500/[0.1] shadow-[0_0_28px_-4px_rgba(167,139,250,0.5)] scale-[1.02]",
+                        active && isFeatured && "border-violet-500 bg-violet-500/[0.1] shadow-[0_0_32px_-4px_rgba(167,139,250,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]",
                         // Не активный
-                        !active && "border-white/[0.06] hover:border-white/20 hover:bg-zinc-900/80",
+                        !active && "border-white/[0.06] hover:border-white/20 hover:bg-white/[0.05]",
                       )}
                     >
                       {/* Featured chip — над карточкой */}
@@ -291,7 +379,7 @@ export function StealthSubscribe() {
                           </div>
                         </div>
                       </div>
-                    </button>
+                    </motion.button>
                   );
                 })}
               </div>
@@ -317,8 +405,15 @@ export function StealthSubscribe() {
               Другое устройство
             </StadiumButton>
 
+            <AnimatePresence>
             {showOtherDevices && (
-              <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/40 p-3 space-y-2.5">
+              <motion.div
+                initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                transition={{ duration: 0.25, ease: "easeOut" }}
+                className="rounded-2xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-xl p-3 space-y-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
+              >
                 <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Выберите устройство</p>
                 <div className="grid grid-cols-2 gap-2">
                   {(Object.keys(PLATFORM_LABELS) as Platform[]).map((p) => {
@@ -349,15 +444,23 @@ export function StealthSubscribe() {
                     </StadiumButton>
                   </>
                 )}
-              </div>
+              </motion.div>
             )}
+            </AnimatePresence>
           </div>
-        </div>
+        </motion.div>
       )}
 
       {/* Step 2: install client */}
       {step === 2 && (
-        <div className="space-y-5">
+        <motion.div
+          key="step-2"
+          initial={{ opacity: 0, x: 24 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -24 }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+          className="space-y-5"
+        >
           <div className="pt-4"><ConcentricRings icon={Download} /></div>
 
           <div className="text-center space-y-1.5">
@@ -392,12 +495,19 @@ export function StealthSubscribe() {
               Далее
             </StadiumButton>
           </div>
-        </div>
+        </motion.div>
       )}
 
       {/* Step 3: add subscription */}
       {step === 3 && (
-        <div className="space-y-5">
+        <motion.div
+          key="step-3"
+          initial={{ opacity: 0, x: 24 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -24 }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+          className="space-y-5"
+        >
           <div className="pt-4"><ConcentricRings icon={Key} /></div>
 
           <div className="text-center space-y-1.5">
@@ -407,9 +517,10 @@ export function StealthSubscribe() {
             </p>
           </div>
 
-          <div className="rounded-2xl border border-white/[0.08] bg-zinc-900/60 p-4">
+          <div className="relative rounded-2xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-xl p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] overflow-hidden">
+            <div className="absolute -top-10 -right-10 h-24 w-24 rounded-full bg-rose-500/10 blur-2xl pointer-events-none" />
             <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2">Subscription URL</p>
-            <p className="font-mono text-xs text-zinc-200 break-all">{subUrl ?? "—"}</p>
+            <p className="relative font-mono text-xs text-zinc-200 break-all">{subUrl ?? "—"}</p>
           </div>
 
           <div className="space-y-2.5">
@@ -442,8 +553,9 @@ export function StealthSubscribe() {
               Завершить
             </StadiumButton>
           </div>
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   );
 }

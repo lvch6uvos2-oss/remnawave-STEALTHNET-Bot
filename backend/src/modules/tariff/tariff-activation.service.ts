@@ -14,12 +14,15 @@ import {
   extractRemnaUuid,
   remnaUsernameFromClient,
   remnaResetUserTraffic,
+  remnaDeleteUser,
 } from "../remna/remna.client.js";
 import { createAdditionalSubscription } from "../gift/gift.service.js";
 import { getSystemConfig } from "../client/client.service.js";
 import { upsertSubscriptionByRemnaUuid } from "../subscription/subscription.helpers.js";
 
-export type ActivationResult = { ok: true } | { ok: false; error: string; status: number };
+export type ActivationResult =
+  | { ok: true; /** дни, добавленные pro-rata конвертацией остатка (режим convert) */ convertedDays?: number }
+  | { ok: false; error: string; status: number };
 
 /**
  * Извлекает текущий expireAt из ответа Remna GET /api/users/{uuid}.
@@ -199,7 +202,7 @@ function remnaStrategy(mode: TrafficResetMode): "NO_RESET" | "MONTH" | "MONTH_RO
  * по 33.33, и юзер фактически получил бы 60 дней на 5 устройств заплатив за 30. Now: остаток
  * конвертируется по ставке (30 × 8.33 / 33.33 ≈ 7.5 дней).
  */
-function computeConvertedDays(args: {
+export function computeConvertedDays(args: {
   remainingDays: number;
   oldPricePerDay: number | null;
   newPricePerDay: number;
@@ -612,12 +615,17 @@ export async function extendSecondarySubscription(
   /** убрать доп. устройства после
    *  успешного продления. Используется когда юзер выбрал «продлить без устройств». */
   removeExtrasAfter?: boolean,
+  /** режим КОНВЕРТАЦИИ (single-subscription категории / переход с триала):
+   *  вместо стека дней к expireAt — остаток конвертируется pro-rata по ставке
+   *  (computeConvertedDays), отсчёт от «сейчас», сквады ЗАМЕНЯЮТСЯ на сквады
+   *  нового тарифа, трафик начинается заново по новому тарифу. */
+  convertMode?: boolean,
 ): Promise<ActivationResult> {
   if (!isRemnaConfigured()) return { ok: false, error: "Сервис временно недоступен", status: 503 };
 
   const sec = await prisma.subscription.findUnique({
     where: { id: secondaryId },
-    select: { id: true, remnawaveUuid: true, tariffId: true, ownerId: true, customPrice: true, extraDevices: true, extraDevicesMonthlyPrice: true, trialId: true },
+    select: { id: true, remnawaveUuid: true, tariffId: true, ownerId: true, customPrice: true, extraDevices: true, extraDevicesMonthlyPrice: true, trialId: true, currentPricePerDay: true },
   });
   if (!sec) {
     return { ok: false, error: "Доп. подписка не найдена", status: 404 };
@@ -628,13 +636,28 @@ export async function extendSecondarySubscription(
 
   const effectiveDays = selectedOption?.durationDays ?? tariff.durationDays;
   const includedDevices = Math.max(1, tariff.includedDevices ?? 1);
-  void tariff.pricePerExtraDevice; // НЕ используется — это отдельная админская фича создания тарифа
 
-  // берём количество устройств подписки
-  // как есть (накоплено через sell-options apply). Цена при продлении считается
-  // отдельно через extraDevicesMonthlyPrice, hwid лимит = includedDevices + extraDevices.
-  void extraDevices; // legacy param, при продлении не используется — используем накопленный счётчик
-  const effectiveExtras = sec.extraDevices ?? 0;
+  // T-extras-universal (12.06.2026): устройства, докупаемые ЭТОЙ оплатой
+  // (deviceCount платежа), теперь честно выдаются и при продлении/конвертации —
+  // раньше параметр игнорировался (void), и «+2 устройства» при покупке тарифа
+  // из single-категории пропадали. Цена этих extras уже включена в сумму платежа
+  // (client.routes считает calcExtrasPrice для ЛЮБОЙ покупки).
+  const maxExtra = Math.max(0, tariff.maxExtraDevices ?? 0);
+  const newExtras = Math.min(Math.max(0, Math.floor(extraDevices ?? 0)), maxExtra);
+  // существующие extras подписки: остаются или убираются по removeExtrasAfter.
+  const keptExtras = removeExtrasAfter ? 0 : (sec.extraDevices ?? 0);
+  const keptExtrasMonthly = removeExtrasAfter ? 0 : (sec.extraDevicesMonthlyPrice ?? 0);
+  // месячная ставка новых extras — для будущих продлений (формула option.price + monthly × days/30).
+  const newExtrasMonthly = newExtras > 0
+    ? applyExtraDevicesPrice(
+        Math.max(0, tariff.pricePerExtraDevice ?? 0),
+        newExtras,
+        parseDeviceDiscountTiers(tariff.deviceDiscountTiers),
+        EXTRA_DEVICE_BASE_DAYS,
+      ).extrasTotal
+    : 0;
+  const effectiveExtras = keptExtras + newExtras;
+  const effectiveExtrasMonthly = Math.round((keptExtrasMonthly + newExtrasMonthly) * 100) / 100;
 
   const trafficLimitBytes = tariff.trafficLimitBytes != null ? Number(tariff.trafficLimitBytes) : 0;
   const totalDevices = includedDevices + effectiveExtras;
@@ -649,29 +672,85 @@ export async function extendSecondarySubscription(
   const currentExpireAt = extractCurrentExpireAt(userRes.data);
   const currentSquads = extractCurrentSquads(userRes.data);
 
+  // конвертация ТРИАЛА — это всегда переход (convertMode):
+  // сквады заменяются на сквады целевого тарифа (уход с триального сквада),
+  // трафик начинается заново. Остаток бесплатных дней не конвертируется
+  // (currentPricePerDay у триала нет → computeConvertedDays вернёт 0).
+  const isTrialConversion = sec.trialId != null;
+  const effectiveConvert = convertMode || isTrialConversion;
+
+  // ── Конвертация: остаток дней переносится pro-rata по ставке, отсчёт от «сейчас» ──
+  //
+  // учёт ДОП. УСТРОЙСТВ (sell-options) в ставках. Юзер платил
+  // полную ставку: базовый тариф + доп. устройства (extraDevicesMonthlyPrice за 30 дн).
+  // Вся эта остаточная ценность конвертируется:
+  //   • УБИРАЕТ устройства (removeExtrasAfter) → ценность устройств тоже превращается
+  //     в дни чистого нового тарифа — дней БОЛЬШЕ, устройств меньше.
+  //   • ОСТАВЛЯЕТ устройства → они переезжают на новую подписку (новый included +
+  //     прежние extra), но новая полная ставка выше (тариф + устройства) — дней МЕНЬШЕ.
+  let convertedDays = 0;
+  if (effectiveConvert) {
+    const remainingMs = currentExpireAt ? currentExpireAt.getTime() - Date.now() : 0;
+    const remainingDays = Math.max(0, Math.floor(remainingMs / 86_400_000));
+    if (isTrialConversion) {
+      // конвертация ТРИАЛА сохраняет дни 1:1 (и остаток
+      // трафика — см. traffic ниже): юзер ничего не теряет при переходе на платный.
+      convertedDays = remainingDays;
+    } else {
+      const newPrice = selectedOption?.price ?? tariff.price ?? 0;
+      const newBasePerDay = effectiveDays > 0 ? newPrice / effectiveDays : 0;
+      const extrasPerDay = (sec.extraDevices ?? 0) > 0 ? (sec.extraDevicesMonthlyPrice ?? 0) / 30 : 0;
+      const keepExtras = !removeExtrasAfter && extrasPerDay > 0;
+      // Старая ПОЛНАЯ ставка (база + устройства).
+      const oldFullPerDay = sec.currentPricePerDay != null
+        ? sec.currentPricePerDay + extrasPerDay
+        : (extrasPerDay > 0 ? extrasPerDay : null);
+      // Новая ставка: с устройствами, если юзер их оставляет.
+      const newFullPerDay = newBasePerDay + (keepExtras ? extrasPerDay : 0);
+      convertedDays = computeConvertedDays({
+        remainingDays,
+        oldPricePerDay: oldFullPerDay,
+        newPricePerDay: newFullPerDay,
+      });
+    }
+  }
+
   // Стек дней: если подписка активна → +effectiveDays к expireAt; иначе now+effectiveDays.
-  const baseDate = currentExpireAt && currentExpireAt.getTime() > Date.now()
+  // При конвертации стека нет — всегда now + (купленные дни + конвертированный остаток).
+  const baseDate = !effectiveConvert && currentExpireAt && currentExpireAt.getTime() > Date.now()
     ? currentExpireAt
     : new Date();
-  const expireAt = new Date(baseDate.getTime() + effectiveDays * 24 * 60 * 60 * 1000).toISOString();
+  const totalDays = effectiveDays + convertedDays;
+  const expireAt = new Date(baseDate.getTime() + totalDays * 24 * 60 * 60 * 1000).toISOString();
 
-  const activeInternalSquads = await mergeSquads(tariff.internalSquadUuids, currentSquads);
+  // Конвертация = переход на другой тариф: сквады ЗАМЕНЯЮТСЯ (юзер уходит со старых
+  // серверов — в т.ч. с триального сквада — на сервера нового тарифа).
+  // Обычное продление — merge, как раньше.
+  const activeInternalSquads = effectiveConvert
+    ? tariff.internalSquadUuids
+    : await mergeSquads(tariff.internalSquadUuids, currentSquads);
   const hadActiveSub = currentExpireAt !== null;
 
   // единая логика трафика (см. computeTrafficOnRenewal).
-  // Триальная подписка (sec.trialId != null) форсит carry_over — перенос остатка
-  // (например было 90, использовано 87, продлил → 0 из 93).
-  const isTrialSub = sec.trialId != null;
   const currentLimitBytes = extractCurrentTrafficLimitBytes(userRes.data);
   const currentUsedBytes = extractCurrentTrafficUsed(userRes.data);
-  const traffic = computeTrafficOnRenewal({
-    mode: resetMode,
-    isTrial: isTrialSub,
-    currentLimitBytes,
-    currentUsedBytes,
-    newTariffLimitBytes: trafficLimitBytes,
-    hadActiveSub,
-  });
+  // При конвертации трафик начинается заново по новому тарифу (это смена тарифа,
+  // а не продление того же) — лимит нового тарифа, счётчик used в ноль.
+  // конвертация ТРИАЛА переносит неизрасходованный остаток
+  // («гиги остаются»): finalLimit = лимит нового тарифа + остаток триала.
+  const trialCarryOver = isTrialConversion && trafficLimitBytes > 0
+    ? Math.max(0, (currentLimitBytes ?? 0) - (currentUsedBytes ?? 0))
+    : 0;
+  const traffic = effectiveConvert
+    ? { finalLimitBytes: trafficLimitBytes > 0 ? trafficLimitBytes + trialCarryOver : trafficLimitBytes, resetUsed: true }
+    : computeTrafficOnRenewal({
+        mode: resetMode,
+        isTrial: false,
+        currentLimitBytes,
+        currentUsedBytes,
+        newTariffLimitBytes: trafficLimitBytes,
+        hadActiveSub,
+      });
   // T-traffic-expired-fix : used сбрасываем по resetUsed, не завися от истечения
   // (доп./триальные подписки тоже должны переносить остаток после истечения).
   if (traffic.resetUsed) {
@@ -694,28 +773,105 @@ export async function extendSecondarySubscription(
   // синкаем expireAt и tariffId в БД одним апдейтом.
   // Если подписка была trial-овой — снимаем trial-метку (юзер продлил настоящим тарифом).
   // фиксируем итоговое количество extraDevices.
+  // В convertMode дополнительно фиксируем новую цену/ставку (для будущих продлений и автосписаний).
+  const newPriceForDb = selectedOption?.price ?? tariff.price;
   await prisma.subscription.update({
     where: { id: sec.id },
     data: {
       expireAt: new Date(expireAt),
       trialId: null,
       extraDevices: effectiveExtras,
+      extraDevicesMonthlyPrice: effectiveExtrasMonthly,
       ...(tariff.id && tariff.id !== sec.tariffId ? { tariffId: tariff.id } : {}),
+      ...(effectiveConvert && newPriceForDb != null && newPriceForDb > 0 ? {
+        customPrice: newPriceForDb,
+        currentPricePerDay: effectiveDays > 0 ? newPriceForDb / effectiveDays : null,
+      } : {}),
     },
   }).catch(() => {});
 
-  // если выбран флаг — убираем все
-  // доп. устройства ПОСЛЕ успешного продления. Юзер заплатил уже за «без устройств».
+  // юзер выбрал «без устройств» — лимит уже выставлен выше (included + новые extras,
+  // старые обнулены в счётчиках), остаётся кикнуть HWID-устройства сверх нового лимита.
+  // НЕ зовём removeAllExtraDevicesForSub: он обнулил бы и только что докупленные extras.
   if (removeExtrasAfter) {
     try {
-      const { removeAllExtraDevicesForSub } = await import("../subscription/extras.helper.js");
-      await removeAllExtraDevicesForSub(sec.id);
+      const { kickExcessHwidDevices } = await import("../subscription/extras.helper.js");
+      await kickExcessHwidDevices(sec.remnawaveUuid, hwidDeviceLimit);
     } catch (e) {
-      console.error("[extendSecondarySubscription] removeExtrasAfter failed:", e);
+      console.error("[extendSecondarySubscription] removeExtrasAfter kick failed:", e);
     }
   }
 
-  return { ok: true };
+  return effectiveConvert ? { ok: true, convertedDays } : { ok: true };
+}
+
+/**
+ * Поиск подписки для КОНВЕРТАЦИИ (режим «одна подписка из категории»).
+ *
+ * Если тариф принадлежит категории с singleSubscriptionMode и у клиента уже есть
+ * подписка с тарифом этой категории — возвращаем её: покупка должна конвертировать
+ * эту подписку (pro-rata остатка + смена тарифа), а не плодить вторую.
+ *
+ * Кандидаты — ЛЮБЫЕ подписки клиента (включая index 0 — никакого спецкода для
+ * «нулевой»), кроме подарочных/зарезервированных под подарок и не привязанных к Remna.
+ * Если кандидатов несколько (легаси-дубли) — берём «самую живую» (max expireAt).
+ */
+export async function findConvertibleSubscription(
+  clientId: string,
+  tariffId: string,
+): Promise<{ id: string; subscriptionIndex: number; tariffId: string | null; tariffName: string | null; expireAt: Date | null; currentPricePerDay: number | null; trialId: string | null; /** покупается ТОТ ЖЕ тариф → это продление (стек дней), а не конвертация */ sameTariff: boolean } | null> {
+  const tariff = await prisma.tariff.findUnique({
+    where: { id: tariffId },
+    select: { categoryId: true, category: { select: { singleSubscriptionMode: true } } },
+  });
+  if (!tariff?.categoryId || !tariff.category?.singleSubscriptionMode) return null;
+
+  const commonWhere = {
+    ownerId: clientId,
+    purchasedAsGift: false,
+    giftStatus: null,
+    remnawaveUuid: { not: null },
+  } as const;
+  const candidateSelect = {
+    id: true,
+    subscriptionIndex: true,
+    tariffId: true,
+    expireAt: true,
+    currentPricePerDay: true,
+    trialId: true,
+    tariff: { select: { name: true } },
+  } as const;
+
+  // приоритет универсален для ЛЮБОЙ подписки (не только #0):
+  // 1) подписка с ТЕМ ЖЕ тарифом (не триал) → продление именно её;
+  // 2) иначе любая подписка с тарифом этой категории → конвертация «самой живой».
+  // Без приоритета у клиента с несколькими подписками категории «самая живая»
+  // перехватывала конвертацию, хотя рядом была подписка ровно с этим тарифом.
+  const candidate =
+    (await prisma.subscription.findFirst({
+      where: { ...commonWhere, tariffId, trialId: null },
+      orderBy: { expireAt: { sort: "desc", nulls: "last" } },
+      select: candidateSelect,
+    })) ??
+    (await prisma.subscription.findFirst({
+      where: { ...commonWhere, tariff: { categoryId: tariff.categoryId } },
+      orderBy: { expireAt: { sort: "desc", nulls: "last" } },
+      select: candidateSelect,
+    }));
+  if (!candidate) return null;
+  return {
+    id: candidate.id,
+    subscriptionIndex: candidate.subscriptionIndex,
+    tariffId: candidate.tariffId,
+    tariffName: candidate.tariff?.name ?? null,
+    expireAt: candidate.expireAt,
+    currentPricePerDay: candidate.currentPricePerDay,
+    trialId: candidate.trialId,
+    // тот же тариф = продление (дни складываются, сквады/трафик
+    // не сбрасываются), конвертация только при ДРУГОМ тарифе. Триал не считается
+    // «тем же» — переход с пробного на платный всегда конвертация.
+    sameTariff: candidate.tariffId === tariffId && candidate.trialId == null,
+  };
 }
 
 /**
@@ -783,6 +939,28 @@ export async function activateTariffByPaymentId(paymentId: string): Promise<Acti
 
     // ── Ветка 1: явное продление конкретной подписки ──────────────────────
     if (extendsSecondaryId) {
+      // конвертация триала: разрешение и список целевых тарифов
+      // задаются в настройках триала (convertEnabled / convertAllTariffs / convertTariffIds).
+      const targetSub = await prisma.subscription.findUnique({
+        where: { id: extendsSecondaryId },
+        select: { tariffId: true, trialId: true, trial: { select: { convertEnabled: true, convertAllTariffs: true, convertTariffIds: true } } },
+      });
+      if (targetSub?.trialId) {
+        if (targetSub.trial?.convertEnabled === false) {
+          return { ok: false, error: "Этот пробный период нельзя конвертировать или продлить", status: 400 };
+        }
+        const sameAsTrialTariff = targetSub.tariffId != null && targetSub.tariffId === tariff.id;
+        if (!sameAsTrialTariff && targetSub.trial?.convertAllTariffs !== true) {
+          let allowed: string[] = [];
+          try {
+            const parsed = targetSub.trial?.convertTariffIds ? JSON.parse(targetSub.trial.convertTariffIds) as unknown : [];
+            if (Array.isArray(parsed)) allowed = parsed.map((x) => String(x));
+          } catch { /* битый JSON → пустой список */ }
+          if (!allowed.includes(tariff.id)) {
+            return { ok: false, error: "Этот тариф недоступен для перехода с пробного периода", status: 400 };
+          }
+        }
+      }
       // юзер выбрал «продлить без устройств» —
       // флаг прокидывается в metadata при создании платежа. Удаление произойдёт после
       // успешного extendSecondarySubscription.
@@ -807,7 +985,60 @@ export async function activateTariffByPaymentId(paymentId: string): Promise<Acti
       return result;
     }
 
+    // ── Ветка 1.5: режим «одна подписка из категории» ──
+    // Если тариф из single-категории и у клиента уже есть подписка с тарифом этой
+    // категории — КОНВЕРТИРУЕМ её (pro-rata остатка + смена тарифа/сквадов) вместо
+    // создания второй. Подарки исключение: подарок — всегда новая подписка.
+    if (!isGiftPurchase) {
+      const convertible = await findConvertibleSubscription(client.id, tariff.id);
+      if (convertible) {
+        // юзер выбирает судьбу доп. устройств при конвертации:
+        // убрать (бо́льшая конвертация дней) или оставить (устройства переезжают).
+        const removeExtrasOnConvert = shouldRemoveExtrasOnActivate(payment.metadata);
+        const result = await extendSecondarySubscription(convertible.id, {
+          id: tariff.id,
+          durationDays: selectedOption?.durationDays ?? tariff.durationDays,
+          trafficLimitBytes: tariff.trafficLimitBytes,
+          deviceLimit: tariff.deviceLimit,
+          includedDevices: tariff.includedDevices,
+          pricePerExtraDevice: tariff.pricePerExtraDevice,
+          maxExtraDevices: tariff.maxExtraDevices,
+          deviceDiscountTiers: tariff.deviceDiscountTiers,
+          internalSquadUuids: tariff.internalSquadUuids,
+          trafficResetMode: tariff.trafficResetMode ?? undefined,
+          price: selectedOption?.price ?? tariff.price,
+        // тот же тариф → обычное продление (стек), другой → конвертация.
+        }, selectedOption, payment.deviceCount ?? undefined, removeExtrasOnConvert, /* convertMode */ !convertible.sameTariff);
+        if (result.ok) {
+          // фиксируем конвертацию в платеже: и привязку подписки, и детали для отчётности.
+          const meta = (() => {
+            try { return payment.metadata ? JSON.parse(payment.metadata) as Record<string, unknown> : {}; } catch { return {}; }
+          })();
+          meta.convertedSubscriptionId = convertible.id;
+          meta.convertedDays = result.convertedDays ?? 0;
+          await prisma.payment.update({
+            where: { id: payment.id },
+            data: { subscriptionId: convertible.id, metadata: JSON.stringify(meta) },
+          }).catch(() => {});
+          await resetOneTimeDiscount();
+          // уведомление админам: покупка конвертировала подписку (best-effort, не ломаем активацию).
+          if (!convertible.sameTariff) {
+            const convertedDaysNotify = result.convertedDays ?? null;
+            import("../notification/telegram-notify.service.js")
+              .then((m) => m.notifyAdminsAboutSubscriptionConverted(client.id, convertible.tariffName, tariff.name, convertedDaysNotify))
+              .catch((e) => console.error("[activate] convert admin notify failed:", e));
+          }
+        }
+        return result;
+      }
+    }
+
     // ── Ветка 2: новая подписка (любая покупка тарифа без extendsSecondaryId) ──
+    // покупка при активном триале ЗАМЕНЯЕТ его (триал удаляется,
+    // новая подписка занимает слот). Выбор триала — metadata.replaceTrialSubId.
+    if (!isGiftPurchase) {
+      await replaceTrialOnPurchase(client.id, getReplaceTrialSubId(payment.metadata));
+    }
     const result = await createAdditionalSubscription(client.id, {
       id: tariff.id,
       name: tariff.name,
@@ -816,6 +1047,9 @@ export async function activateTariffByPaymentId(paymentId: string): Promise<Acti
       trafficLimitBytes: tariff.trafficLimitBytes,
       deviceLimit: tariff.deviceLimit,
       includedDevices: tariff.includedDevices,
+      pricePerExtraDevice: tariff.pricePerExtraDevice,
+      maxExtraDevices: tariff.maxExtraDevices,
+      deviceDiscountTiers: tariff.deviceDiscountTiers,
       internalSquadUuids: tariff.internalSquadUuids,
       trafficResetMode: tariff.trafficResetMode ?? undefined,
     }, { extraDevices: payment.deviceCount ?? 0, purchasedAsGift: isGiftPurchase, skipConfigCheck: true });
@@ -851,6 +1085,48 @@ function getExtendsSecondarySubId(metadata: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+/** metadata.replaceTrialSubId — какой триал заменить покупкой (выбор юзера в UI). */
+function getReplaceTrialSubId(metadata: string | null): string | null {
+  if (!metadata?.trim()) return null;
+  try {
+    const o = JSON.parse(metadata) as Record<string, unknown>;
+    const id = o?.replaceTrialSubId;
+    return typeof id === "string" && id.trim() ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * замена триала покупкой. Покупка новой подписки при
+ * активном триале ПОЛНОСТЬЮ заменяет его: триальная подписка удаляется (вместе
+ * с Remna-юзером), а новая занимает освободившийся слот. Если триалов несколько —
+ * UI передаёт replaceTrialSubId (выбор юзера); без выбора берём самый старый.
+ * Возвращает id удалённой подписки или null (триалов нет).
+ */
+export async function replaceTrialOnPurchase(clientId: string, requestedTrialSubId: string | null): Promise<string | null> {
+  const trials = await prisma.subscription.findMany({
+    where: { ownerId: clientId, trialId: { not: null }, purchasedAsGift: false },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, remnawaveUuid: true },
+  });
+  if (trials.length === 0) return null;
+  const target = (requestedTrialSubId && trials.find((t) => t.id === requestedTrialSubId)) || trials[0];
+  if (target.remnawaveUuid) {
+    const del = await remnaDeleteUser(target.remnawaveUuid);
+    if (del.error) console.error("[trial-replace] remnaDeleteUser failed:", del.error);
+  }
+  await prisma.subscription.delete({ where: { id: target.id } }).catch((e) => {
+    console.error("[trial-replace] subscription delete failed:", e);
+  });
+  // легаси-указатель клиента мог смотреть на удалённого Remna-юзера.
+  await prisma.client.updateMany({
+    where: { id: clientId, remnawaveUuid: target.remnawaveUuid ?? undefined },
+    data: { remnawaveUuid: null },
+  }).catch(() => {});
+  return target.id;
 }
 
 /** metadata.purchasedAsGift=true → подписка для подарка. */

@@ -1026,23 +1026,26 @@ function CategoryModal({
   const editCat = isEdit ? (modal as { edit: TariffCategoryWithTariffs }).edit : null;
   const [name, setName] = useState(editCat?.name ?? "");
   const [emojiKey, setEmojiKey] = useState<string>(editCat?.emojiKey ?? "");
+  const [singleMode, setSingleMode] = useState<boolean>(editCat?.singleSubscriptionMode ?? false);
 
   useEffect(() => {
     if (isEdit && editCat) {
       setName(editCat.name);
       setEmojiKey(editCat.emojiKey ?? "");
+      setSingleMode(editCat.singleSubscriptionMode ?? false);
     } else {
       setName("");
       setEmojiKey("");
+      setSingleMode(false);
     }
-  }, [modal, isEdit, editCat?.name, editCat?.emojiKey]);
+  }, [modal, isEdit, editCat?.name, editCat?.emojiKey, editCat?.singleSubscriptionMode]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !name.trim()) return;
     setSaving(true);
     try {
-      const payload = { name: name.trim(), emojiKey: emojiKey.trim() || null };
+      const payload = { name: name.trim(), emojiKey: emojiKey.trim() || null, singleSubscriptionMode: singleMode };
       if (isEdit) {
         await api.updateTariffCategory(token, (modal as { edit: TariffCategoryWithTariffs }).edit.id, payload);
       } else {
@@ -1093,6 +1096,35 @@ function CategoryModal({
               <option value="premium">premium — ⭐</option>
             </select>
           </div>
+          <button
+            type="button"
+            onClick={() => setSingleMode((v) => !v)}
+            className={cn(
+              "w-full text-left rounded-2xl border p-4 transition-all duration-300 group",
+              singleMode
+                ? "bg-violet-500/10 border-violet-500/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                : "bg-white/[0.03] border-white/10 hover:border-white/20",
+            )}
+          >
+            <div className="flex items-start gap-3">
+              <div className={cn(
+                "mt-0.5 h-5 w-9 rounded-full p-0.5 transition-colors duration-300 shrink-0",
+                singleMode ? "bg-violet-500" : "bg-white/15",
+              )}>
+                <div className={cn(
+                  "h-4 w-4 rounded-full bg-white shadow transition-transform duration-300",
+                  singleMode ? "translate-x-4" : "translate-x-0",
+                )} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold">Одна подписка из категории</p>
+                <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                  Покупка тарифа из этой категории <b>конвертирует</b> существующую подписку
+                  (остаток дней пересчитается по цене нового тарифа), а не создаст вторую.
+                </p>
+              </div>
+            </div>
+          </button>
           <DialogFooter className="pt-2">
             <Button type="button" variant="outline" onClick={onClose} className="rounded-xl">Отмена</Button>
             <Button type="submit" disabled={saving} className="gap-2 rounded-xl">

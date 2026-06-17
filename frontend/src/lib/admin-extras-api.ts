@@ -461,6 +461,8 @@ export interface EmailTemplate {
   subject: string;
   body: string;
   isDefault?: boolean;
+  /** Подключён ли шаблон к реальному отправителю писем (false — редактируется «впрок»). */
+  wired?: boolean;
 }
 
 export const emailTemplatesApi = {

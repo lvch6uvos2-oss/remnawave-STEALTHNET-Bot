@@ -16,6 +16,7 @@
  */
 import { prisma } from "../../db.js";
 import {
+  remnaGetUser,
   remnaGetUserHwidDevices,
   remnaDeleteUserHwidDevice,
   remnaUpdateUser,
@@ -27,6 +28,39 @@ export interface RemoveExtrasResult {
   hwidKicked: number;
   newDeviceLimit: number;
   error?: string;
+}
+
+/**
+ * Кикает HWID-устройства сверх лимита `keepLimit` (старые первыми) — без изменения
+ * лимита/счётчиков. Используется когда лимит уже выставлен вызывающим кодом
+ * (например extendSecondarySubscription при «продлить без устройств»).
+ * Возвращает количество киканутых устройств.
+ */
+export async function kickExcessHwidDevices(remnawaveUuid: string, keepLimit: number): Promise<number> {
+  let removedHwids = 0;
+  try {
+    const devicesRes = await remnaGetUserHwidDevices(remnawaveUuid);
+    const devicesData = devicesRes.data as { response?: { devices?: Array<{ hwid: string; createdAt?: string }> } } | undefined;
+    const activeDevices = devicesData?.response?.devices ?? [];
+    if (activeDevices.length > keepLimit) {
+      // Сортируем по createdAt asc — старые удаляем первыми, новые сохраняем.
+      const sorted = [...activeDevices].sort((a, b) => {
+        const aT = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bT = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return aT - bT;
+      });
+      const toRemove = sorted.slice(0, activeDevices.length - keepLimit);
+      for (const dev of toRemove) {
+        await remnaDeleteUserHwidDevice(remnawaveUuid, dev.hwid).catch((e) => {
+          console.error("[remove-extras-helper] kick HWID failed:", dev.hwid, e);
+        });
+        removedHwids += 1;
+      }
+    }
+  } catch (e) {
+    console.error("[remove-extras-helper] devices kick error:", e);
+  }
+  return removedHwids;
 }
 
 export async function removeAllExtraDevicesForSub(subId: string): Promise<RemoveExtrasResult> {
@@ -54,29 +88,7 @@ export async function removeAllExtraDevicesForSub(subId: string): Promise<Remove
   const includedDevices = tariff?.includedDevices ?? tariff?.deviceLimit ?? 1;
 
   // Список активных HWID — вариант Б: жёстко удалить лишние.
-  let removedHwids = 0;
-  try {
-    const devicesRes = await remnaGetUserHwidDevices(sub.remnawaveUuid);
-    const devicesData = devicesRes.data as { response?: { devices?: Array<{ hwid: string; createdAt?: string }> } } | undefined;
-    const activeDevices = devicesData?.response?.devices ?? [];
-    if (activeDevices.length > includedDevices) {
-      // Сортируем по createdAt asc — старые удаляем первыми, новые сохраняем.
-      const sorted = [...activeDevices].sort((a, b) => {
-        const aT = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-        const bT = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-        return aT - bT;
-      });
-      const toRemove = sorted.slice(0, activeDevices.length - includedDevices);
-      for (const dev of toRemove) {
-        await remnaDeleteUserHwidDevice(sub.remnawaveUuid, dev.hwid).catch((e) => {
-          console.error("[remove-extras-helper] kick HWID failed:", dev.hwid, e);
-        });
-        removedHwids += 1;
-      }
-    }
-  } catch (e) {
-    console.error("[remove-extras-helper] devices kick error:", e);
-  }
+  const removedHwids = await kickExcessHwidDevices(sub.remnawaveUuid, includedDevices);
 
   // Уменьшаем лимит в Remna до базы.
   const updateRes = await remnaUpdateUser({
@@ -105,4 +117,44 @@ export async function removeAllExtraDevicesForSub(subId: string): Promise<Remove
     hwidKicked: removedHwids,
     newDeviceLimit: includedDevices,
   };
+}
+
+export interface GrantDevicesResult {
+  ok: boolean;
+  newDeviceLimit: number;
+  error?: string;
+}
+
+// T-admin-services (портировано из WolfVPN): ВЫДАТЬ доп. устройства подписке (как покупка юзера,
+// но инициирует админ — без оплаты). hwidDeviceLimit += N в Remna + extraDevices/monthlyPrice += в БД.
+// monthlyPrice (₽/30 дней) попадает в цену продления автоматически (см. client.routes расчёт).
+export async function applyDevicesToSubscription(subId: string, deviceCount: number, monthlyPrice: number): Promise<GrantDevicesResult> {
+  if (!Number.isFinite(deviceCount) || deviceCount <= 0) {
+    return { ok: false, newDeviceLimit: 0, error: "Количество устройств должно быть больше 0" };
+  }
+  const sub = await prisma.subscription.findUnique({
+    where: { id: subId },
+    select: { id: true, remnawaveUuid: true },
+  });
+  if (!sub) return { ok: false, newDeviceLimit: 0, error: "subscription not found" };
+  if (!sub.remnawaveUuid) return { ok: false, newDeviceLimit: 0, error: "not linked to remna" };
+
+  const userRes = await remnaGetUser(sub.remnawaveUuid);
+  if (userRes.error) return { ok: false, newDeviceLimit: 0, error: userRes.error };
+  const u = userRes.data as Record<string, unknown> | null;
+  const inner = (u?.response ?? u) as Record<string, unknown> | undefined;
+  const current = typeof inner?.hwidDeviceLimit === "number" ? inner.hwidDeviceLimit : 0;
+  const newDevices = current + deviceCount;
+
+  const updateRes = await remnaUpdateUser({ uuid: sub.remnawaveUuid, hwidDeviceLimit: newDevices });
+  if (updateRes.error) return { ok: false, newDeviceLimit: 0, error: updateRes.error };
+
+  await prisma.subscription.update({
+    where: { id: sub.id },
+    data: {
+      extraDevices: { increment: deviceCount },
+      extraDevicesMonthlyPrice: { increment: Math.max(0, monthlyPrice) },
+    },
+  });
+  return { ok: true, newDeviceLimit: newDevices };
 }

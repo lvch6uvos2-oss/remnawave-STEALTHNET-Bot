@@ -6,6 +6,7 @@ import {
   XCircle, Trash, History, ChevronDown, ChevronUp, User, Sparkles, Smartphone
 } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
+import { toast } from "@/components/ui/toast";
 import { useCabinetConfig } from "@/contexts/cabinet-config";
 import { api, type PublicTariff, type PublicTariffCategory } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -118,7 +119,7 @@ export function ClientGiftsPage() {
   // Interaction states
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  // уведомление об успехе (паритет с ботом).
+  // T-unify-cabinet (30.05.2026, WolfVPN): уведомление об успехе (паритет с ботом).
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   // History states
@@ -132,7 +133,7 @@ export function ClientGiftsPage() {
     if (!token) return;
     try {
       setError(null);
-      // используем `giftListSubscriptions` (без /all)
+      // T-unify (12.05.2026, WolfVPN): используем `giftListSubscriptions` (без /all)
       // — он отдаёт ТОЛЬКО подписки купленные для подарка (purchasedAsGift=true).
       // Подписки которые юзер купил себе сюда не попадают (они в `/cabinet/dashboard`).
       const [subsRes, codesRes] = await Promise.all([
@@ -246,7 +247,7 @@ export function ClientGiftsPage() {
       await fetchData();
       fetchHistory(1);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Ошибка создания кода");
+      toast.error("Ошибка", err instanceof Error ? err.message : "Не удалось создать код");
     } finally {
       setActionLoading(null);
     }
@@ -261,7 +262,7 @@ export function ClientGiftsPage() {
       await fetchData();
       fetchHistory(1);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Ошибка отмены кода");
+      toast.error("Ошибка", err instanceof Error ? err.message : "Не удалось отменить код");
     } finally {
       setActionLoading(null);
     }
@@ -296,9 +297,9 @@ export function ClientGiftsPage() {
       );
       if (!activeCode) {
         if (subscription.giftStatus === "GIFTED") {
-          alert("Эта подписка уже подарена. Ссылка недоступна.");
+          toast.error("Недоступно", "Эта подписка уже подарена.");
         } else {
-          alert("Сначала создайте подарочный код кнопкой «Подарить», затем появится ссылка.");
+          toast.info("Нужен код", "Сначала создайте подарочный код кнопкой «Подарить».");
         }
         return;
       }
@@ -326,7 +327,7 @@ export function ClientGiftsPage() {
       // Текст идентичен боту (gift:take_self) — подписка переехала в «Мои подписки».
       setActionSuccess("Подписка перенесена в «Мои подписки»! Подключите её на главной странице кабинета.");
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Ошибка активации");
+      toast.error("Ошибка активации", err instanceof Error ? err.message : "Не удалось активировать");
     } finally {
       setActionLoading(null);
     }
@@ -355,7 +356,7 @@ export function ClientGiftsPage() {
 
   return (
     <div className="space-y-8 w-full min-w-0 pb-12">
-      {/* уведомление об успешном переносе подписки себе */}
+      {/* T-unify-cabinet (30.05.2026, WolfVPN): уведомление об успешном переносе подписки себе */}
       {actionSuccess && (
         <div className="rounded-2xl bg-green-500/10 border border-green-500/30 px-4 py-3.5 flex items-start gap-3 shadow-sm">
           <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0 mt-0.5" />
@@ -631,13 +632,13 @@ export function ClientGiftsPage() {
         return (
       <div data-tour="gifts-subscriptions" className="space-y-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold tracking-tight">Мои подписки</h2>
+          <h2 className="text-2xl font-bold tracking-tight">Мои подарки</h2>
         </div>
         
         {displaySubs.length === 0 ? (
           <div className="p-8 sm:p-12 rounded-3xl border border-dashed border-border/50 flex flex-col items-center justify-center text-center gap-4 bg-muted/10">
             <Package className="w-10 h-10 text-muted-foreground/40" />
-            <p className="text-muted-foreground">У вас пока нет дополнительных подписок.</p>
+            <p className="text-muted-foreground">У вас пока нет подарков.</p>
             {canBuyMore && (
               <Button onClick={handleOpenBuy} className="mt-2 rounded-xl shadow-md gap-2" size="lg">
                 <Plus className="w-5 h-5" />

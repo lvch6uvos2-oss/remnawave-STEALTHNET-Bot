@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { requireAuth, requireAdminSection } from "../auth/middleware.js";
+import { prisma } from "../../db.js";
 import {
   remnaGetUsers,
   remnaGetNodes,
@@ -262,6 +263,26 @@ trafficAbuseRouter.get("/analytics", async (req: Request, res: Response) => {
     }
 
     abusers.sort((a, b) => b.abuseScore - a.abuseScore);
+
+    // T-traffic-abuse-id (портировано из WolfVPN): дорезолвить telegramId из НАШЕЙ БД для тех,
+    // у кого Remna его не отдал (Remna хранит TG не у всех). Резолв по subscription.remnawaveUuid → owner.telegramId.
+    const needTg = abusers.filter((a) => a.telegramId == null && a.uuid);
+    if (needTg.length > 0) {
+      const subs = await prisma.subscription.findMany({
+        where: { remnawaveUuid: { in: needTg.map((a) => a.uuid) } },
+        select: { remnawaveUuid: true, owner: { select: { telegramId: true } } },
+      });
+      const uuidToTg = new Map<string, number>();
+      for (const s of subs) {
+        if (s.remnawaveUuid && s.owner?.telegramId) {
+          const n = Number(s.owner.telegramId);
+          if (Number.isFinite(n)) uuidToTg.set(s.remnawaveUuid, n);
+        }
+      }
+      for (const a of abusers) {
+        if (a.telegramId == null && uuidToTg.has(a.uuid)) a.telegramId = uuidToTg.get(a.uuid)!;
+      }
+    }
 
     const totalTrafficPeriod = Array.from(usernameToNodeUsage.values()).reduce(
       (sum, entries) => sum + entries.reduce((s, e) => s + e.bytes, 0),

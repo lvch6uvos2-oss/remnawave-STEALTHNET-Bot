@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Users, Percent, Wallet, Link2, Copy, Check, Loader2, Globe, Send, Info } from "lucide-react";
+import { Users, Percent, Wallet, Link2, Copy, Check, Loader2, Globe, Send, Info, Banknote } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { useCabinetConfig } from "@/contexts/cabinet-config";
 import { api } from "@/lib/api";
 import type { ClientReferralStats } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useCabinetDesign } from "@/lib/use-cabinet-design";
 import { StealthReferral } from "@/pages/cabinet/stealth/stealth-referral";
 function formatMoney(amount: number, currency: string = "usd") {
@@ -34,6 +36,16 @@ function ClassicReferralPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copiedRef, setCopiedRef] = useState<"site" | "bot" | null>(null);
+  // Заявка на вывод реф.средств (бэк: POST /client/withdrawals, мин 3000₽, TRC20)
+  const [wOpen, setWOpen] = useState(false);
+  const [wWallet, setWWallet] = useState("");
+  const [wAmount, setWAmount] = useState("");
+  const [wSubmitting, setWSubmitting] = useState(false);
+  const [wMsg, setWMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const clientBalance = typeof client?.balance === "number" ? client.balance : null;
+  // настройки заявок на вывод из админки (вкл/выкл + мин. сумма).
+  const withdrawalsEnabled = config?.withdrawalsEnabled !== false;
+  const withdrawMin = config?.withdrawalMinAmount ?? 3000;
 
   const siteOrigin = config?.publicAppUrl?.replace(/\/$/, "") || (typeof window !== "undefined" ? window.location.origin : "");
   const referralLinkSite =
@@ -63,6 +75,32 @@ function ClassicReferralPage() {
       navigator.clipboard.writeText(url);
       setCopiedRef(which);
       setTimeout(() => setCopiedRef(null), 2000);
+    }
+  };
+
+  const submitWithdraw = async () => {
+    if (!token) return;
+    const amt = Math.floor(parseFloat(wAmount.replace(",", ".")));
+    if (!Number.isFinite(amt) || amt < withdrawMin) {
+      setWMsg({ type: "err", text: `Минимальная сумма вывода — ${withdrawMin} ₽` });
+      return;
+    }
+    const w = wWallet.trim();
+    if (!/^T[A-Za-z0-9]{33}$/.test(w)) {
+      setWMsg({ type: "err", text: "Некорректный TRC20-адрес (начинается с T, 34 символа)" });
+      return;
+    }
+    setWSubmitting(true);
+    setWMsg(null);
+    try {
+      const r = await api.createWithdrawal(token, { amount: amt, walletTrc20: w });
+      setWMsg({ type: "ok", text: r.message || "Заявка отправлена. Ожидайте подтверждения администратора." });
+      setWWallet("");
+      setWAmount("");
+    } catch (e) {
+      setWMsg({ type: "err", text: e instanceof Error ? e.message : "Ошибка отправки заявки" });
+    } finally {
+      setWSubmitting(false);
     }
   };
 
@@ -296,6 +334,52 @@ function ClassicReferralPage() {
           </div>
         </motion.div>
       </div>
+
+      {/* Маленькая неприметная кнопка вывода реф.средств — в самом низу.
+          скрывается тогглом «Заявки на вывод» из админки. */}
+      {withdrawalsEnabled && (
+      <div className="flex justify-center pt-2">
+        <Dialog open={wOpen} onOpenChange={(o) => { setWOpen(o); if (!o) setWMsg(null); }}>
+          <DialogTrigger asChild>
+            <button className="inline-flex items-center gap-1.5 text-xs text-muted-foreground/50 hover:text-muted-foreground transition-colors underline underline-offset-4 decoration-dotted">
+              <Banknote className="h-3.5 w-3.5" />
+              Заявка на вывод средств
+            </button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2"><Banknote className="h-5 w-5 text-green-500" /> Вывод средств</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-1">
+              {clientBalance != null && (
+                <div className="flex items-center justify-between rounded-xl bg-muted/40 border border-border/50 px-4 py-3 text-sm">
+                  <span className="text-muted-foreground">Доступно на балансе</span>
+                  <span className="font-bold text-foreground">{formatMoney(clientBalance, currency)}</span>
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">TRC20-кошелёк (USDT)</label>
+                <Input value={wWallet} onChange={(e) => { setWWallet(e.target.value); setWMsg(null); }} placeholder="T..." className="font-mono" disabled={wSubmitting} />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Сумма, ₽ (минимум {withdrawMin})</label>
+                <Input value={wAmount} onChange={(e) => { setWAmount(e.target.value.replace(/[^\d.,]/g, "")); setWMsg(null); }} inputMode="decimal" placeholder={String(withdrawMin)} disabled={wSubmitting} />
+              </div>
+              {wMsg && (
+                <p className={`text-sm font-medium ${wMsg.type === "ok" ? "text-green-600 dark:text-green-400" : "text-destructive"}`}>{wMsg.text}</p>
+              )}
+              <Button className="w-full gap-2 h-11 rounded-xl" onClick={submitWithdraw} disabled={wSubmitting || !wWallet.trim() || !wAmount.trim()}>
+                {wSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                Отправить заявку
+              </Button>
+              <p className="text-[11px] text-muted-foreground/70 leading-relaxed text-center">
+                Сумма спишется с баланса и зарезервируется. Заявку обработает администратор.
+              </p>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+      )}
     </div>
   );
 }

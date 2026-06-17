@@ -53,12 +53,21 @@ function getSectionFromPath(normalisedPath: string): string | null {
   if (first === "default-subscription-page-config") return "settings";
   if (first === "sync") return "settings";
   if (first === "promo-groups") return "promo";
-  if (first === "referrals") return "clients";
+  // «Рефералка» — собственная секция (есть в ADMIN_ALLOWED_SECTIONS / MANAGER_SECTIONS);
+  // обратная совместимость с прежним маппингом на clients — в requireAdminSection.
+  if (first === "referrals") return "referrals";
   if (first === "traffic-abuse") return "analytics";
   if (first === "api-keys") return "settings";
   if (first === "gramads") return "promo-vpn";
   // Антибот: и фильтры регистраций, и bulk-purge — все работают через /api/admin/clients/...
   if (first === "clients" && (segments[1] === "antibot" || segments[1] === "bulk")) return "clients";
+  // T-perms (портировано из WolfVPN): action-защищённые пути → null, иначе section-guard блокирует
+  // до action-проверки («Access denied to section»). Защита через requireAction внутри handler.
+  if (first === "subscriptions" && segments[2] === "remna") return null; // change_device_limit/expire/traffic
+  if (first === "clients" && segments[2] === "services") return null;    // manage_services (вкладка «Услуги»)
+  // Создание подарка из админки (POST /admin/gift-codes/create) = операция над клиентом.
+  // Без этого менеджеры (есть section clients, НЕТ gift-codes) ловят 403 «крестик».
+  if (first === "gift-codes") return "clients";
   return first;
 }
 
@@ -108,6 +117,9 @@ export function requireAdminSection(req: Request, res: Response, next: NextFunct
     return res.status(403).json({ message: "Access denied. Only full admin can manage managers." });
   }
   if (ext.adminAllowedSections.includes(section)) return next();
+  // обратная совместимость: /admin/referrals/* исторически гейтился секцией clients —
+  // менеджеры со старым набором прав (только «Клиенты») не теряют доступ к рефералке.
+  if (section === "referrals" && ext.adminAllowedSections.includes("clients")) return next();
   return res.status(403).json({ message: "Access denied to this section." });
 }
 

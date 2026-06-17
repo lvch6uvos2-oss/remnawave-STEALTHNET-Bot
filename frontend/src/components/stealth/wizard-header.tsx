@@ -61,9 +61,9 @@ export function WizardHeader({ step, totalSteps, onBack, onClose }: Props) {
           <div
             key={i}
             className={cn(
-              "h-[3px] flex-1 rounded-full transition-colors",
-              i + 1 < step && "bg-rose-500/70",
-              i + 1 === step && "bg-rose-500 shadow-[0_0_8px_rgba(255,35,87,0.5)]",
+              "h-[3px] flex-1 rounded-full transition-all duration-500",
+              i + 1 < step && "bg-gradient-to-r from-rose-600 to-rose-500/70",
+              i + 1 === step && "bg-gradient-to-r from-rose-500 to-fuchsia-500 shadow-[0_0_12px_rgba(255,35,87,0.65)]",
               i + 1 > step && "bg-zinc-800",
             )}
           />

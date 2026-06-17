@@ -25,10 +25,14 @@ async function fetchJson<T>(path: string, opts?: { method?: string; body?: unkno
     headers: getHeaders(opts?.token),
     ...(opts?.body !== undefined && { body: JSON.stringify(opts.body) }),
   });
-  const data = (await res.json().catch(() => ({}))) as T | { message?: string };
+  const data = (await res.json().catch(() => ({}))) as T | { message?: string; code?: string };
   if (!res.ok) {
     const msg = typeof (data as { message?: string }).message === "string" ? (data as { message: string }).message : `HTTP ${res.status}`;
-    throw new Error(msg);
+    // T-tariff-restriction (портировано из WolfVPN): прокидываем code (напр. TARIFF_RESTRICTED) для бота.
+    const err = new Error(msg) as Error & { code?: string };
+    const code = (data as { code?: string }).code;
+    if (typeof code === "string") err.code = code;
+    throw err;
   }
   return data as T;
 }
@@ -159,6 +163,37 @@ export async function getPublicConfig(): Promise<{
   botDevicesText?: string | null;
   /** подсказка «если инструкция не открылась». */
   botInstructionFallbackText?: string | null;
+  /** редактируемый текст экрана «📦 Дополнительные опции». */
+  botExtraOptionsText?: string | null;
+  /** приписка под ссылкой подписки при активации подарка. */
+  botGiftUrlNote?: string | null;
+  /** подсказка внизу экрана «💼 Мой баланс». */
+  botBalanceText?: string | null;
+  /** текст экрана «💳 Пополнить баланс». */
+  botTopupText?: string | null;
+  /** рефералка: строка под заголовком. */
+  botReferralIntroText?: string | null;
+  /** рефералка: подсказка «💡 …» внизу экрана. */
+  botReferralFooterText?: string | null;
+  /** текст шаринга реферальной ссылки (кнопка «📢 Поделиться»). */
+  botReferralShareText?: string | null;
+  /** заголовок экрана выбора пробной подписки. */
+  botTrialText?: string | null;
+  /** сообщение «все триалы использованы». */
+  botTrialUsedText?: string | null;
+  /** экран выбора тарифа для подарка. */
+  botGiftBuyText?: string | null;
+  /** приглашение ввести промокод. */
+  botPromocodeText?: string | null;
+  /** показывать кнопку «➕ Докупить устройство» на экране Тарифов (default true). */
+  botTariffsShowExtraDevicesButton?: boolean;
+  /** показывать кнопку «💼 Мой баланс» на экране Тарифов (default true). */
+  botTariffsShowBalanceButton?: boolean;
+  /** показывать меню выбора категорий перед списком тарифов (default true). */
+  botShowTariffCategories?: boolean;
+  /** заявки на вывод реф. баланса: вкл/выкл + мин. сумма. */
+  withdrawalsEnabled?: boolean;
+  withdrawalMinAmount?: number;
   videoInstructionsEnabled?: boolean;
   videoInstructions?: { id: string; title: string; telegramFileId: string; sortOrder: number }[];
   ticketsEnabled?: boolean;
@@ -434,6 +469,8 @@ export async function getPublicTariffs(): Promise<{
     name: string;
     emojiKey: string | null;
     emoji: string;
+    /** «одна подписка на категорию» — покупка конвертирует/продлевает существующую. */
+    singleSubscriptionMode?: boolean;
     tariffs: {
       id: string;
       name: string;
@@ -472,6 +509,8 @@ export async function createPlategaPayment(
     extendsSecondarySubId?: string;
     /** удалить доп. устройства после активации подписки в бэке */
     removeExtrasOnActivate?: boolean;
+    /** заменить конкретный триал при покупке (если триалов несколько) */
+    replaceTrialSubId?: string;
   }
 ): Promise<{ paymentUrl: string; orderId: string; paymentId: string }> {
   return fetchJson("/api/client/payments/platega", { method: "POST", body, token });
@@ -480,7 +519,7 @@ export async function createPlategaPayment(
 /** Создать платёж ЮMoney (оплата картой). Для тарифа — tariffId, для прокси — proxyTariffId, для опции — extraOption. */
 export async function createYoomoneyPayment(
   token: string,
-  body: { amount?: number; paymentType: "PC" | "AC"; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string; targetSubscriptionId?: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean }
+  body: { amount?: number; paymentType: "PC" | "AC"; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string; targetSubscriptionId?: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string }
 ): Promise<{ paymentId: string; paymentUrl: string }> {
   return fetchJson("/api/client/yoomoney/create-form-payment", { method: "POST", body, token });
 }
@@ -490,7 +529,7 @@ export async function createYoomoneyPayment(
  *  и email сохраняется в client.email для будущих покупок. Если пусто/невалидно — placeholder (без чека юзеру). */
 export async function createYookassaPayment(
   token: string,
-  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string; targetSubscriptionId?: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; receiptEmail?: string }
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string; targetSubscriptionId?: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string; receiptEmail?: string }
 ): Promise<{ paymentId: string; confirmationUrl: string }> {
   return fetchJson("/api/client/yookassa/create-payment", { method: "POST", body, token });
 }
@@ -498,7 +537,7 @@ export async function createYookassaPayment(
 /** Crypto Pay (Crypto Bot) — создать инвойс, вернуть ссылку на оплату */
 export async function createCryptopayPayment(
   token: string,
-  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string; targetSubscriptionId?: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean }
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string; targetSubscriptionId?: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string }
 ): Promise<{ paymentId: string; payUrl: string }> {
   const res = await fetchJson<{ paymentId: string; payUrl: string }>("/api/client/cryptopay/create-payment", { method: "POST", body, token });
   return { paymentId: res.paymentId, payUrl: res.payUrl };
@@ -507,7 +546,7 @@ export async function createCryptopayPayment(
 /** Heleket — создать инвойс на крипту, вернуть ссылку на оплату */
 export async function createHeleketPayment(
   token: string,
-  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean }
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string }
 ): Promise<{ paymentId: string; payUrl: string }> {
   return fetchJson("/api/client/heleket/create-payment", { method: "POST", body, token });
 }
@@ -515,7 +554,7 @@ export async function createHeleketPayment(
 /** LAVA Business — создать счёт (RUB: СБП / Карты / СберPay) */
 export async function createLavaPayment(
   token: string,
-  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean }
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string }
 ): Promise<{ paymentId: string; payUrl: string }> {
   return fetchJson("/api/client/lava/create-payment", { method: "POST", body, token });
 }
@@ -528,7 +567,7 @@ export async function completeOnboarding(token: string): Promise<{ message: stri
 /** Lava.top — создать invoice через product/offer модель (RUB/USD/EUR) */
 export async function createLavatopPayment(
   token: string,
-  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; email?: string; offerId?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean }
+  body: { amount?: number; currency?: string; tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; email?: string; offerId?: string; extraOption?: { kind: "traffic" | "devices" | "servers"; productId: string }; asAdditional?: boolean; extendsSecondarySubId?: string; asGift?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string }
 ): Promise<{ paymentId: string; payUrl: string }> {
   return fetchJson("/api/client/lavatop/create-payment", { method: "POST", body, token });
 }
@@ -554,10 +593,38 @@ export async function activateTrial(token: string): Promise<{ message: string }>
   return fetchJson("/api/client/trial", { method: "POST", body: {}, token });
 }
 
+/** Превью конвертации (режим «одна подписка из категории»):
+ * узнаём до оплаты, обновит ли покупка существующую подписку. */
+export async function tariffConversionPreview(
+  token: string,
+  params: { tariffId: string; priceOptionId?: string }
+): Promise<{
+  willConvert: boolean;
+  /** extend — тот же тариф (продление, дни складываются); convert — смена тарифа. */
+  mode?: "extend" | "convert";
+  subscription?: { id: string; index: number; tariffName: string | null; expireAt: string | null; isTrial: boolean };
+  remainingDays?: number;
+  convertedDays?: number;
+  purchasedDays?: number;
+  totalDays?: number;
+  /** расклад по доп. устройствам (сохранить/убрать). */
+  extras?: {
+    extraDevices: number;
+    extraDevicesMonthlyPrice: number;
+    newIncludedDevices: number;
+    keep: { totalDevices: number; convertedDays: number; totalDays: number; extraCost?: number };
+    drop: { totalDevices: number; convertedDays: number; totalDays: number; extraCost?: number };
+  };
+}> {
+  const q = new URLSearchParams({ tariffId: params.tariffId });
+  if (params.priceOptionId) q.set("priceOptionId", params.priceOptionId);
+  return fetchJson(`/api/client/tariff-conversion-preview?${q.toString()}`, { token });
+}
+
 /** Оплата тарифа или прокси-тарифа балансом */
 export async function payByBalance(
   token: string,
-  opts: { tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extendsSecondarySubId?: string; asAdditional?: boolean; removeExtrasOnActivate?: boolean }
+  opts: { tariffId?: string; tariffPriceOptionId?: string; deviceCount?: number; proxyTariffId?: string; singboxTariffId?: string; promoCode?: string; extendsSecondarySubId?: string; asAdditional?: boolean; removeExtrasOnActivate?: boolean; replaceTrialSubId?: string }
 ): Promise<{ message: string; paymentId?: string; newBalance?: number }> {
   return fetchJson("/api/client/payments/balance", { method: "POST", body: opts, token });
 }
@@ -1083,6 +1150,15 @@ export type SubscriptionListItem = {
   extraDevices?: number;
   /** цена за все доп. устройства на 30 дней. */
   extraDevicesMonthlyPrice?: number;
+  /** для триальных — тарифы, в которые можно конвертировать
+   *  (переход на их сквады). Пусто — только тариф триала. */
+  convertTariffIds?: string[];
+  /** имя триала (показывается вместо тарифа). */
+  trialName?: string | null;
+  /** false → у триала нет кнопок продления/конвертации вовсе. */
+  trialConvertEnabled?: boolean;
+  /** конвертация триала разрешена в любой тариф. */
+  trialConvertAllTariffs?: boolean;
 };
 
 /** Убрать ВСЕ доп. устройства с подписки (extraDevices=0, hwid kick в Remna). */

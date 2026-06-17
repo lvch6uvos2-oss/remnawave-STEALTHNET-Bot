@@ -48,7 +48,8 @@ export function StealthLayout() {
         </div>
       </header>
 
-      <main className="relative pb-24 max-w-md mx-auto">
+      {/* запас снизу под левитирующую glass-панель (высота + отступ + safe-area). */}
+      <main className="relative pb-32 max-w-md mx-auto">
         <Outlet />
       </main>
 

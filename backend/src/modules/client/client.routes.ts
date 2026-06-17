@@ -14,6 +14,7 @@ import {
   generateReferralCode,
   getSystemConfig,
   getPublicConfig,
+  isSystemSmtpConfigured,
   type SellOptionTrafficProduct,
   type SellOptionDeviceProduct,
   type SellOptionServerProduct,
@@ -25,9 +26,11 @@ import {
 } from "../notification/telegram-notify.service.js";
 import { requireClientAuth } from "./client.middleware.js";
 import { remnaCreateUser, remnaUpdateUser, isRemnaConfigured, remnaGetUser, remnaGetUserByUsername, remnaGetUserByEmail, remnaGetUserByTelegramId, extractRemnaUuid, remnaUsernameFromClient, remnaGetUserHwidDevices, remnaDeleteUserHwidDevice, encryptSubscriptionUrlInPlace, remnaRevokeUserSubscription } from "../remna/remna.client.js";
-import { sendVerificationEmail, sendLinkEmailVerification, isSmtpConfigured } from "../mail/mail.service.js";
+import { isSmtpConfigured, sendEmail } from "../mail/mail.service.js";
+import { renderEmailTemplate } from "../email-templates/email-templates.service.js";
+import { signClientPasswordResetToken, verifyClientPasswordResetToken } from "../auth/auth.service.js";
 import { createPlategaTransaction, isPlategaConfigured } from "../platega/platega.service.js";
-import { activateTariffForClient, activateTariffByPaymentId } from "../tariff/tariff-activation.service.js";
+import { activateTariffForClient, activateTariffByPaymentId, findConvertibleSubscription, computeConvertedDays } from "../tariff/tariff-activation.service.js";
 import { upsertPrimarySubscription, upsertSubscriptionByRemnaUuid } from "../subscription/subscription.helpers.js";
 import { saveRedirectAndBuildUrl } from "../payment-redirect/payment-redirect.util.js";
 import { createProxySlotsByPaymentId } from "../proxy/proxy-slots-activation.service.js";
@@ -42,6 +45,7 @@ import { createLavaInvoice, isLavaConfigured } from "../lava/lava.service.js";
 import { createLavatopInvoice, isLavatopConfigured } from "../lavatop/lavatop.service.js";
 import { createOverpayPayformOrder, isOverpayConfigured } from "../overpay/overpay.service.js";
 import { applyPersonalDiscount } from "./personal-discount.js";
+import { checkTariffRestriction } from "./client.service.js";
 import { getBotByToken, getPrimaryBot, paymentSnapshotTopup, paymentSnapshotProduct, applyMarkup } from "../bot/bot.service.js";
 import { extractBotTokenFromRequest, optionalBot, type ReqWithBot } from "../bot/bot.middleware.js";
 import { uploadTicketAttachment } from "../../lib/upload.js";
@@ -82,14 +86,38 @@ function extractCurrentExpireAt(data: unknown): Date | null {
  * Иначе минимум = basePrice.
  * Если targetSubId не передан или sub не найдена → коэффициент = 1 (полная цена).
  */
+// T-extras-prorata-fix (портировано из WolfVPN): expireAt из Remna, если в БД пусто
+// (частый рассинхрон для primary #0 — иначе coef=1 и цена за полный месяц вместо pro-rata).
+function extractRemnaExpireAt(data: unknown): Date | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  const inner = (d.response && typeof d.response === "object" ? d.response : d) as Record<string, unknown>;
+  const raw = inner.expireAt ?? inner.expire_at;
+  if (typeof raw === "string" || typeof raw === "number") {
+    const dt = new Date(raw);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+  return null;
+}
+
+async function resolveSubExpireAt(expireAtDb: Date | null, remnawaveUuid: string | null | undefined): Promise<Date | null> {
+  if (expireAtDb) return expireAtDb;
+  if (!remnawaveUuid) return null;
+  const u = await remnaGetUser(remnawaveUuid).catch(() => null);
+  if (!u || u.error || !u.data) return null;
+  return extractRemnaExpireAt(u.data);
+}
+
 async function calculateDevicesProrataPriceCoefficient(targetSubId: string | null | undefined): Promise<number> {
   if (!targetSubId) return 1;
   const sub = await prisma.subscription.findUnique({
     where: { id: targetSubId },
-    select: { expireAt: true },
+    select: { expireAt: true, remnawaveUuid: true },
   }).catch(() => null);
-  if (!sub?.expireAt) return 1;
-  const daysLeft = (sub.expireAt.getTime() - Date.now()) / 86_400_000;
+  if (!sub) return 1;
+  const expireAt = await resolveSubExpireAt(sub.expireAt, sub.remnawaveUuid);
+  if (!expireAt) return 1;
+  const daysLeft = (expireAt.getTime() - Date.now()) / 86_400_000;
   return Math.max(1, daysLeft / 30);
 }
 
@@ -105,10 +133,12 @@ async function calculateDevicesProrataPriceCoefficientForPrimary(clientId: strin
   if (!client?.remnawaveUuid) return 1;
   const primarySub = await prisma.subscription.findFirst({
     where: { ownerId: clientId, remnawaveUuid: client.remnawaveUuid },
-    select: { expireAt: true },
+    select: { expireAt: true, remnawaveUuid: true },
   }).catch(() => null);
-  if (!primarySub?.expireAt) return 1;
-  const daysLeft = (primarySub.expireAt.getTime() - Date.now()) / 86_400_000;
+  // Даже если primarySub не найдена / expireAt пуст — берём дату из Remna по uuid клиента.
+  const expireAt = await resolveSubExpireAt(primarySub?.expireAt ?? null, primarySub?.remnawaveUuid ?? client.remnawaveUuid);
+  if (!expireAt) return 1;
+  const daysLeft = (expireAt.getTime() - Date.now()) / 86_400_000;
   return Math.max(1, daysLeft / 30);
 }
 
@@ -321,12 +351,16 @@ clientAuthRouter.post("/register", async (req, res) => {
     void clientIp;
 
     const verificationLink = `${appUrl}/cabinet/verify-email?token=${verificationToken}`;
-    const sendResult = await sendVerificationEmail(
-      smtpConfig,
-      data.email!,
-      verificationLink,
-      config.serviceName
-    );
+    // письмо рендерится из редактируемого шаблона
+    // (админка → Email-шаблоны), а не из захардкоженного HTML.
+    const verificationTpl = await renderEmailTemplate("email_verification", {
+      verifyUrl: verificationLink,
+      hours: "24",
+      serviceName: config.serviceName ?? "STEALTHNET",
+    });
+    const sendResult = verificationTpl
+      ? await sendEmail(smtpConfig, data.email!, verificationTpl.subject, verificationTpl.body)
+      : { ok: false as const, error: "email_verification template missing" };
     console.log(`[register] Email send result to ${data.email}:`, sendResult);
     if (!sendResult.ok) {
       await prisma.pendingEmailRegistration.deleteMany({ where: { verificationToken } }).catch(() => {});
@@ -572,6 +606,64 @@ function parseTelegramUser(initData: string): { id: number; username?: string } 
     return null;
   }
 }
+
+// T-pwd-reset (портировано из WolfVPN): запрос сброса пароля. respondOk всегда (защита от перебора email).
+const forgotPasswordSchema = z.object({ email: z.string().email() });
+clientAuthRouter.post("/forgot-password", async (req, res) => {
+  const cfg = await getSystemConfig();
+  if (!cfg.passwordResetEnabled) return res.status(404).json({ message: "Восстановление пароля временно недоступно" });
+  const body = forgotPasswordSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ message: "Введите корректный email" });
+  const email = body.data.email.toLowerCase().trim();
+  const respondOk = () => res.json({ ok: true });
+  try {
+    // поиск регистронезависимый. Регистрация/логин хранят email
+    // как ввёл юзер, а здесь он приводился к lowercase — юзер с «Test@example.com»
+    // в БД не находился, и письмо сброса молча не отправлялось (при ok:true в ответе).
+    const client = await prisma.client.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+      select: { id: true, email: true, passwordHash: true, isBlocked: true },
+    });
+    if (!client || !client.passwordHash || client.isBlocked) return respondOk();
+    const config = await getSystemConfig();
+    const smtpConfig = {
+      host: config.smtpHost || "", port: config.smtpPort, secure: config.smtpSecure,
+      user: config.smtpUser, password: config.smtpPassword, fromEmail: config.smtpFromEmail, fromName: config.smtpFromName,
+    };
+    const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
+    if (!isSmtpConfigured(smtpConfig) || !appUrl) return respondOk();
+    const token = signClientPasswordResetToken({ clientId: client.id, pv: client.passwordHash.slice(-12) }, env.JWT_SECRET);
+    const resetLink = `${appUrl}/cabinet/reset-password?token=${encodeURIComponent(token)}`;
+    const resetTpl = await renderEmailTemplate("password_reset", {
+      resetUrl: resetLink,
+      minutes: "60",
+      serviceName: config.serviceName ?? "STEALTHNET",
+    });
+    if (resetTpl) {
+      await sendEmail(smtpConfig, client.email ?? email, resetTpl.subject, resetTpl.body).catch(() => {});
+    }
+    return respondOk();
+  } catch {
+    return respondOk();
+  }
+});
+
+// T-pwd-reset: установка нового пароля по токену из письма (одноразовый — pv инвалидируется после смены).
+const resetPasswordSchema = z.object({ token: z.string().min(10), password: z.string().min(8, "Минимум 8 символов") });
+clientAuthRouter.post("/reset-password", async (req, res) => {
+  const cfg = await getSystemConfig();
+  if (!cfg.passwordResetEnabled) return res.status(404).json({ message: "Восстановление пароля временно недоступно" });
+  const body = resetPasswordSchema.safeParse(req.body);
+  if (!body.success) return res.status(400).json({ message: body.error.issues[0]?.message ?? "Проверьте данные" });
+  const payload = verifyClientPasswordResetToken(body.data.token, env.JWT_SECRET);
+  if (!payload) return res.status(400).json({ message: "Ссылка недействительна или устарела" });
+  const client = await prisma.client.findUnique({ where: { id: payload.clientId }, select: { id: true, passwordHash: true, isBlocked: true } });
+  if (!client || !client.passwordHash || client.isBlocked) return res.status(400).json({ message: "Ссылка недействительна" });
+  if (client.passwordHash.slice(-12) !== payload.pv) return res.status(400).json({ message: "Ссылка уже использована — запросите сброс заново" });
+  const newHash = await hashPassword(body.data.password);
+  await prisma.client.update({ where: { id: client.id }, data: { passwordHash: newHash } });
+  return res.json({ ok: true });
+});
 
 const telegramMiniappSchema = z.object({ initData: z.string().min(1) });
 
@@ -1045,30 +1137,16 @@ clientAuthRouter.get("/telegram-login-check", async (req, res) => {
 
     // Новый клиент — регистрируем
     const configForDefaults = await getSystemConfig();
+    // при регистрации Remna-юзер НЕ создаётся (поведение
+    // тянулось с 3.2.5: создавался истёкший «безлимит» с expireAt=now, и в кабинете
+    // у свежего клиента сразу висела пустая подписка «Истекла / Тариф не выбран»).
+    // Подписка появляется только при покупке/триале — как у регистрации по email
+    // и через бота. Если юзер уже существует в Remna (создан ботом ранее) — просто
+    // привязываем его uuid, ничего не создавая.
     let remnawaveUuid: string | null = null;
     if (isRemnaConfigured()) {
-      // Сначала проверяем — может юзер уже есть в Remna (создан ботом или предыдущей попыткой)
       const byTgRes = await remnaGetUserByTelegramId(telegramId);
       remnawaveUuid = extractRemnaUuid(byTgRes.data);
-
-      if (!remnawaveUuid) {
-        const username = remnaUsernameFromClient({
-          telegramUsername: telegramUsername ?? undefined,
-          telegramId,
-        });
-        const remnaRes = await remnaCreateUser({
-          username,
-          trafficLimitBytes: 0,
-          trafficLimitStrategy: "NO_RESET",
-          expireAt: new Date(Date.now() - 1000).toISOString(),
-          telegramId: Number(telegramId),
-        });
-        remnawaveUuid = extractRemnaUuid(remnaRes.data);
-        if (remnaRes.error || remnawaveUuid == null) {
-          console.error("[Remna] create user (telegram deeplink) failed:", { error: remnaRes.error, status: remnaRes.status, data: remnaRes.data });
-          return res.status(503).json({ message: "Сервис временно недоступен. Попробуйте позже." });
-        }
-      }
     }
 
     const referralCode = generateReferralCode();
@@ -1562,6 +1640,134 @@ clientRouter.post("/link-telegram", async (req, res) => {
  * Используется когда SMTP не настроен или skipEmailVerification=true в админке.
  * В обоих случаях нет смысла слать письмо — либо нельзя, либо не требуется.
  */
+/**
+ * Превью конвертации для режима «одна подписка из категории».
+ *
+ * UI (кабинет/миниаппки/бот) зовёт перед оплатой тарифа: если покупка
+ * конвертирует существующую подписку — показываем юзеру красивое предупреждение
+ * с расчётом (какая подписка, сколько дней остатка, во сколько они превратятся).
+ */
+clientRouter.get("/tariff-conversion-preview", async (req, res) => {
+  const client = (req as unknown as { client: { id: string } }).client;
+  const tariffId = typeof req.query.tariffId === "string" ? req.query.tariffId : "";
+  const priceOptionId = typeof req.query.priceOptionId === "string" ? req.query.priceOptionId : null;
+  if (!tariffId) return res.status(400).json({ message: "tariffId обязателен" });
+
+  const convertible = await findConvertibleSubscription(client.id, tariffId);
+  if (!convertible) return res.json({ willConvert: false });
+
+  const tariff = await prisma.tariff.findUnique({
+    where: { id: tariffId },
+    select: { name: true, durationDays: true, price: true, includedDevices: true, priceOptions: { select: { id: true, durationDays: true, price: true } } },
+  });
+  if (!tariff) return res.json({ willConvert: false });
+
+  // Доп. устройства конвертируемой подписки — для выбора «сохранить/убрать».
+  const subExtras = await prisma.subscription.findUnique({
+    where: { id: convertible.id },
+    select: { extraDevices: true, extraDevicesMonthlyPrice: true },
+  });
+  const extraDevices = subExtras?.extraDevices ?? 0;
+  const extrasMonthly = subExtras?.extraDevicesMonthlyPrice ?? 0;
+
+  const option = priceOptionId ? tariff.priceOptions.find((o) => o.id === priceOptionId) ?? null : null;
+  const purchasedDays = option?.durationDays ?? tariff.durationDays;
+  const newPrice = option?.price ?? tariff.price;
+  const newBasePerDay = purchasedDays > 0 ? newPrice / purchasedDays : 0;
+
+  const remainingMs = convertible.expireAt ? convertible.expireAt.getTime() - Date.now() : 0;
+  const remainingDays = Math.max(0, Math.floor(remainingMs / 86_400_000));
+
+  // покупается ТОТ ЖЕ тариф → это продление: дни складываются
+  // 1:1, сквады/трафик не трогаются. UI переключает оплату в extend-флоу
+  // (extendsSecondarySubId) — там честно считается доплата за доп. устройства
+  // и работает выбор «сохранить/убрать», единый для ЛЮБОЙ подписки.
+  if (convertible.sameTariff) {
+    const extSub = await prisma.subscription.findUnique({
+      where: { id: convertible.id },
+      select: { extraDevices: true, extraDevicesMonthlyPrice: true },
+    });
+    const extDevices = extSub?.extraDevices ?? 0;
+    const extMonthly = extSub?.extraDevicesMonthlyPrice ?? 0;
+    const keepCostForPeriod = extDevices > 0 && purchasedDays > 0
+      ? Math.round(extMonthly * (purchasedDays / 30) * 100) / 100
+      : 0;
+    return res.json({
+      willConvert: true,
+      mode: "extend",
+      subscription: {
+        id: convertible.id,
+        index: convertible.subscriptionIndex,
+        tariffName: convertible.tariffName,
+        expireAt: convertible.expireAt?.toISOString() ?? null,
+        isTrial: false,
+      },
+      remainingDays,
+      convertedDays: remainingDays,
+      purchasedDays,
+      totalDays: purchasedDays + remainingDays,
+      extras: extDevices > 0 ? {
+        extraDevices: extDevices,
+        extraDevicesMonthlyPrice: extMonthly,
+        newIncludedDevices: Math.max(1, tariff.includedDevices ?? 1),
+        /** «сохранить»: доплата за устройства на купленный период. */
+        keep: { totalDevices: Math.max(1, tariff.includedDevices ?? 1) + extDevices, convertedDays: remainingDays, totalDays: purchasedDays + remainingDays, extraCost: keepCostForPeriod },
+        /** «убрать»: без доплаты, устройств меньше. */
+        drop: { totalDevices: Math.max(1, tariff.includedDevices ?? 1), convertedDays: remainingDays, totalDays: purchasedDays + remainingDays, extraCost: 0 },
+      } : undefined,
+    });
+  }
+
+  // та же математика, что в extendSecondarySubscription(convertMode):
+  // полная старая ставка = база + устройства; при «убрать» вся ценность уходит в дни
+  // чистого тарифа, при «оставить» — в дни тарифа с устройствами.
+  const extrasPerDay = extraDevices > 0 ? extrasMonthly / 30 : 0;
+  const oldFullPerDay = convertible.currentPricePerDay != null
+    ? convertible.currentPricePerDay + extrasPerDay
+    : (extrasPerDay > 0 ? extrasPerDay : null);
+  const convertedDaysDrop = computeConvertedDays({
+    remainingDays,
+    oldPricePerDay: oldFullPerDay,
+    newPricePerDay: newBasePerDay,
+  });
+  const convertedDaysKeep = extraDevices > 0
+    ? computeConvertedDays({
+        remainingDays,
+        oldPricePerDay: oldFullPerDay,
+        newPricePerDay: newBasePerDay + extrasPerDay,
+      })
+    : convertedDaysDrop;
+
+  const newIncludedDevices = Math.max(1, tariff.includedDevices ?? 1);
+
+  return res.json({
+    willConvert: true,
+    mode: "convert",
+    subscription: {
+      id: convertible.id,
+      index: convertible.subscriptionIndex,
+      tariffName: convertible.tariffName,
+      expireAt: convertible.expireAt?.toISOString() ?? null,
+      isTrial: convertible.trialId != null,
+    },
+    remainingDays,
+    // обратная совместимость: convertedDays = вариант «оставить устройства» (дефолт UI).
+    convertedDays: convertedDaysKeep,
+    purchasedDays,
+    totalDays: purchasedDays + convertedDaysKeep,
+    // выбор судьбы доп. устройств при конвертации.
+    extras: {
+      extraDevices,
+      extraDevicesMonthlyPrice: extrasMonthly,
+      newIncludedDevices,
+      /** оставить устройства: всего устройств / дней конвертируется */
+      keep: { totalDevices: newIncludedDevices + extraDevices, convertedDays: convertedDaysKeep, totalDays: purchasedDays + convertedDaysKeep },
+      /** убрать устройства: всего устройств / дней конвертируется (больше) */
+      drop: { totalDevices: newIncludedDevices, convertedDays: convertedDaysDrop, totalDays: purchasedDays + convertedDaysDrop },
+    },
+  });
+});
+
 const linkEmailDirectSchema = z.object({ email: z.string().email() });
 clientRouter.post("/link-email-direct", async (req, res) => {
   const client = (req as unknown as { client: { id: string; email: string | null } }).client;
@@ -1572,17 +1778,11 @@ clientRouter.post("/link-email-direct", async (req, res) => {
 
   // Защита от обхода: метод работает только если SMTP не настроен ИЛИ
   // skipEmailVerification=true. Иначе админ хочет полноценную верификацию.
+  // критерий «SMTP настроен» обязан совпадать с публичным
+  // smtpConfigured (по нему фронт выбирает direct vs request) — раньше здесь
+  // дефолтился порт 587 и при пустом порте юзер попадал в тупик.
   const config = await getSystemConfig();
-  const smtpConfig = {
-    host: config.smtpHost || "",
-    port: config.smtpPort ?? 587,
-    secure: config.smtpSecure ?? false,
-    user: config.smtpUser ?? null,
-    password: config.smtpPassword ?? null,
-    fromEmail: config.smtpFromEmail ?? null,
-    fromName: config.smtpFromName ?? null,
-  };
-  const smtpOk = isSmtpConfigured(smtpConfig);
+  const smtpOk = isSystemSmtpConfigured(config);
   if (smtpOk && !config.skipEmailVerification) {
     return res.status(400).json({ message: "Требуется верификация. Используйте /link-email-request." });
   }
@@ -1630,7 +1830,14 @@ clientRouter.post("/link-email-request", async (req, res) => {
   const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
   const verificationLink = appUrl ? `${appUrl}/cabinet/verify-link-email?token=${verificationToken}` : "";
   if (!verificationLink) return res.status(500).json({ message: "Не задан URL приложения в настройках" });
-  const sendResult = await sendLinkEmailVerification(smtpConfig, email, verificationLink, config.serviceName ?? "STEALTHNET");
+  const linkTpl = await renderEmailTemplate("link_email", {
+    verifyUrl: verificationLink,
+    hours: "24",
+    serviceName: config.serviceName ?? "STEALTHNET",
+  });
+  const sendResult = linkTpl
+    ? await sendEmail(smtpConfig, email, linkTpl.subject, linkTpl.body)
+    : { ok: false as const, error: "link_email template missing" };
   if (!sendResult.ok) {
     await prisma.pendingEmailLink.deleteMany({ where: { verificationToken } }).catch(() => {});
     return res.status(500).json({ message: "Не удалось отправить письмо. Попробуйте позже." });
@@ -1718,19 +1925,29 @@ clientRouter.get("/referral-stats", async (req, res) => {
 });
 
 // создание заявки на вывод реф. баланса (USDT TRC20).
-// Минимум 3000₽. При создании баланс замораживается (decrement) — при reject
-// админом средства возвращаются. При approve — клиенту приходит уведомление.
+// настройки в админке: withdrawals_enabled (вкл/выкл фичи целиком)
+// и withdrawal_min_amount (мин. сумма; раньше было захардкожено 3000₽).
+// При создании баланс замораживается (decrement) — при reject админом средства
+// возвращаются. При approve — клиенту приходит уведомление.
 const withdrawCreateSchema = z.object({
-  amount: z.number().positive().min(3000, "Минимальная сумма вывода — 3000₽").max(1e7),
+  amount: z.number().positive().max(1e7),
   walletTrc20: z.string().min(20).max(64).regex(/^T[A-Za-z0-9]{33}$/, "Некорректный TRC20-адрес (должен начинаться с T)"),
 });
 clientRouter.post("/withdrawals", async (req, res) => {
   const clientId = (req as unknown as { clientId: string }).clientId;
+  const wdCfg = await getSystemConfig();
+  if (wdCfg.withdrawalsEnabled === false) {
+    return res.status(403).json({ message: "Заявки на вывод временно отключены" });
+  }
   const parsed = withdrawCreateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ message: parsed.error.issues[0]?.message ?? "Некорректные данные", errors: parsed.error.flatten() });
   }
   const { amount, walletTrc20 } = parsed.data;
+  const minAmount = wdCfg.withdrawalMinAmount ?? 3000;
+  if (amount < minAmount) {
+    return res.status(400).json({ message: `Минимальная сумма вывода — ${minAmount}₽` });
+  }
 
   // Атомарный debit — либо есть баланс >= amount, либо отказ.
   const debit = await prisma.client.updateMany({
@@ -1945,9 +2162,19 @@ clientRouter.post("/trial", async (req, res) => {
       remnawaveUuid: existingUuid,
     }).catch((e) => console.error("[trial] upsertSubscriptionByRemnaUuid failed:", e));
 
+    // уведомление админам в TG-группу: активирован legacy-триал (best-effort).
+    import("../notification/telegram-notify.service.js")
+      .then((m) => m.notifyAdminsAboutTrialActivated(client.id, "Бесплатный тест", trialDays))
+      .catch((e) => console.error("[trial] admin notify failed:", e));
+
     const updated = await prisma.client.findUnique({ where: { id: client.id }, select: { id: true, email: true, telegramId: true, telegramUsername: true, preferredLang: true, preferredCurrency: true, balance: true, referralCode: true, remnawaveUuid: true, trialUsed: true, isBlocked: true, autoRenewEnabled: true, autoRenewTariffId: true, createdAt: true, onboardingCompleted: true } });
     return res.json({ message: "Бесплатный тест активирован", client: updated ? toClientShape(updated) : null });
   }
+
+  // уведомление админам в TG-группу: активирован legacy-триал (best-effort).
+  import("../notification/telegram-notify.service.js")
+    .then((m) => m.notifyAdminsAboutTrialActivated(client.id, "Бесплатный тест", trialDays))
+    .catch((e) => console.error("[trial] admin notify failed:", e));
 
   // Финальный update trialUsed убран — атомик guard выше уже всё сделал.
   // Отдельный write был чисто легаси-страховкой.
@@ -1994,8 +2221,8 @@ clientRouter.get("/trials/available", async (req, res) => {
         description: t.description,
         sortOrder: t.sortOrder,
         trafficLimitBytes: effectiveTraffic !== null ? effectiveTraffic.toString() : null,
-        deviceLimit: t.tariff?.deviceLimit ?? null,
-        includedDevices: t.tariff?.includedDevices ?? null,
+        deviceLimit: t.deviceLimit ?? t.tariff?.deviceLimit ?? null,
+        includedDevices: t.tariff?.includedDevices ?? t.deviceLimit ?? null,
       };
     }),
     hasAnyEnabled: true,
@@ -2029,22 +2256,31 @@ clientRouter.post("/trials/:id/activate", async (req, res) => {
     return res.status(409).json({ message: "Этот пробный период уже активирован" });
   }
 
-  // Создаём secondary subscription с настройками тарифа триала, но длительностью триала.
-  // если у триала задан собственный trafficLimitBytes —
-  // используем его вместо тарифа (например 5 ГБ на триал при 100 ГБ у платного Unblock).
-  // Если null — fallback на лимит тарифа (бэк-совместимость со старыми триалами).
-  const trialTrafficLimit = trial.trafficLimitBytes ?? trial.tariff.trafficLimitBytes;
+  // Создаём secondary subscription. Источник параметров —
+  // ЛИБО тариф триала (как раньше), ЛИБО сам standalone-триал (сквады/лимиты
+  // заданы прямо в триале, tariffId=null — такой «псевдо-тариф» в каталоге не виден).
+  const trialTrafficLimit = trial.trafficLimitBytes ?? trial.tariff?.trafficLimitBytes ?? null;
+  let trialSquads: string[] = trial.tariff?.internalSquadUuids ?? [];
+  if (!trial.tariffId) {
+    try {
+      const parsed = trial.squadUuids ? JSON.parse(trial.squadUuids) as unknown : [];
+      trialSquads = Array.isArray(parsed) ? parsed.map((x) => String(x)) : [];
+    } catch { trialSquads = []; }
+    if (trialSquads.length === 0) {
+      return res.status(503).json({ message: "Триал настроен некорректно (нет сквадов)" });
+    }
+  }
   const { createAdditionalSubscription } = await import("../gift/gift.service.js");
   const subResult = await createAdditionalSubscription(clientId, {
-    id: trial.tariffId,
-    name: trial.tariff.name,
+    id: trial.tariffId ?? undefined,
+    name: trial.name,
     price: 0,
     durationDays: trial.durationDays, // ← длительность из триала, не тарифа
     trafficLimitBytes: trialTrafficLimit,
-    deviceLimit: trial.tariff.deviceLimit,
-    includedDevices: trial.tariff.includedDevices,
-    internalSquadUuids: trial.tariff.internalSquadUuids,
-    trafficResetMode: trial.tariff.trafficResetMode ?? undefined,
+    deviceLimit: trial.deviceLimit ?? trial.tariff?.deviceLimit ?? null,
+    includedDevices: trial.tariff?.includedDevices ?? trial.deviceLimit ?? undefined,
+    internalSquadUuids: trialSquads,
+    trafficResetMode: trial.tariff?.trafficResetMode ?? undefined,
   }, { skipConfigCheck: true, extraDevices: 0 });
   if (!subResult.ok) {
     return res.status(subResult.status).json({ message: subResult.error });
@@ -2101,6 +2337,11 @@ clientRouter.post("/trials/:id/activate", async (req, res) => {
     } catch { /* ignore */ }
   }
 
+  // уведомление админам в TG-группу: активирован триал (best-effort, не ломаем флоу).
+  import("../notification/telegram-notify.service.js")
+    .then((m) => m.notifyAdminsAboutTrialActivated(clientId, trial.name, trial.durationDays))
+    .catch((e) => console.error("[trial activate] admin notify failed:", e));
+
   return res.json({
     message: `🎁 Пробная подписка «${trial.name}» активирована на ${trial.durationDays} дн.!`,
     subscriptionId: subResult.data.subscriptionId,
@@ -2109,7 +2350,7 @@ clientRouter.post("/trials/:id/activate", async (req, res) => {
     // для кнопки «🌐 Локации» на экране активации (скрин 5).
     // Бот покажет кнопку только если у тарифа триала есть текст локаций.
     tariffId: trial.tariffId,
-    tariffHasLocations: !!(trial.tariff.locations?.trim()),
+    tariffHasLocations: !!(trial.tariff?.locations?.trim()),
     // T-unify: subscription URL для прямой URL-кнопки инструкций.
     subscriptionUrl,
   });
@@ -2394,6 +2635,15 @@ clientRouter.post("/promo-code/activate", async (req, res) => {
   }
 
   await prisma.promoCodeUsage.create({ data: { promoCodeId: promo.id, clientId: client.id } });
+
+  // уведомление админам в TG-группу: активирован промокод FREE_DAYS (best-effort).
+  {
+    const promoDays = promo.durationDays ?? 0;
+    import("../notification/telegram-notify.service.js")
+      .then((m) => m.notifyAdminsAboutPromoActivated(client.id, promo.code, promoDays))
+      .catch((e) => console.error("[promo-code activate] admin notify failed:", e));
+  }
+
   return res.json({ message: `Промокод активирован! Подписка на ${promo.durationDays} дн. подключена.` });
 });
 
@@ -2504,7 +2754,7 @@ clientRouter.get("/subscription", async (req, res) => {
   // EXPIRED Remna-юзера, тогда как subscriptions хранит актуального). Бот берёт из subscriptions — кабинет теперь тоже.
   const rootSub = await prisma.subscription.findFirst({
     where: { ownerId: client.id, subscriptionIndex: 0, remnawaveUuid: { not: null } },
-    select: { remnawaveUuid: true },
+    select: { remnawaveUuid: true, trialId: true, expireAt: true, tariff: { select: { name: true } }, trial: { select: { name: true, convertEnabled: true } } },
   });
   const effectiveUuid = rootSub?.remnawaveUuid ?? client.remnawaveUuid;
   if (!effectiveUuid) {
@@ -2516,6 +2766,24 @@ clientRouter.get("/subscription", async (req, res) => {
   }
   const result = await remnaGetUser(effectiveUuid);
   if (result.error) {
+    // подписка не должна «пропадать», если Remna недоступна
+    // или юзер там удалён: отдаём синтетический EXPIRED-объект из данных БД,
+    // чтобы кабинет показал карточку с бейджем «Истекла» вместо «Нет подписки».
+    if (rootSub) {
+      const dbName = (rootSub.trialId ? rootSub.trial?.name?.trim() : undefined) ?? rootSub.tariff?.name?.trim() ?? null;
+      return res.json({
+        subscription: {
+          status: "EXPIRED",
+          expireAt: rootSub.expireAt?.toISOString() ?? null,
+        },
+        tariffDisplayName: dbName,
+        currentPricePerDay: null,
+        isTrial: Boolean(rootSub.trialId),
+        trialName: rootSub.trialId ? (rootSub.trial?.name ?? null) : null,
+        trialConvertEnabled: rootSub.trialId ? (rootSub.trial?.convertEnabled ?? true) : true,
+        message: null,
+      });
+    }
     return res.json({ subscription: null, tariffDisplayName: null, currentPricePerDay: null, message: result.error });
   }
 
@@ -2542,7 +2810,16 @@ clientRouter.get("/subscription", async (req, res) => {
     },
   });
   let tariffDisplayName: string;
-  if (dbClient?.currentTariff?.name?.trim()) {
+  // имя тарифа в первую очередь из АКТУАЛЬНОЙ root-подписки
+  // (subscription.tariffId обновляется при конвертации/продлении), и только потом —
+  // из легаси Client.currentTariffId (его обновлял только старый activateTariffForClient,
+  // поэтому после конвертации кабинет показывал имя СТАРОГО тарифа).
+  // триальная подписка показывает имя ТРИАЛА (лейбл TRIAL — на фронте).
+  if (rootSub?.trialId && rootSub.trial?.name?.trim()) {
+    tariffDisplayName = rootSub.trial.name.trim();
+  } else if (rootSub?.tariff?.name?.trim()) {
+    tariffDisplayName = rootSub.tariff.name.trim();
+  } else if (dbClient?.currentTariff?.name?.trim()) {
     tariffDisplayName = dbClient.currentTariff.name.trim();
   } else {
     tariffDisplayName = await resolveTariffDisplayName(result.data ?? null);
@@ -2622,6 +2899,11 @@ clientRouter.get("/subscription", async (req, res) => {
     autoRenewNextChargeAmount,
     autoRenewNextChargeAt,
     autoRenewCurrency,
+    // карточка триала: лейбл «TRIAL» + кнопка «Конвертировать»
+    // (или вообще без кнопки, если конвертация триала запрещена в админке).
+    isTrial: Boolean(rootSub?.trialId),
+    trialName: rootSub?.trialId ? (rootSub.trial?.name ?? null) : null,
+    trialConvertEnabled: rootSub?.trialId ? (rootSub.trial?.convertEnabled ?? true) : true,
   });
 });
 
@@ -2690,6 +2972,15 @@ clientRouter.get("/subscription/all", async (req, res) => {
     extraDevices: number;
     /** суммарная цена за все доп. устройства на 30 дней. */
     extraDevicesMonthlyPrice: number;
+    /** для триальных подписок — тарифы, в которые
+     *  можно конвертировать (помимо тарифа триала). UI показывает их при продлении. */
+    convertTariffIds: string[];
+    /** имя триала (карточка показывает «TRIAL: имя» вместо тарифа). */
+    trialName: string | null;
+    /** можно ли конвертировать триал (false → никаких кнопок продления/конвертации). */
+    trialConvertEnabled: boolean;
+    /** конвертация разрешена в любой тариф. */
+    trialConvertAllTariffs: boolean;
   };
 
   const allSubs = await prisma.subscription.findMany({
@@ -2709,6 +3000,7 @@ clientRouter.get("/subscription/all", async (req, res) => {
       extraDevices: true,
       extraDevicesMonthlyPrice: true,
       tariff: { select: { id: true, name: true, menuEmoji: true } },
+      trial: { select: { name: true, convertEnabled: true, convertAllTariffs: true, convertTariffIds: true } },
     },
     orderBy: { subscriptionIndex: "asc" },
   });
@@ -2722,7 +3014,9 @@ clientRouter.get("/subscription/all", async (req, res) => {
   const items: SubInfo[] = [];
   for (const sub of visible) {
     let remnaPayload: unknown = null;
-    let tariffName = sub.tariff?.name?.trim() ?? "";
+    // триальная подписка показывает ИМЯ ТРИАЛА (standalone-триал
+    // вообще не имеет тарифа — без этого выводилось «Тариф не выбран»).
+    let tariffName = (sub.trialId ? sub.trial?.name?.trim() : undefined) ?? sub.tariff?.name?.trim() ?? "";
     if (sub.remnawaveUuid) {
       const r = await remnaGetUser(sub.remnawaveUuid);
       if (cryptOn) await encryptSubscriptionUrlInPlace(r.data);
@@ -2746,6 +3040,16 @@ clientRouter.get("/subscription/all", async (req, res) => {
       tariffMenuEmoji: sub.tariff?.menuEmoji?.trim() || null,
       extraDevices: sub.extraDevices ?? 0,
       extraDevicesMonthlyPrice: sub.extraDevicesMonthlyPrice ?? 0,
+      convertTariffIds: (() => {
+        if (!sub.trialId || !sub.trial?.convertTariffIds) return [];
+        try {
+          const parsed = JSON.parse(sub.trial.convertTariffIds) as unknown;
+          return Array.isArray(parsed) ? parsed.map((x) => String(x)) : [];
+        } catch { return []; }
+      })(),
+      trialName: sub.trialId ? (sub.trial?.name ?? null) : null,
+      trialConvertEnabled: sub.trialId ? (sub.trial?.convertEnabled ?? true) : true,
+      trialConvertAllTariffs: sub.trialId ? (sub.trial?.convertAllTariffs ?? false) : false,
     });
   }
 
@@ -3231,6 +3535,9 @@ const createPlategaPaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -3366,7 +3673,8 @@ clientRouter.post("/payments/platega", async (req, res) => {
       // при продлении добавляем
       // extraDevicesMonthlyPrice × (days/30). Цена устройств хранится в подписке
       // (накапливается из sell-options-пакетов при докупке). НЕ из тарифа.
-      if (parsed.data.extendsSecondarySubId) {
+      // T-extras-universal: при «убрать устройства» доплату не берём.
+      if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
         const sub = await prisma.subscription.findUnique({
           where: { id: parsed.data.extendsSecondarySubId },
           select: { extraDevicesMonthlyPrice: true },
@@ -3376,10 +3684,10 @@ clientRouter.post("/payments/platega", async (req, res) => {
           unitPrice += Math.round(monthlyPrice * (effectiveDays / 30) * 100) / 100;
         }
       }
-      // для НОВОЙ покупки тарифа добавляем
-      // tariff.pricePerExtraDevice × deviceCount × tier × (days/30). См. payByBalance.
+      // НОВЫЕ устройства, выбранные при покупке — для ЛЮБОЙ покупки
+      // (новая/конверт/продление): tariff.pricePerExtraDevice × deviceCount × tier × (days/30).
       const newExtras = Math.max(0, parsed.data.deviceCount ?? 0);
-      if (!parsed.data.extendsSecondarySubId && newExtras > 0) {
+      if (newExtras > 0) {
         const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
         const r = calcExtrasPrice(
           tariff.pricePerExtraDevice ?? 0,
@@ -3468,12 +3776,6 @@ clientRouter.post("/payments/platega", async (req, res) => {
   const orderId = randomUUID();
   const paymentKind = tariffIdToStore ? "tariff" : proxyTariffIdToStore ? "proxy" : singboxTariffIdToStore ? "singbox" : metadataExtra ? "option" : "topup";
   const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
-  const returnUrl = appUrl
-    ? `${appUrl}/cabinet/dashboard?payment=success&payment_kind=${paymentKind}&oid=${orderId}`
-    : "";
-  const failedUrl = appUrl
-    ? `${appUrl}/cabinet/dashboard?payment=failed&payment_kind=${paymentKind}&oid=${orderId}`
-    : "";
   // добавляем tg:<id> в description для удобного поиска
   // в кабинете Plategá (зеркалит логику YooKassa/CryptoPay).
   const plategaClient = await prisma.client.findUnique({
@@ -3517,6 +3819,11 @@ clientRouter.post("/payments/platega", async (req, res) => {
       metadata: paymentMeta ? JSON.stringify(paymentMeta) : null,
     }),
   });
+
+  // T-pay-wait: после оплаты/отмены Platega ведём на страницу ожидания (polling + API-reconciliation),
+  // НЕ на дашборд. id=payment.id — фронт поллит статус именно этого платежа.
+  const returnUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}&kind=${paymentKind}` : "";
+  const failedUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}&kind=${paymentKind}` : "";
 
   const result = await createPlategaTransaction(plategaConfig, {
     amount: snap.amount,
@@ -3569,6 +3876,9 @@ const payByBalanceSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
 }).refine((d) => (d.tariffId ? 1 : 0) + (d.proxyTariffId ? 1 : 0) + (d.singboxTariffId ? 1 : 0) === 1, { message: "Укажите tariffId, proxyTariffId или singboxTariffId" });
 
 clientRouter.post("/payments/balance", async (req, res) => {
@@ -3576,7 +3886,14 @@ clientRouter.post("/payments/balance", async (req, res) => {
   const parsed = payByBalanceSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: "Invalid input", errors: parsed.error.flatten() });
 
-  const { tariffId, tariffPriceOptionId, deviceCount, proxyTariffId, singboxTariffId, promoCode: promoCodeStr, extendsSecondarySubId, removeExtrasOnActivate, asAdditional } = parsed.data;
+  const { tariffId, tariffPriceOptionId, deviceCount, proxyTariffId, singboxTariffId, promoCode: promoCodeStr, extendsSecondarySubId, removeExtrasOnActivate, asAdditional, replaceTrialSubId } = parsed.data;
+
+  // T-tariff-restriction (портировано из WolfVPN): запрет покупки/продления тарифа клиенту (оплата балансом).
+  // Внешние платёжки покрыты бэкстопом в db.ts createPayment; здесь — явная проверка до списания.
+  if (tariffId) {
+    const restr = await checkTariffRestriction(clientRaw.id, tariffId);
+    if (!restr.allowed) return res.status(403).json({ message: restr.reason, code: "TARIFF_RESTRICTED" });
+  }
 
   if (proxyTariffId) {
     const tariff = await prisma.proxyTariff.findUnique({ where: { id: proxyTariffId } });
@@ -3735,7 +4052,9 @@ clientRouter.post("/payments/balance", async (req, res) => {
   const requestedExtras = Math.max(0, deviceCount ?? 0);
 
   let extrasMonthlyPrice = 0;
-  if (extendsSecondarySubId) {
+  // T-extras-universal: при «убрать устройства» доплату за существующие extras не берём —
+  // они удаляются при активации, юзер видел базовую цену.
+  if (extendsSecondarySubId && removeExtrasOnActivate !== true) {
     const sub = await prisma.subscription.findUnique({
       where: { id: extendsSecondarySubId },
       select: { extraDevicesMonthlyPrice: true },
@@ -3745,12 +4064,12 @@ clientRouter.post("/payments/balance", async (req, res) => {
   const extrasTotal = extrasMonthlyPrice > 0 && effectiveDays > 0
     ? Math.round(extrasMonthlyPrice * (effectiveDays / 30) * 100) / 100
     : 0;
-  // для НОВОЙ покупки (не extend) добавляем
-  // цену доп. устройств из tariff.pricePerExtraDevice × deviceCount × tier × (days/30).
+  // НОВЫЕ устройства, выбранные при покупке — для ЛЮБОЙ покупки (новая/конверт/продление):
+  // цена из tariff.pricePerExtraDevice × deviceCount × tier × (days/30).
   // Раньше эта сумма игнорировалась — юзер видел общую цену с устройствами, а
   // списывали только базовую (см. баг-репорт о 149₽ вместо суммы с устройствами).
   let newExtrasTotal = 0;
-  if (!extendsSecondarySubId && requestedExtras > 0) {
+  if (requestedExtras > 0) {
     const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
     const r = calcExtrasPrice(
       tariff.pricePerExtraDevice ?? 0,
@@ -3820,8 +4139,14 @@ clientRouter.post("/payments/balance", async (req, res) => {
   //    Старая ветка `activateTariffForClient` (которая продлевала Subscription[0]) удалена,
   //    потому что: «обычная покупка тарифа» должна создавать НОВУЮ подписку, а не складывать
   //    дни в primary. Хочешь продлить — нажми «Продлить подписку» (передаст extendsSecondarySubId).
-  let activateResult: { ok: true; subscriptionId?: string } | { ok: false; error: string; status: number };
+  let activateResult: { ok: true; subscriptionId?: string; convertedDays?: number } | { ok: false; error: string; status: number };
   let isExtendingSecondary = false;
+  // покупка сконвертировала существующую подписку
+  // (режим «одна подписка из категории») вместо создания новой.
+  let isConverted = false;
+  // имя старого тарифа для админ-уведомления о конвертации.
+  let convertedFromTariffName: string | null = null;
+  let convertedDaysForNotify: number | null = null;
   let createdSubscriptionId: string | null = null;
 
   if (extendsSecondarySubId) {
@@ -3839,30 +4164,71 @@ clientRouter.post("/payments/balance", async (req, res) => {
       tariff,
       selectedOption ? { id: selectedOption.id, durationDays: selectedOption.durationDays, price: selectedOption.price } : undefined,
       requestedExtras,
+      // «продлить без устройств» — обработка внутри extendSecondarySubscription
+      // (обнуление счётчиков + кик HWID), отдельный helper-вызов ниже больше не нужен.
+      removeExtrasOnActivate === true,
     );
     isExtendingSecondary = true;
     createdSubscriptionId = extendsSecondarySubId;
   } else {
-    // Любая «новая покупка тарифа» — через единый createAdditionalSubscription.
-    // Для свежего клиента она получит subscriptionIndex=0 (= главная). Для уже имеющего
-    // подписки — следующий свободный индекс. Без затирания/смешивания.
     void asAdditional;
-    const { createAdditionalSubscription } = await import("../gift/gift.service.js");
-    const addResult = await createAdditionalSubscription(clientRaw.id, {
-      id: tariff.id,
-      name: tariff.name,
-      price: tariffPaySnap.amount,
-      durationDays: selectedOption?.durationDays ?? tariff.durationDays,
-      trafficLimitBytes: tariff.trafficLimitBytes,
-      deviceLimit: tariff.deviceLimit,
-      includedDevices: tariff.includedDevices,
-      internalSquadUuids: tariff.internalSquadUuids,
-      trafficResetMode: tariff.trafficResetMode ?? undefined,
-    }, { extraDevices: requestedExtras, skipConfigCheck: true });
-    activateResult = addResult.ok
-      ? { ok: true, subscriptionId: addResult.data.subscriptionId }
-      : { ok: false, error: addResult.error, status: addResult.status };
-    if (addResult.ok) createdSubscriptionId = addResult.data.subscriptionId;
+    // режим «одна подписка из категории»: если тариф из
+    // single-категории и у клиента уже есть подписка с тарифом этой категории —
+    // КОНВЕРТИРУЕМ её (pro-rata остатка + смена тарифа/сквадов), а не создаём вторую.
+    // Балансовый путь активирует напрямую (мимо activateTariffByPaymentId), поэтому
+    // конверт-ветка нужна и здесь.
+    const { findConvertibleSubscription, extendSecondarySubscription } = await import("../tariff/tariff-activation.service.js");
+    const convertible = await findConvertibleSubscription(clientRaw.id, tariff.id);
+    if (convertible) {
+      activateResult = await extendSecondarySubscription(
+        convertible.id,
+        tariff,
+        selectedOption ? { id: selectedOption.id, durationDays: selectedOption.durationDays, price: selectedOption.price } : undefined,
+        requestedExtras,
+        // юзер выбрал убрать доп. устройства при конвертации —
+        // их остаточная ценность уйдёт в дни нового тарифа.
+        removeExtrasOnActivate === true,
+        // тот же тариф → обычное продление (стек дней), другой → конвертация.
+        /* convertMode */ !convertible.sameTariff,
+      );
+      isConverted = activateResult.ok && !convertible.sameTariff;
+      isExtendingSecondary = isExtendingSecondary || (activateResult.ok && convertible.sameTariff);
+      createdSubscriptionId = convertible.id;
+      if (isConverted) {
+        convertedFromTariffName = convertible.tariffName;
+        convertedDaysForNotify = activateResult.ok ? (activateResult.convertedDays ?? null) : null;
+      }
+    } else {
+      // покупка при активном триале ЗАМЕНЯЕТ его полностью
+      // (триал удаляется вместе с Remna-юзером). Выбор триала — replaceTrialSubId.
+      const { replaceTrialOnPurchase } = await import("../tariff/tariff-activation.service.js");
+      await replaceTrialOnPurchase(clientRaw.id, replaceTrialSubId ?? null);
+      // Любая «новая покупка тарифа» — через единый createAdditionalSubscription.
+      // Для свежего клиента она получит subscriptionIndex=0 (= главная). Для уже имеющего
+      // подписки — следующий свободный индекс. Без затирания/смешивания.
+      const { createAdditionalSubscription } = await import("../gift/gift.service.js");
+      const addResult = await createAdditionalSubscription(clientRaw.id, {
+        id: tariff.id,
+        name: tariff.name,
+        // базовая цена опции/тарифа (НЕ итог платежа): extras теперь
+        // фиксируются отдельно (extraDevicesMonthlyPrice), и customPrice/pricePerDay
+        // должны отражать чистую ставку тарифа — иначе extras задвоятся при продлении.
+        price: selectedOption?.price ?? tariff.price,
+        durationDays: selectedOption?.durationDays ?? tariff.durationDays,
+        trafficLimitBytes: tariff.trafficLimitBytes,
+        deviceLimit: tariff.deviceLimit,
+        includedDevices: tariff.includedDevices,
+        pricePerExtraDevice: tariff.pricePerExtraDevice,
+        maxExtraDevices: tariff.maxExtraDevices,
+        deviceDiscountTiers: tariff.deviceDiscountTiers,
+        internalSquadUuids: tariff.internalSquadUuids,
+        trafficResetMode: tariff.trafficResetMode ?? undefined,
+      }, { extraDevices: requestedExtras, skipConfigCheck: true });
+      activateResult = addResult.ok
+        ? { ok: true, subscriptionId: addResult.data.subscriptionId }
+        : { ok: false, error: addResult.error, status: addResult.status };
+      if (addResult.ok) createdSubscriptionId = addResult.data.subscriptionId;
+    }
   }
   if (!activateResult.ok) {
     // Remna послала — возвращаем бабки.
@@ -3871,16 +4237,9 @@ clientRouter.post("/payments/balance", async (req, res) => {
   }
   // NB: списание уже сделано атомарно выше — повторного decrement тут НЕ надо.
 
-  // если юзер выбрал «продлить без устройств»
-  // — после успешного extending удаляем все доп. устройства.
-  if (removeExtrasOnActivate === true && extendsSecondarySubId) {
-    try {
-      const { removeAllExtraDevicesForSub } = await import("../subscription/extras.helper.js");
-      await removeAllExtraDevicesForSub(extendsSecondarySubId);
-    } catch (e) {
-      console.error("[balance pay] removeExtras after activation failed:", e);
-    }
-  }
+  // «продлить без устройств» теперь обрабатывается ВНУТРИ extendSecondarySubscription
+  // (removeExtrasAfter): счётчики и HWID-лимит выставляются атомарно с активацией.
+  // Отдельный removeAllExtraDevicesForSub здесь удалён — он обнулял бы и докупленные extras.
 
   // Создаём запись об оплате
   const orderId = randomUUID();
@@ -3892,8 +4251,13 @@ clientRouter.post("/payments/balance", async (req, res) => {
   }
   // T7b: пишем маркер продления в metadata (для аудита и для re-activate если webhook).
   if (extendsSecondarySubId) tariffMeta.extendsSecondarySubId = extendsSecondarySubId;
-  // флаг удаления доп. устройств при активации.
-  if (removeExtrasOnActivate === true && extendsSecondarySubId) tariffMeta.removeExtrasOnActivate = true;
+  // маркер конвертации (single-категория) для отчётности.
+  if (isConverted && createdSubscriptionId) {
+    tariffMeta.convertedSubscriptionId = createdSubscriptionId;
+    if (activateResult.ok && activateResult.convertedDays != null) tariffMeta.convertedDays = activateResult.convertedDays;
+  }
+  // флаг удаления доп. устройств при активации (продление ИЛИ конвертация).
+  if (removeExtrasOnActivate === true) tariffMeta.removeExtrasOnActivate = true;
   // T-fix (11.05.2026): маркер покупки доп. подписки балансом (без gift).
   if (asAdditional && !extendsSecondarySubId) tariffMeta.isAdditionalSubscription = true;
   const payment = await createPayment({
@@ -3936,6 +4300,13 @@ clientRouter.post("/payments/balance", async (req, res) => {
     console.error("[balance-purchase] notifyTariffActivated failed:", e);
   });
 
+  // уведомление админам: покупка КОНВЕРТИРОВАЛА существующую подписку (best-effort).
+  if (isConverted) {
+    import("../notification/telegram-notify.service.js")
+      .then((m) => m.notifyAdminsAboutSubscriptionConverted(clientRaw.id, convertedFromTariffName, tariff.name, convertedDaysForNotify))
+      .catch((e) => console.error("[balance-purchase] convert admin notify failed:", e));
+  }
+
   // сжигаем одноразовую персональную скидку
   // после продуктовой покупки тарифа балансом.
   {
@@ -3943,10 +4314,15 @@ clientRouter.post("/payments/balance", async (req, res) => {
     await extinguishOneTimeDiscount(clientRaw.id).catch(() => {});
   }
 
-  // T7b: сообщение клиенту — продлено или активировано (как fallback в кабинете/мини-аппе).
-  const okMessage = isExtendingSecondary
-    ? `🔄 Подписка продлена на ${effectiveDays} дн.! Списано ${tariffPaySnap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`
-    : `Тариф «${tariff.name}» активирован! Списано ${tariffPaySnap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`;
+  // T7b: сообщение клиенту — конвертировано / продлено / активировано.
+  const convertedDaysMsg = (activateResult.ok && activateResult.convertedDays && activateResult.convertedDays > 0)
+    ? ` Остаток прежней подписки конвертирован: +${activateResult.convertedDays} дн.`
+    : "";
+  const okMessage = isConverted
+    ? `🔄 У вас уже была подписка в этой категории — она обновлена до тарифа «${tariff.name}».${convertedDaysMsg} Списано ${tariffPaySnap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`
+    : isExtendingSecondary
+      ? `🔄 Подписка продлена на ${effectiveDays} дн.! Списано ${tariffPaySnap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`
+      : `Тариф «${tariff.name}» активирован! Списано ${tariffPaySnap.amount.toFixed(2)} ${tariff.currency.toUpperCase()} с баланса.`;
   return res.json({
     message: okMessage,
     paymentId: payment.id,
@@ -4381,6 +4757,9 @@ const yoomoneyFormPaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -4563,7 +4942,7 @@ clientRouter.post("/yoomoney/create-form-payment", async (req, res) => {
 
   const serviceName = config.serviceName?.trim() || "STEALTHNET";
   const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
-  const successURL = appUrl ? `${appUrl}/cabinet?yoomoney_form=success` : "";
+  const successURL = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : "";
   const targets = tariffIdToStore
     ? `Тариф ${serviceName} #${orderId}`
     : proxyTariffIdToStore
@@ -4623,7 +5002,7 @@ clientRouter.get("/yoomoney/form-payment/:paymentId", async (req, res) => {
   } catch { /* ignore */ }
 
   const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
-  const successURL = appUrl ? `${appUrl}/cabinet?yoomoney_form=success` : "";
+  const successURL = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : "";
 
   return res.json({
     receiver,
@@ -4650,6 +5029,9 @@ const yookassaCreatePaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -4785,7 +5167,10 @@ clientRouter.post("/yookassa/create-payment", async (req, res) => {
             effectiveDaysCalc = opt.durationDays;
           }
         }
-        if (parsed.data.extendsSecondarySubId) {
+        // доплата за СУЩЕСТВУЮЩИЕ extras подписки при продлении.
+        // T-extras-universal: при «убрать устройства» (removeExtrasOnActivate) доплату НЕ берём —
+        // устройства удаляются при активации, юзер видел базовую цену.
+        if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
           const sub = await prisma.subscription.findUnique({
             where: { id: parsed.data.extendsSecondarySubId },
             select: { extraDevicesMonthlyPrice: true },
@@ -4794,7 +5179,10 @@ clientRouter.post("/yookassa/create-payment", async (req, res) => {
           if (monthlyPrice > 0 && effectiveDaysCalc > 0) {
             unitPriceCalc += Math.round(monthlyPrice * (effectiveDaysCalc / 30) * 100) / 100;
           }
-        } else {
+        }
+        // НОВЫЕ устройства, выбранные при покупке — теперь для ЛЮБОЙ покупки
+        // (новая/конверт/продление): activation их честно выдаёт, значит и цена честная.
+        {
           const newExtrasCalc = Math.max(0, parsed.data.deviceCount ?? 0);
           if (newExtrasCalc > 0) {
             const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
@@ -4926,6 +5314,10 @@ clientRouter.post("/yookassa/create-payment", async (req, res) => {
             if (removeExtrasOnActivate === true) {
               meta.removeExtrasOnActivate = true;
             }
+            // замена выбранного триала при покупке.
+            if (parsed.data.replaceTrialSubId) {
+              meta.replaceTrialSubId = parsed.data.replaceTrialSubId;
+            }
           }
           return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
         })(),
@@ -4934,7 +5326,8 @@ clientRouter.post("/yookassa/create-payment", async (req, res) => {
 
     const serviceName = config.serviceName?.trim() || "STEALTHNET";
     const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
-    const returnUrl = appUrl ? `${appUrl}/cabinet?yookassa=success` : "";
+    // T-pay-wait (портировано из WolfVPN): после оплаты ЮKassa возвращаем на страницу ожидания (polling статуса).
+    const returnUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : "";
     // добавляем tg:<id> в description, чтобы админ мог
     // быстро искать платежи по telegram_id в кабинете YooKassa (раньше там был
     // только orderId UUID, который никак не связать с клиентом без БД).
@@ -5018,6 +5411,9 @@ const cryptopayCreatePaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -5128,7 +5524,10 @@ clientRouter.post("/cryptopay/create-payment", async (req, res) => {
             effectiveDaysCalc = opt.durationDays;
           }
         }
-        if (parsed.data.extendsSecondarySubId) {
+        // доплата за СУЩЕСТВУЮЩИЕ extras подписки при продлении.
+        // T-extras-universal: при «убрать устройства» (removeExtrasOnActivate) доплату НЕ берём —
+        // устройства удаляются при активации, юзер видел базовую цену.
+        if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
           const sub = await prisma.subscription.findUnique({
             where: { id: parsed.data.extendsSecondarySubId },
             select: { extraDevicesMonthlyPrice: true },
@@ -5137,7 +5536,10 @@ clientRouter.post("/cryptopay/create-payment", async (req, res) => {
           if (monthlyPrice > 0 && effectiveDaysCalc > 0) {
             unitPriceCalc += Math.round(monthlyPrice * (effectiveDaysCalc / 30) * 100) / 100;
           }
-        } else {
+        }
+        // НОВЫЕ устройства, выбранные при покупке — теперь для ЛЮБОЙ покупки
+        // (новая/конверт/продление): activation их честно выдаёт, значит и цена честная.
+        {
           const newExtrasCalc = Math.max(0, parsed.data.deviceCount ?? 0);
           if (newExtrasCalc > 0) {
             const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
@@ -5234,6 +5636,10 @@ clientRouter.post("/cryptopay/create-payment", async (req, res) => {
             if (removeExtrasOnActivate === true) {
               meta.removeExtrasOnActivate = true;
             }
+            // замена выбранного триала при покупке.
+            if (parsed.data.replaceTrialSubId) {
+              meta.replaceTrialSubId = parsed.data.replaceTrialSubId;
+            }
           }
           return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
         })(),
@@ -5302,6 +5708,9 @@ const heleketCreatePaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -5410,7 +5819,10 @@ clientRouter.post("/heleket/create-payment", async (req, res) => {
             effectiveDaysCalc = opt.durationDays;
           }
         }
-        if (parsed.data.extendsSecondarySubId) {
+        // доплата за СУЩЕСТВУЮЩИЕ extras подписки при продлении.
+        // T-extras-universal: при «убрать устройства» (removeExtrasOnActivate) доплату НЕ берём —
+        // устройства удаляются при активации, юзер видел базовую цену.
+        if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
           const sub = await prisma.subscription.findUnique({
             where: { id: parsed.data.extendsSecondarySubId },
             select: { extraDevicesMonthlyPrice: true },
@@ -5419,7 +5831,10 @@ clientRouter.post("/heleket/create-payment", async (req, res) => {
           if (monthlyPrice > 0 && effectiveDaysCalc > 0) {
             unitPriceCalc += Math.round(monthlyPrice * (effectiveDaysCalc / 30) * 100) / 100;
           }
-        } else {
+        }
+        // НОВЫЕ устройства, выбранные при покупке — теперь для ЛЮБОЙ покупки
+        // (новая/конверт/продление): activation их честно выдаёт, значит и цена честная.
+        {
           const newExtrasCalc = Math.max(0, parsed.data.deviceCount ?? 0);
           if (newExtrasCalc > 0) {
             const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
@@ -5514,6 +5929,10 @@ clientRouter.post("/heleket/create-payment", async (req, res) => {
             if (removeExtrasOnActivate === true) {
               meta.removeExtrasOnActivate = true;
             }
+            // замена выбранного триала при покупке.
+            if (parsed.data.replaceTrialSubId) {
+              meta.replaceTrialSubId = parsed.data.replaceTrialSubId;
+            }
           }
           return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
         })(),
@@ -5576,6 +5995,9 @@ const lavaCreatePaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -5684,7 +6106,10 @@ clientRouter.post("/lava/create-payment", async (req, res) => {
             effectiveDaysCalc = opt.durationDays;
           }
         }
-        if (parsed.data.extendsSecondarySubId) {
+        // доплата за СУЩЕСТВУЮЩИЕ extras подписки при продлении.
+        // T-extras-universal: при «убрать устройства» (removeExtrasOnActivate) доплату НЕ берём —
+        // устройства удаляются при активации, юзер видел базовую цену.
+        if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
           const sub = await prisma.subscription.findUnique({
             where: { id: parsed.data.extendsSecondarySubId },
             select: { extraDevicesMonthlyPrice: true },
@@ -5693,7 +6118,10 @@ clientRouter.post("/lava/create-payment", async (req, res) => {
           if (monthlyPrice > 0 && effectiveDaysCalc > 0) {
             unitPriceCalc += Math.round(monthlyPrice * (effectiveDaysCalc / 30) * 100) / 100;
           }
-        } else {
+        }
+        // НОВЫЕ устройства, выбранные при покупке — теперь для ЛЮБОЙ покупки
+        // (новая/конверт/продление): activation их честно выдаёт, значит и цена честная.
+        {
           const newExtrasCalc = Math.max(0, parsed.data.deviceCount ?? 0);
           if (newExtrasCalc > 0) {
             const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
@@ -5789,6 +6217,10 @@ clientRouter.post("/lava/create-payment", async (req, res) => {
             if (removeExtrasOnActivate === true) {
               meta.removeExtrasOnActivate = true;
             }
+            // замена выбранного триала при покупке.
+            if (parsed.data.replaceTrialSubId) {
+              meta.replaceTrialSubId = parsed.data.replaceTrialSubId;
+            }
           }
           return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
         })(),
@@ -5798,8 +6230,8 @@ clientRouter.post("/lava/create-payment", async (req, res) => {
     const serviceName = config.serviceName?.trim() || "STEALTHNET";
     const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
     const hookUrl = appUrl ? `${appUrl}/api/webhooks/lava` : undefined;
-    const successUrl = appUrl ? `${appUrl}/cabinet?lava=success` : undefined;
-    const failUrl = appUrl ? `${appUrl}/cabinet?lava=fail` : undefined;
+    const successUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : undefined;
+    const failUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : undefined;
 
     const result = await createLavaInvoice({
       config: lavaConfig,
@@ -5857,6 +6289,9 @@ const lavatopCreatePaymentSchema = z.object({
   asAdditional: z.boolean().optional(),
   // покупка подарочной подписки — будет создана с purchasedAsGift=true.
   asGift: z.boolean().optional(),
+  // какой триал заменить этой покупкой (несколько триалов —
+  // выбор юзера; без поля заменяется самый старый).
+  replaceTrialSubId: z.string().min(1).max(64).optional(),
   // продление существующей secondary (вместо создания новой).
   extendsSecondarySubId: z.string().min(1).max(64).optional(),
   // при активации платежа удалить все доп. устройства.
@@ -5979,7 +6414,10 @@ clientRouter.post("/lavatop/create-payment", async (req, res) => {
             effectiveDaysCalc = opt.durationDays;
           }
         }
-        if (parsed.data.extendsSecondarySubId) {
+        // доплата за СУЩЕСТВУЮЩИЕ extras подписки при продлении.
+        // T-extras-universal: при «убрать устройства» (removeExtrasOnActivate) доплату НЕ берём —
+        // устройства удаляются при активации, юзер видел базовую цену.
+        if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
           const sub = await prisma.subscription.findUnique({
             where: { id: parsed.data.extendsSecondarySubId },
             select: { extraDevicesMonthlyPrice: true },
@@ -5988,7 +6426,10 @@ clientRouter.post("/lavatop/create-payment", async (req, res) => {
           if (monthlyPrice > 0 && effectiveDaysCalc > 0) {
             unitPriceCalc += Math.round(monthlyPrice * (effectiveDaysCalc / 30) * 100) / 100;
           }
-        } else {
+        }
+        // НОВЫЕ устройства, выбранные при покупке — теперь для ЛЮБОЙ покупки
+        // (новая/конверт/продление): activation их честно выдаёт, значит и цена честная.
+        {
           const newExtrasCalc = Math.max(0, parsed.data.deviceCount ?? 0);
           if (newExtrasCalc > 0) {
             const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
@@ -6098,6 +6539,10 @@ clientRouter.post("/lavatop/create-payment", async (req, res) => {
             if (removeExtrasOnActivate === true) {
               meta.removeExtrasOnActivate = true;
             }
+            // замена выбранного триала при покупке.
+            if (parsed.data.replaceTrialSubId) {
+              meta.replaceTrialSubId = parsed.data.replaceTrialSubId;
+            }
           }
           return Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
         })(),
@@ -6105,8 +6550,8 @@ clientRouter.post("/lavatop/create-payment", async (req, res) => {
     });
 
     const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
-    const redirectUrl = appUrl ? `${appUrl}/cabinet?lavatop=success` : undefined;
-    const failUrl = appUrl ? `${appUrl}/cabinet?lavatop=fail` : undefined;
+    const redirectUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : undefined;
+    const failUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : undefined;
 
     // Для покупки тарифа используем подписку MONTHLY — Lava.top будет авто-списывать
     // ежемесячно, и при каждом списании webhook продлит тариф у клиента (см. lavatop
@@ -6275,7 +6720,10 @@ clientRouter.post("/overpay/create-payment", async (req, res) => {
             effectiveDaysCalc = opt.durationDays;
           }
         }
-        if (parsed.data.extendsSecondarySubId) {
+        // доплата за СУЩЕСТВУЮЩИЕ extras подписки при продлении.
+        // T-extras-universal: при «убрать устройства» (removeExtrasOnActivate) доплату НЕ берём —
+        // устройства удаляются при активации, юзер видел базовую цену.
+        if (parsed.data.extendsSecondarySubId && parsed.data.removeExtrasOnActivate !== true) {
           const sub = await prisma.subscription.findUnique({
             where: { id: parsed.data.extendsSecondarySubId },
             select: { extraDevicesMonthlyPrice: true },
@@ -6284,7 +6732,10 @@ clientRouter.post("/overpay/create-payment", async (req, res) => {
           if (monthlyPrice > 0 && effectiveDaysCalc > 0) {
             unitPriceCalc += Math.round(monthlyPrice * (effectiveDaysCalc / 30) * 100) / 100;
           }
-        } else {
+        }
+        // НОВЫЕ устройства, выбранные при покупке — теперь для ЛЮБОЙ покупки
+        // (новая/конверт/продление): activation их честно выдаёт, значит и цена честная.
+        {
           const newExtrasCalc = Math.max(0, parsed.data.deviceCount ?? 0);
           if (newExtrasCalc > 0) {
             const { calcExtrasPrice } = await import("../tariff/extras-pricing.js");
@@ -6366,7 +6817,7 @@ clientRouter.post("/overpay/create-payment", async (req, res) => {
 
     const serviceName = config.serviceName?.trim() || "STEALTHNET";
     const appUrl = (config.publicAppUrl || "").replace(/\/$/, "");
-    const returnUrl = appUrl ? `${appUrl}/cabinet?overpay=return` : undefined;
+    const returnUrl = appUrl ? `${appUrl}/cabinet/payment-wait?id=${payment.id}` : undefined;
 
     const clientRow = await prisma.client.findUnique({
       where: { id: clientId },
@@ -6614,6 +7065,28 @@ clientRouter.get("/payments", async (req, res) => {
       createdAt: p.createdAt.toISOString(),
       paidAt: p.paidAt?.toISOString() ?? null,
     })),
+  });
+});
+
+// T-pay-wait (портировано из WolfVPN): статус конкретного платежа для polling на странице ожидания оплаты.
+// active reconciliation Platega УДАЛЁН по просьбе владельца:
+// статус платежа меняет ТОЛЬКО webhook (см. platega.webhooks.routes.ts) — без
+// постоянных опросов Platega API при каждом poll'е страницы ожидания. Webhook
+// должен быть включён в кабинете Platega.
+clientRouter.get("/payments/:id/status", async (req, res) => {
+  const clientId = (req as unknown as { clientId: string }).clientId;
+  const p = await prisma.payment.findFirst({
+    where: { id: req.params.id, clientId },
+    select: { id: true, status: true, amount: true, currency: true, paidAt: true },
+  });
+  if (!p) return res.status(404).json({ message: "Платёж не найден" });
+
+  return res.json({
+    id: p.id,
+    status: p.status,
+    amount: p.amount,
+    currency: p.currency,
+    paidAt: p.paidAt?.toISOString() ?? null,
   });
 });
 
@@ -7061,6 +7534,8 @@ publicConfigRouter.get("/tariffs", async (req, res) => {
           name: c.name,
           emojiKey: c.emojiKey ?? null,
           emoji,
+          // UI показывает предупреждение о конвертации при покупке из single-категории.
+          singleSubscriptionMode: c.singleSubscriptionMode,
           tariffs: c.tariffs.map((t) => tariffToJson(t, markupPct)),
         };
       }),
