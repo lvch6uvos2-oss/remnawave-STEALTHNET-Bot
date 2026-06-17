@@ -364,6 +364,12 @@ app.use((_req, res) => {
 });
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // T-tariff-restriction (портировано из WolfVPN): бэкстоп createPayment/checkTariffRestriction
+  // бросает Error с code "TARIFF_RESTRICTED" → отдаём 403 с человекочитаемой причиной.
+  const code = (err as Error & { code?: string }).code;
+  if (code === "TARIFF_RESTRICTED") {
+    return res.status(403).json({ message: err.message || "Покупка этого тарифа ограничена", code: "TARIFF_RESTRICTED" });
+  }
   console.error(err);
   res.status(500).json({ message: "Internal server error" });
 });

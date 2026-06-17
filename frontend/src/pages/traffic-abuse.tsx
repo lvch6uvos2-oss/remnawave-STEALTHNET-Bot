@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   ShieldAlert, Loader2, RefreshCw, AlertTriangle, Activity,
   Users, Server, TrendingUp, ChevronDown, ChevronUp, Search, ShieldCheck,
+  Copy, Check,
 } from "lucide-react";
 import { useAuth } from "@/contexts/auth";
 import { api, type TrafficAbuseResponse, type TrafficAbuser } from "@/lib/api";
@@ -11,6 +12,27 @@ import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { fmtMsk, fmtMskDate } from "@/lib/datetime";
+
+// T-traffic-abuse-id (портировано из WolfVPN): кнопка копирования значения (telegramId/email) в буфер.
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        }).catch(() => {});
+      }}
+      className="inline-flex items-center justify-center h-5 w-5 rounded text-muted-foreground hover:text-foreground hover:bg-foreground/10 transition shrink-0"
+      title="Скопировать"
+    >
+      {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+    </button>
+  );
+}
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0 B";
@@ -74,8 +96,8 @@ function AbuserRow({ user, index }: { user: TrafficAbuser; index: number }) {
             </span>
           </div>
           <div className="text-xs text-muted-foreground mt-1 flex flex-wrap gap-x-3 gap-y-1">
-            {user.email && <span>{user.email}</span>}
-            {user.telegramId && <span>TG: {user.telegramId}</span>}
+            {user.email && <span className="inline-flex items-center gap-1">{user.email}<CopyBtn text={user.email} /></span>}
+            {user.telegramId && <span className="inline-flex items-center gap-1">TG: <code className="text-foreground font-medium">{user.telegramId}</code><CopyBtn text={String(user.telegramId)} /></span>}
             {user.onlineAt && <span>Онлайн: {fmtMsk(user.onlineAt)}</span>}
           </div>
         </div>

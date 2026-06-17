@@ -52,6 +52,9 @@ export const ACTION_CATALOG: ActionDef[] = [
   { key: "bulk_reset_trial", label: "Сброс trial (bulk)", description: "POST /admin/clients/bulk action=reset_trial", group: "clients", severity: "warn" },
   // менеджерские права на устройства клиентов.
   { key: "change_device_limit", label: "Менять лимит устройств в подписках", description: "PATCH /admin/subscriptions/:subId/remna — поле hwidDeviceLimit. Менеджер без этого action получает 403 на смену лимита.", group: "clients", severity: "info" },
+  { key: "change_expire_date", label: "Менять дату окончания подписок", description: "PATCH /admin/subscriptions/:subId/remna — поле expireAt (продлить/изменить срок подписки).", group: "clients", severity: "warn" },
+  { key: "change_traffic_limit", label: "Менять лимит трафика в подписках", description: "PATCH /admin/subscriptions/:subId/remna — поля trafficLimitBytes / trafficLimitStrategy.", group: "clients", severity: "info" },
+  { key: "manage_services", label: "Управление услугами (доп. устройства)", description: "Вкладка «Услуги» в карточке клиента — выдать/забрать доп. устройства на подписку. GET/POST /admin/clients/:id/services*", group: "clients", severity: "warn" },
   { key: "delete_device", label: "Удалять устройства клиентов", description: "POST /admin/clients/:id/remna/devices/delete и POST /admin/subscriptions/:subId/remna/devices/delete", group: "clients", severity: "info" },
   // отчёт продаж только через баланс (для менеджеров-девочек).
   { key: "view_balance_sales", label: "Видеть отчёт продаж через баланс", description: "GET /admin/balance-sales — список платежей с provider=balance (продажи через начисление баланса вручную). Доступ к странице «Продажи через баланс» в админке.", group: "payments", severity: "info" },

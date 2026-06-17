@@ -18,6 +18,7 @@ import { prisma } from "../../db.js";
 import { sendTelegramNotification } from "./telegram-notify.js";
 import {
   remnaCreateUser,
+  remnaUpdateUser,
   remnaUsernameFromClient,
   extractRemnaUuid,
   isRemnaConfigured,
@@ -25,6 +26,7 @@ import {
 } from "../remna/remna.client.js";
 import { getSystemConfig } from "../client/client.service.js";
 import { getNextSubscriptionIndex } from "../subscription/subscription.helpers.js";
+import { calcExtrasPrice } from "../tariff/extras-pricing.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -115,6 +117,10 @@ export async function createAdditionalSubscription(
     deviceLimit: number | null;
     /** Сколько устройств включено в базовую цену тарифа (новая модель). */
     includedDevices?: number;
+    /** Цена доп. устройства за 30 дней + лесенка скидок + кап (для фиксации extras в подписке). */
+    pricePerExtraDevice?: number;
+    maxExtraDevices?: number;
+    deviceDiscountTiers?: unknown;
     internalSquadUuids: string[];
     trafficResetMode?: string;
   },
@@ -179,7 +185,16 @@ export async function createAdditionalSubscription(
   // HWID лимит: новая модель — includedDevices + extras. Если ни того, ни другого нет —
   // fallback на legacy deviceLimit (для совместимости со старыми вызовами).
   const includedDevices = tariff.includedDevices ?? null;
-  const extraDevices = Math.max(0, options?.extraDevices ?? 0);
+  // T-extras-universal (12.06.2026): капим докупаемые extras по maxExtraDevices (если тариф
+  // сообщил кап) и считаем их месячную ставку — она фиксируется в Subscription, чтобы
+  // продления честно включали доплату, а лимит устройств не «слетал» при первом продлении.
+  const requestedExtraDevices = Math.max(0, options?.extraDevices ?? 0);
+  const extraDevices = tariff.maxExtraDevices != null
+    ? Math.min(requestedExtraDevices, Math.max(0, tariff.maxExtraDevices))
+    : requestedExtraDevices;
+  const extraDevicesMonthlyPrice = extraDevices > 0
+    ? calcExtrasPrice(Math.max(0, tariff.pricePerExtraDevice ?? 0), extraDevices, tariff.deviceDiscountTiers, 30).extrasTotal
+    : 0;
   const hwidDeviceLimit = includedDevices != null
     ? includedDevices + extraDevices
     : tariff.deviceLimit ?? undefined;
@@ -218,6 +233,13 @@ export async function createAdditionalSubscription(
       expireAt,
       hwidDeviceLimit: hwidDeviceLimit ?? undefined,
       activeInternalSquads: tariff.internalSquadUuids,
+      // привязываем TG/email владельца к Remna-юзеру.
+      // Без этого все подписки, созданные через unified-покупку (включая первую
+      // у нового клиента), висели в панели Remna без telegramId/email.
+      // Подарочные (purchasedAsGift) не привязываем к дарителю — получатель
+      // привяжется при redeem (см. redeemGiftCode → remnaUpdateUser).
+      ...(options?.purchasedAsGift !== true && rootClient.telegramId?.trim() && { telegramId: parseInt(rootClient.telegramId, 10) }),
+      ...(options?.purchasedAsGift !== true && rootClient.email?.trim() && { email: rootClient.email.trim() }),
     });
 
     remnaUuid = extractRemnaUuid(createRes.data) ?? undefined;
@@ -268,6 +290,13 @@ export async function createAdditionalSubscription(
       ...(tariff.price != null && tariff.price > 0 ? {
         customPrice: tariff.price,
         currentPricePerDay: tariff.durationDays > 0 ? tariff.price / tariff.durationDays : null,
+      } : {}),
+      // фиксируем докупленные при покупке устройства: лимит в Remna
+      // уже выставлен (included + extras), а счётчики нужны для будущих продлений
+      // (цена option.price + monthly × days/30) и для «убрать устройства».
+      ...(extraDevices > 0 ? {
+        extraDevices,
+        extraDevicesMonthlyPrice: extraDevicesMonthlyPrice,
       } : {}),
       // T-unify: если автопродление включено по дефолту — сохраняем тариф+опцию для cron.
       ...(defaultAutoRenew && tariff.id ? { autoRenewTariffId: tariff.id } : {}),
@@ -665,7 +694,7 @@ export async function redeemGiftCode(
   // Проверяем получателя
   const recipient = await prisma.client.findUnique({
     where: { id: recipientRootClientId },
-    select: { id: true },
+    select: { id: true, telegramId: true, email: true },
   });
   if (!recipient) {
     return { ok: false, error: "Получатель не найден", status: 404 };
@@ -738,6 +767,18 @@ export async function redeemGiftCode(
     throw err;
   }
 
+  // перепривязываем Remna-юзера на получателя (TG/email),
+  // иначе подаренная подписка остаётся в панели Remna без привязки. Best-effort:
+  // ошибка Remna не должна ронять redeem (подписка уже передана в БД).
+  if (sub.remnawaveUuid && (recipient.telegramId?.trim() || recipient.email?.trim())) {
+    const rebind = await remnaUpdateUser({
+      uuid: sub.remnawaveUuid,
+      ...(recipient.telegramId?.trim() && { telegramId: parseInt(recipient.telegramId, 10) }),
+      ...(recipient.email?.trim() && { email: recipient.email.trim() }),
+    });
+    if (rebind.error) console.error("[gift] redeem: rebind remna tg/email failed:", rebind.error);
+  }
+
   // Логируем для обеих сторон
   await logGiftEvent(giftCode.creatorId, "GIFT_SENT", giftCode.subscriptionId, {
     code: giftCode.code,
@@ -806,6 +847,11 @@ export async function redeemGiftCode(
       subscriptionUrl = (inner as { subscriptionUrl?: string } | null)?.subscriptionUrl ?? null;
     } catch { /* ignore */ }
   }
+
+  // уведомление админам в TG-группу: подарок активирован получателем (best-effort).
+  import("../notification/telegram-notify.service.js")
+    .then((m) => m.notifyAdminsAboutGiftRedeemed(giftCode.creatorId, recipientRootClientId, sub.tariff?.name ?? null))
+    .catch((e) => console.error("[gift] redeem: admin notify failed:", e));
 
   return {
     ok: true,

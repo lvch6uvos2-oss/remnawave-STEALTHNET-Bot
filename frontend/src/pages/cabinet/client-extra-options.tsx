@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Wifi, Smartphone, Server, CreditCard, Loader2, Wallet, Layers, Shield, Zap, ArrowLeft, Calendar, Check, ChevronRight } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
@@ -61,9 +62,10 @@ export function ClientExtraOptionsPage() {
   const [payModal, setPayModal] = useState<PublicSellOption | null>(null);
   const [payLoading, setPayLoading] = useState(false);
   const [payError, setPayError] = useState<string | null>(null);
-  const [readyUrl, setReadyUrl] = useState<{ url: string; provider: string } | null>(null);
+  const navigate = useNavigate();
+  const [readyUrl, setReadyUrl] = useState<{ url: string; provider: string; paymentId?: string } | null>(null);
 
-  // опция применяется к КОНКРЕТНОЙ подписке (как в боте).
+  // T-unify-cabinet (30.05.2026, WolfVPN): опция применяется к КОНКРЕТНОЙ подписке (как в боте).
   // Грузим все подписки клиента; для devices цена растёт пропорционально остатку дней подписки.
   const [userSubs, setUserSubs] = useState<{ id: string; subscriptionIndex: number; label: string; expireAt: string | null; emoji: string | null }[]>([]);
   const [selectedSubId, setSelectedSubId] = useState<string | null>(null);
@@ -141,7 +143,7 @@ export function ClientExtraOptionsPage() {
       const res = await api.yookassaCreatePayment(token, {
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.confirmationUrl) setReadyUrl({ url: res.confirmationUrl, provider: "ЮKassa" });
+      if (res.confirmationUrl) setReadyUrl({ url: res.confirmationUrl, provider: "ЮKassa", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -157,7 +159,7 @@ export function ClientExtraOptionsPage() {
       const res = await api.cryptopayCreatePayment(token, {
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Crypto Bot" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Crypto Bot", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -173,7 +175,7 @@ export function ClientExtraOptionsPage() {
       const res = await api.heleketCreatePayment(token, {
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Heleket" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Heleket", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -189,7 +191,7 @@ export function ClientExtraOptionsPage() {
       const res = await api.lavaCreatePayment(token, {
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "LAVA" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "LAVA", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -205,7 +207,7 @@ export function ClientExtraOptionsPage() {
       const res = await api.overpayCreatePayment(token, {
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Overpay" });
+      if (res.payUrl) setReadyUrl({ url: res.payUrl, provider: "Overpay", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -222,7 +224,7 @@ export function ClientExtraOptionsPage() {
         paymentMethod: methodId,
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "Platega" });
+      if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "Platega", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -239,7 +241,7 @@ export function ClientExtraOptionsPage() {
         paymentType: "AC",
         extraOption: { kind: option.kind, productId: option.id, targetSubscriptionId: selectedSubId ?? undefined },
       });
-      if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "ЮMoney" });
+      if (res.paymentUrl) setReadyUrl({ url: res.paymentUrl, provider: "ЮMoney", paymentId: res.paymentId });
     } catch (e) {
       setPayError(e instanceof Error ? e.message : "Ошибка создания платежа");
     } finally {
@@ -289,7 +291,12 @@ export function ClientExtraOptionsPage() {
           url={readyUrl.url}
           provider={readyUrl.provider}
           onBack={() => setReadyUrl(null)}
-          onPaid={() => closePayment()}
+          onPaid={() => {
+            const pid = readyUrl.paymentId;
+            const u = readyUrl.url, prov = readyUrl.provider;
+            closePayment();
+            if (pid) navigate(`/cabinet/payment-wait?id=${encodeURIComponent(pid)}`, { state: { url: u, provider: prov } });
+          }}
           compact={isMobileOrMiniapp}
         />
       );
@@ -323,7 +330,7 @@ export function ClientExtraOptionsPage() {
           )}
         </div>
 
-        {/* выбор подписки для применения опции — как в боте. */}
+        {/* T-unify-cabinet (30.05.2026, WolfVPN): выбор подписки для применения опции — как в боте. */}
         {userSubs.length === 0 ? (
           <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-400">
             Сначала оформите подписку в разделе «Тарифы» — потом опцию можно будет применить.

@@ -9,6 +9,7 @@ import type { PublicConfig } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 
 function GoogleIcon({ className }: { className?: string }) {
@@ -96,6 +97,7 @@ export function ClientRegisterPage() {
   const [appleEnabled, setAppleEnabled] = useState(false);
   const [tgAuthPending, setTgAuthPending] = useState(false);
   const [showTgFallback, setShowTgFallback] = useState(false);
+  const [agreedToPrivacy, setAgreedToPrivacy] = useState(false);
   const [telegramBotId, setTelegramBotId] = useState<string | null>(null);
   const [tgPreToken, setTgPreToken] = useState<string | null>(null);
   const tgPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -127,8 +129,12 @@ export function ClientRegisterPage() {
   
   function validateAll(): boolean {
     const emailErr = validateEmail(email);
-        setEmailError(emailErr);
-        return !emailErr;
+    setEmailError(emailErr);
+    if (!agreedToPrivacy) {
+      setError("Необходимо согласие с Политикой обработки персональных данных");
+      return false;
+    }
+    return !emailErr;
   }
 
   useEffect(() => {
@@ -554,7 +560,15 @@ export function ClientRegisterPage() {
                   {t("cabinet.register.email_sent")}
                 </div>
               )}
-              <Button type="submit" className="w-full h-14 rounded-2xl text-base font-bold shadow-xl hover:scale-[1.02] transition-all gap-2" disabled={loading || !email}>
+              {/* Согласие с обработкой персональных данных (обязательно при регистрации) */}
+              <div className="flex items-start gap-2.5 rounded-xl border border-white/10 bg-background/30 p-3">
+                <Checkbox id="agree-privacy" checked={agreedToPrivacy} onCheckedChange={(v) => setAgreedToPrivacy(v === true)} className="mt-0.5 shrink-0 border-white/50 bg-white/10 data-[state=checked]:bg-fuchsia-500 data-[state=checked]:border-fuchsia-500 data-[state=checked]:text-white" />
+                <Label htmlFor="agree-privacy" className="text-xs font-normal leading-relaxed text-muted-foreground cursor-pointer">
+                  Регистрируясь, я подтверждаю, что ознакомился и согласен с{" "}
+                  <Link to="/cabinet/documents/privacy" target="_blank" rel="noopener noreferrer" className="font-medium text-primary hover:underline">Политикой обработки персональных данных</Link>.
+                </Label>
+              </div>
+              <Button type="submit" className="w-full h-14 rounded-2xl text-base font-bold shadow-xl hover:scale-[1.02] transition-all gap-2" disabled={loading || !email || !agreedToPrivacy}>
                 {loading ? t("cabinet.register.submit_loading") : "Продолжить"}
               </Button>
               {(telegramBotUsername || googleEnabled || appleEnabled) && (

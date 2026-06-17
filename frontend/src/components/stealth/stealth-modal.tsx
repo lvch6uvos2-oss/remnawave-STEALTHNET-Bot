@@ -46,18 +46,21 @@ export function StealthModal({ open, onClose, title, children, maxWidth = "28rem
       {/* Card */}
       <div
         className={cn(
-          "relative w-full rounded-3xl border border-white/[0.08] bg-zinc-900/95 shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)]",
+          "relative w-full rounded-3xl border border-white/10 bg-zinc-900/80 backdrop-blur-2xl",
+          "shadow-[0_24px_60px_-12px_rgba(0,0,0,0.7),0_0_60px_-24px_rgba(255,35,87,0.35),inset_0_1px_0_rgba(255,255,255,0.08)]",
           "p-5 max-h-[80vh] overflow-y-auto",
-          "animate-in slide-in-from-bottom-4 duration-200",
+          "animate-in fade-in slide-in-from-bottom-4 zoom-in-95 duration-300",
         )}
         style={{ maxWidth }}
       >
+        {/* мягкое rose-свечение в верхнем углу карточки */}
+        <div className="pointer-events-none absolute -top-14 -right-14 h-36 w-36 rounded-full bg-rose-500/10 blur-3xl" aria-hidden="true" />
         <div className="flex items-center justify-between gap-3 mb-4">
           <h3 className="text-lg font-bold tracking-tight">{title}</h3>
           <button
             type="button"
             onClick={onClose}
-            className="h-8 w-8 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center hover:bg-white/[0.08] active:scale-95 transition shrink-0"
+            className="h-8 w-8 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center hover:bg-white/[0.08] hover:border-white/15 hover:rotate-90 active:scale-95 transition-all duration-300 shrink-0"
             aria-label="Закрыть"
           >
             <X className="h-4 w-4" />

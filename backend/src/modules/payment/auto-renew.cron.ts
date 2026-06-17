@@ -53,6 +53,7 @@ import {
   notifyAutoRenewRetry,
   notifyAutoRenewYookassaSuccess,
   notifyAutoRenewYookassaFailed,
+  notifyAdminsAboutAutoRenewFailed,
 } from "../notification/telegram-notify.service.js";
 // кастомные уведомления из конструктора (/admin/auto-renew).
 // Дёргаются параллельно со старыми хардкоженными — старые остаются как fallback.
@@ -262,10 +263,15 @@ export async function processAutoRenewals() {
           // Enough balance → RENEW (баланс уже списан атомарно выше).
           // Если payment.create или активация упадут — нужно откатить debit,
           // иначе бабки списали а тарифа не выдали.
+          //
+          // активация ВНЕ транзакции. activateTariffByPaymentId
+          // читает платёж через глобальный prisma и не видела незакоммиченную запись
+          // из tx → стабильно падала «Платёж не найден», debit откатывался, и
+          // автопродление молча не работало при достаточном балансе.
           let renewalFailed = false;
+          let createdPaymentId: string | null = null;
+          let createdPromoUsageId: string | null = null;
           try {
-            await prisma.$transaction(async (tx) => {
-
             const metaObj: Record<string, unknown> = { autoRenew: true };
             if (autoRenewPromoCodeId) {
               metaObj.promoCodeId = autoRenewPromoCodeId;
@@ -276,47 +282,70 @@ export async function processAutoRenewals() {
               if (!metaObj.originalPrice) metaObj.originalPrice = baseTariffPrice;
             }
             const hasExtras = autoRenewPromoCodeId || personalPct > 0;
-            const payment = await tx.payment.create({
-              data: {
-                clientId: client.id,
-                orderId: randomUUID(),
-                amount: tariffPrice,
-                currency: client.autoRenewTariff!.currency.toUpperCase(),
-                status: "PAID",
-                provider: "balance",
-                tariffId: client.autoRenewTariff!.id,
-                tariffPriceOptionId: renewBase.priceOptionId,
-                deviceCount: renewBase.extras,
-                paidAt: new Date(),
-                metadata: hasExtras ? JSON.stringify(metaObj) : null,
-              },
-            });
-
-            if (autoRenewPromoCodeId) {
-              await tx.promoCodeUsage.create({
-                data: { promoCodeId: autoRenewPromoCodeId, clientId: client.id },
+            // Транзакция — только быстрые INSERT'ы (payment + promo usage), без внешних вызовов.
+            const { paymentId } = await prisma.$transaction(async (tx) => {
+              const payment = await tx.payment.create({
+                data: {
+                  clientId: client.id,
+                  orderId: randomUUID(),
+                  amount: tariffPrice,
+                  currency: client.autoRenewTariff!.currency.toUpperCase(),
+                  status: "PAID",
+                  provider: "balance",
+                  tariffId: client.autoRenewTariff!.id,
+                  tariffPriceOptionId: renewBase.priceOptionId,
+                  deviceCount: renewBase.extras,
+                  paidAt: new Date(),
+                  metadata: hasExtras ? JSON.stringify(metaObj) : null,
+                },
               });
-            }
 
-            const activationRes = await activateTariffByPaymentId(payment.id);
+              if (autoRenewPromoCodeId) {
+                const usage = await tx.promoCodeUsage.create({
+                  data: { promoCodeId: autoRenewPromoCodeId, clientId: client.id },
+                });
+                createdPromoUsageId = usage.id;
+              }
+              return { paymentId: payment.id };
+            });
+            createdPaymentId = paymentId;
+
+            // Платёж закоммичен — теперь активация его видит.
+            const activationRes = await activateTariffByPaymentId(paymentId);
             if (!activationRes.ok) {
               throw new Error(`Activation failed: ${activationRes.error}`);
             }
 
             // Distribute referral rewards asynchronously
             import("../referral/referral.service.js")
-              .then((m) => m.distributeReferralRewards(payment.id))
+              .then((m) => m.distributeReferralRewards(paymentId))
               .catch((e) => console.error("[auto-renew] Referral reward error:", e));
-            });
           } catch (err) {
-            // Транзакция упала — откатываем атомарный debit, чтобы юзер не остался
-            // без денег и без тарифа.
+            // Продление упало — компенсируем: возвращаем баланс, гасим платёж и
+            // снимаем promo usage, чтобы юзер не остался без денег и без тарифа.
             renewalFailed = true;
             await prisma.client.update({
               where: { id: client.id },
               data: { balance: { increment: tariffPrice } },
             }).catch((e) => console.error("[auto-renew] Rollback debit failed:", e));
+            if (createdPaymentId) {
+              await prisma.payment.updateMany({
+                where: { id: createdPaymentId, status: "PAID" },
+                data: { status: "FAILED" },
+              }).catch((e) => console.error("[auto-renew] Rollback payment failed:", e));
+            }
+            if (createdPromoUsageId) {
+              await prisma.promoCodeUsage.deleteMany({
+                where: { id: createdPromoUsageId },
+              }).catch((e) => console.error("[auto-renew] Rollback promo usage failed:", e));
+            }
             console.error(`[auto-renew] Client ${client.id} renewal failed, debit rolled back:`, err);
+            // уведомление админам в TG-группу: автосписание провалилось (best-effort).
+            notifyAdminsAboutAutoRenewFailed(
+              client.id,
+              client.autoRenewTariff.name,
+              err instanceof Error ? err.message : String(err),
+            ).catch((e) => console.error("[auto-renew] admin notify failed:", e));
           }
           if (renewalFailed) continue;
 

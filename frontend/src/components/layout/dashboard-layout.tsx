@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAdminLanguageSync } from "@/i18n/use-language-sync";
+import { WhatsNew510 } from "@/components/admin/whats-new-510";
 import { useAuth } from "@/contexts/auth";
 import { useTheme, ACCENT_PALETTES, type ThemeMode, type ThemeAccent } from "@/contexts/theme";
 import { Button } from "@/components/ui/button";
@@ -19,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { api, type AdminNotificationCounters } from "@/lib/api";
 import { InboxBell } from "@/components/inbox-bell";
 
-const PANEL_VERSION = "5.0.0";
+const PANEL_VERSION = "5.1.0";
 const GITHUB_URL = "https://github.com/systemmaster1200-eng/remnawave-STEALTHNET-Bot";
 
 // пункт меню может быть защищён action'ом
@@ -248,6 +249,9 @@ export function DashboardLayout() {
 
   return (
     <div className="flex min-h-svh bg-background relative">
+      {/* What's New 5.1.0 — одноразовый онбординг админа (localStorage-флаг). */}
+      <WhatsNew510 />
+
       {/* ═══ Global Ambient Lights ═══ */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10" aria-hidden>
         <div className="absolute inset-0" style={{ backgroundColor: 'hsl(var(--background))' }} />

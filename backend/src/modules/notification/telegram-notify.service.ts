@@ -13,7 +13,17 @@ function backToMenuMarkup(backLabel?: string | null): Record<string, unknown> {
   return { inline_keyboard: [[{ text: backLabel || "◀️ В меню", callback_data: "menu:main" }]] };
 }
 
-type AdminNotificationEventType = "balance_topup" | "tariff_payment" | "new_client" | "new_ticket";
+type AdminNotificationEventType =
+  | "balance_topup"
+  | "tariff_payment"
+  | "new_client"
+  | "new_ticket"
+  | "trial_activated"
+  | "subscription_converted"
+  | "withdrawal_request"
+  | "promo_activated"
+  | "gift_redeemed"
+  | "auto_renew_failed";
 
 type AdminNotificationPreferenceRow = {
   telegramId: string;
@@ -82,6 +92,24 @@ function getTopicIdForEvent(config: Record<string, unknown>, eventType: AdminNot
       break;
     case "new_ticket":
       raw = (config.notificationTopicTickets as string) ?? null;
+      break;
+    case "trial_activated":
+      raw = (config.notificationTopicTrials as string) ?? null;
+      break;
+    case "subscription_converted":
+      raw = (config.notificationTopicConversions as string) ?? null;
+      break;
+    case "withdrawal_request":
+      raw = (config.notificationTopicWithdrawals as string) ?? null;
+      break;
+    case "promo_activated":
+      raw = (config.notificationTopicPromo as string) ?? null;
+      break;
+    case "gift_redeemed":
+      raw = (config.notificationTopicGifts as string) ?? null;
+      break;
+    case "auto_renew_failed":
+      raw = (config.notificationTopicAutoRenew as string) ?? null;
       break;
   }
   if (!raw?.trim()) return null;
@@ -357,6 +385,35 @@ export async function notifyTariffActivated(clientId: string, paymentId: string)
 }
 
 /**
+ * алерт админам: платёж прошёл, а активация тарифа УПАЛА.
+ * Раньше в этом случае админ-группа получала обычное «📦 Оплата тарифа», клиент —
+ * «активирован», и проблема всплывала только когда клиент приходил в саппорт.
+ */
+export async function notifyTariffActivationFailed(clientId: string, paymentId: string, error: string): Promise<void> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { telegramId: true, email: true, telegramUsername: true, id: true },
+  });
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { amount: true, currency: true, provider: true, tariff: { select: { name: true } } },
+  });
+  const lines = [
+    `🚨 <b>Оплата прошла, но активация тарифа УПАЛА</b>`,
+    ``,
+    `👤 Клиент: ${escapeHtml(client ? formatClientLabel(client) : clientId)}`,
+  ];
+  if (client?.telegramId) lines.push(`🆔 TG ID: <code>${escapeHtml(client.telegramId)}</code>`);
+  if (payment?.tariff?.name) lines.push(`📋 Тариф: <b>${escapeHtml(payment.tariff.name)}</b>`);
+  if (payment?.amount != null) lines.push(`💵 Сумма: <b>${formatMoney(payment.amount, payment.currency ?? "RUB")}</b>`);
+  if (payment?.provider) lines.push(`🏦 Провайдер: ${escapeHtml(payment.provider)}`);
+  lines.push(`❌ Ошибка: <code>${escapeHtml(error.slice(0, 300))}</code>`);
+  lines.push(`🧾 Payment: <code>${escapeHtml(paymentId)}</code>`);
+  lines.push(`🕐 ${formatDate(new Date())}`);
+  await sendTelegramToAdminsForEvent("tariff_payment", lines.join("\n"));
+}
+
+/**
  * уведомление клиенту об успешной активации
  * extra-option (доп. устройства / трафик / серверы), после оплаты картой / криптой / etc.
  */
@@ -607,7 +664,125 @@ export async function notifyAdminsAboutWithdrawal(withdrawalId: string): Promise
   lines.push(`🏦 Кошелёк TRC20: <code>${escapeHtml(wr.walletTrc20)}</code>`);
   lines.push(`🕐 ${formatDate(wr.createdAt)}`);
   if (baseUrl) lines.push(`\n🔗 <a href="${escapeHtml(`${baseUrl}/admin/withdrawals`)}">Открыть в админке</a>`);
-  await sendTelegramToAdminsForEvent("new_client", lines.join("\n"));
+  await sendTelegramToAdminsForEvent("withdrawal_request", lines.join("\n"));
+}
+
+/**
+ * уведомление админам: клиент активировал пробный период.
+ */
+export async function notifyAdminsAboutTrialActivated(clientId: string, trialName: string, durationDays: number): Promise<void> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { id: true, email: true, telegramId: true, telegramUsername: true },
+  });
+  if (!client) return;
+  const lines = [
+    `🎁 <b>Активирован пробный период</b>`,
+    ``,
+    `👤 Клиент: ${escapeHtml(formatClientLabel(client))}`,
+  ];
+  if (client.telegramId) lines.push(`🆔 TG ID: <code>${escapeHtml(client.telegramId)}</code>`);
+  lines.push(`📋 Триал: <b>${escapeHtml(trialName)}</b>`);
+  lines.push(`📅 Срок: ${durationDays} дн.`);
+  lines.push(`🕐 ${formatDate(new Date())}`);
+  await sendTelegramToAdminsForEvent("trial_activated", lines.join("\n"));
+}
+
+/**
+ * уведомление админам: покупка конвертировала существующую подписку
+ * (режим «одна подписка из категории» — смена тарифа с pro-rata конвертацией остатка).
+ */
+export async function notifyAdminsAboutSubscriptionConverted(
+  clientId: string,
+  oldTariffName: string | null,
+  newTariffName: string,
+  convertedDays?: number | null,
+): Promise<void> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { id: true, email: true, telegramId: true, telegramUsername: true },
+  });
+  if (!client) return;
+  const lines = [
+    `🔄 <b>Конвертация подписки</b>`,
+    ``,
+    `👤 Клиент: ${escapeHtml(formatClientLabel(client))}`,
+  ];
+  if (client.telegramId) lines.push(`🆔 TG ID: <code>${escapeHtml(client.telegramId)}</code>`);
+  lines.push(`📋 Тариф: <b>${escapeHtml(oldTariffName?.trim() || "—")}</b> → <b>${escapeHtml(newTariffName)}</b>`);
+  if (convertedDays != null && convertedDays > 0) lines.push(`📅 Конвертировано дней: <b>+${convertedDays}</b>`);
+  lines.push(`🕐 ${formatDate(new Date())}`);
+  await sendTelegramToAdminsForEvent("subscription_converted", lines.join("\n"));
+}
+
+/**
+ * уведомление админам: активирован промокод FREE_DAYS.
+ */
+export async function notifyAdminsAboutPromoActivated(clientId: string, code: string, durationDays: number): Promise<void> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { id: true, email: true, telegramId: true, telegramUsername: true },
+  });
+  if (!client) return;
+  const lines = [
+    `🏷 <b>Активирован промокод</b>`,
+    ``,
+    `👤 Клиент: ${escapeHtml(formatClientLabel(client))}`,
+  ];
+  if (client.telegramId) lines.push(`🆔 TG ID: <code>${escapeHtml(client.telegramId)}</code>`);
+  lines.push(`🎟 Код: <code>${escapeHtml(code)}</code>`);
+  lines.push(`📅 Дней: <b>${durationDays}</b>`);
+  lines.push(`🕐 ${formatDate(new Date())}`);
+  await sendTelegramToAdminsForEvent("promo_activated", lines.join("\n"));
+}
+
+/**
+ * уведомление админам: подарочный код активирован получателем.
+ */
+export async function notifyAdminsAboutGiftRedeemed(
+  creatorClientId: string,
+  recipientClientId: string,
+  tariffName: string | null,
+): Promise<void> {
+  const [creator, recipient] = await Promise.all([
+    prisma.client.findUnique({
+      where: { id: creatorClientId },
+      select: { id: true, email: true, telegramId: true, telegramUsername: true },
+    }),
+    prisma.client.findUnique({
+      where: { id: recipientClientId },
+      select: { id: true, email: true, telegramId: true, telegramUsername: true },
+    }),
+  ]);
+  const lines = [
+    `🎁 <b>Подарок активирован</b>`,
+    ``,
+    `👤 Даритель: ${escapeHtml(creator ? formatClientLabel(creator) : creatorClientId)} → Получатель: ${escapeHtml(recipient ? formatClientLabel(recipient) : recipientClientId)}`,
+  ];
+  if (recipient?.telegramId) lines.push(`🆔 TG ID получателя: <code>${escapeHtml(recipient.telegramId)}</code>`);
+  if (tariffName?.trim()) lines.push(`📋 Тариф: <b>${escapeHtml(tariffName.trim())}</b>`);
+  lines.push(`🕐 ${formatDate(new Date())}`);
+  await sendTelegramToAdminsForEvent("gift_redeemed", lines.join("\n"));
+}
+
+/**
+ * уведомление админам: автосписание провалилось (компенсация отработала, тариф не продлён).
+ */
+export async function notifyAdminsAboutAutoRenewFailed(clientId: string, tariffName: string, error: string): Promise<void> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { id: true, email: true, telegramId: true, telegramUsername: true },
+  });
+  const lines = [
+    `🚨 <b>Автосписание провалилось</b>`,
+    ``,
+    `👤 Клиент: ${escapeHtml(client ? formatClientLabel(client) : clientId)}`,
+  ];
+  if (client?.telegramId) lines.push(`🆔 TG ID: <code>${escapeHtml(client.telegramId)}</code>`);
+  lines.push(`📋 Тариф: <b>${escapeHtml(tariffName)}</b>`);
+  lines.push(`❌ Ошибка: <code>${escapeHtml(error.slice(0, 300))}</code>`);
+  lines.push(`🕐 ${formatDate(new Date())}`);
+  await sendTelegramToAdminsForEvent("auto_renew_failed", lines.join("\n"));
 }
 
 /**

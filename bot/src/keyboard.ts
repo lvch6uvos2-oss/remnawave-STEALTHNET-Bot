@@ -475,7 +475,10 @@ export function tariffsOfCategoryButtons(
   innerStyles?: InnerButtonStyles,
   backData: string = "menu:tariffs",
   emojiIds?: InnerEmojiIds,
-  _prefixEmoji?: string
+  _prefixEmoji?: string,
+  // тогглы из админки (Настройки → Бот): скрытие сервисных кнопок экрана Тарифов.
+  // undefined → показываем (back-compat для старых вызовов).
+  visibility?: { showExtraDevices?: boolean; showBalance?: boolean }
 ): InlineMarkup {
   const rows: InlineButton[][] = [];
   const tariffPay = resolveStyle(toStyle(innerStyles?.tariffPay), "success");
@@ -493,8 +496,13 @@ export function tariffsOfCategoryButtons(
   // Логика перенесена на экран деталей тарифа — если у клиента уже есть подписка с этим
   // тарифом, там появится условная кнопка «Продлить» (см. T-std-1 в pay_tariff: handler).
   // Оставляем «➕ Докупить устройство» и добавляем «💼 Мой баланс» (T-bal, 11.05.2026).
-  rows.push([btn("➕ Докупить устройство", "menu:extra_options", undefined, undefined)]);
-  rows.push([btn("💼 Мой баланс", "menu:balance", undefined, undefined)]);
+  // Обе кнопки скрываются тогглами админки (bot_tariffs_show_*_button, default true).
+  if (visibility?.showExtraDevices !== false) {
+    rows.push([btn("➕ Докупить устройство", "menu:extra_options", undefined, undefined)]);
+  }
+  if (visibility?.showBalance !== false) {
+    rows.push([btn("💼 Мой баланс", "menu:balance", undefined, undefined)]);
+  }
   rows.push([btn(back, backData, backSty, emojiIds?.back)]);
   return { inline_keyboard: rows };
 }
@@ -510,7 +518,9 @@ export function tariffPayButtons(
   backLabel?: string | null,
   innerStyles?: InnerButtonStyles,
   emojiIds?: InnerEmojiIds,
-  prefixEmoji?: string
+  prefixEmoji?: string,
+  // тогглы скрытия сервисных кнопок экрана Тарифов (см. tariffsOfCategoryButtons).
+  visibility?: { showExtraDevices?: boolean; showBalance?: boolean }
 ): InlineMarkup {
   if (categories.length === 0) {
     const back = (backLabel && backLabel.trim()) || DEFAULT_BACK_LABEL;
@@ -518,7 +528,7 @@ export function tariffPayButtons(
     return { inline_keyboard: [[btn(back, "menu:main", backSty, emojiIds?.back)]] };
   }
   if (categories.length === 1) {
-    return tariffsOfCategoryButtons(categories[0]!, backLabel, innerStyles, "menu:main", emojiIds, prefixEmoji);
+    return tariffsOfCategoryButtons(categories[0]!, backLabel, innerStyles, "menu:main", emojiIds, prefixEmoji, visibility);
   }
   return tariffCategoryButtons(categories, backLabel, innerStyles, emojiIds, prefixEmoji);
 }
@@ -1092,6 +1102,7 @@ export function subDetailButtons(
   autoRenewEnabled?: boolean, // текущее состояние автосписания для этой подписки
   subscriptionUrl?: string | null, // прямой URL подписки — кнопка «Инструкции» открывает его без промежуточного экрана
   extraDevicesCount?: number, // для кнопки «Убрать дополнительные устройства»
+  trialConvertEnabled?: boolean, // false → у триала вообще нет кнопки продления/конвертации
 ): InlineMarkup {
   const connectId = emojiIds?.connect;
   const tariffPay = resolveStyle(toStyle(innerStyles?.tariffPay), "success");
@@ -1132,10 +1143,12 @@ export function subDetailButtons(
   }
   // новый порядок по запросу клиента —
   // Инструкции / Локации / Продлить / Автосписание / Обновить подписку / К списку подписок.
-  // T15.4: для trial-подписок — иконка карты (оплата конвертирует триал в платную подписку).
-  // Тех. flow тот же: pay_tariff_ext / pay_tariff — после успешной оплаты trial_id → null.
-  const renewLabel = isTrial ? "💳 Продлить" : "💰 Продлить";
-  rows.push([btn(renewLabel, extendCallback, undefined, tariffEmoji)]);
+  // триал: кнопка называется «Конвертировать», а при запрете
+  // конвертации в настройках триала — кнопки нет вовсе.
+  const renewLabel = isTrial ? "💳 Конвертировать" : "💰 Продлить";
+  if (!isTrial || trialConvertEnabled !== false) {
+    rows.push([btn(renewLabel, extendCallback, undefined, tariffEmoji)]);
+  }
   // кнопка «🔄 Включить/выключить автосписание».
   // Не показываем для триал-подписок (там нет смысла — это бесплатная конвертация в платную).
   if (!isTrial && tariffId) {

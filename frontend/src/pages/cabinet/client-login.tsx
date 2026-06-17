@@ -35,6 +35,7 @@ export function ClientLoginPage() {
   });
   const [telegramBotUsername, setTelegramBotUsername] = useState<string | null>(null);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
   const [googleClientId, setGoogleClientId] = useState<string | null>(null);
   const [publicAppUrl, setPublicAppUrl] = useState<string | null>(null);
   const [appleEnabled, setAppleEnabled] = useState(false);
@@ -95,6 +96,7 @@ export function ClientLoginPage() {
         setTelegramBotUsername(c.telegramBotUsername ?? null);
         setTelegramBotId(c.telegramBotId ?? null);
         setGoogleEnabled(!!c.googleLoginEnabled);
+        setPasswordResetEnabled(!!c.passwordResetEnabled);
         setGoogleClientId(c.googleClientId ?? null);
         setPublicAppUrl(c.publicAppUrl ?? null);
         setAppleEnabled(!!c.appleLoginEnabled);
@@ -488,7 +490,10 @@ export function ClientLoginPage() {
                 {emailError && <p className="text-xs text-destructive">{emailError}</p>}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="password">{t("cabinet.login.password_label")}</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="password">{t("cabinet.login.password_label")}</Label>
+                  {passwordResetEnabled && <Link to="/cabinet/forgot-password" className="text-xs text-primary hover:underline">{t("cabinet.login.forgot_password", "Забыли пароль?")}</Link>}
+                </div>
                 <Input id="password" type="password" name="login_password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="off" data-form-type="other" className="h-12 rounded-xl bg-background/50 backdrop-blur-sm border-white/10 focus-visible:ring-primary/50 transition-all" />
               </div>
               <Button type="submit" className="w-full h-14 rounded-2xl text-base font-bold shadow-xl hover:scale-[1.02] transition-all gap-2" disabled={loading}>

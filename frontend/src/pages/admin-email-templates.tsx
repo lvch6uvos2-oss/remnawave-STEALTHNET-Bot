@@ -160,7 +160,14 @@ export function AdminEmailTemplatesPage() {
                 >
                   <div className="flex items-center gap-2">
                     <span className="truncate">{t.label}</span>
-                    {t.isDefault && <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60 ml-auto">default</span>}
+                    <span className="ml-auto flex items-center gap-1">
+                      {t.wired === false && (
+                        <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-500/90 border border-amber-500/20">
+                          скоро
+                        </span>
+                      )}
+                      {t.isDefault && <span className="text-[9px] uppercase tracking-wider text-muted-foreground/60">default</span>}
+                    </span>
                   </div>
                   <p className="text-[10px] text-muted-foreground/80 mt-0.5 truncate">{t.description}</p>
                 </button>
@@ -172,6 +179,14 @@ export function AdminEmailTemplatesPage() {
         {/* RIGHT: editor */}
         {active ? (
           <div className="space-y-4">
+            {active.wired === false && (
+              <Card className="p-3 bg-amber-500/[0.07] border-amber-500/20 flex items-center gap-2 rounded-2xl backdrop-blur-3xl">
+                <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
+                <p className="text-xs text-amber-500/90">
+                  Этот шаблон пока не отправляется автоматически — правки сохранятся и применятся, когда соответствующая рассылка появится. «Send test» работает уже сейчас.
+                </p>
+              </Card>
+            )}
             <Card className="bg-background/60 backdrop-blur-3xl border-white/10 rounded-2xl p-5 space-y-3">
               <div>
                 <Label className="text-xs">Тема (subject)</Label>

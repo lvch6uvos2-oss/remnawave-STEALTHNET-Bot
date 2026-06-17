@@ -36,7 +36,7 @@ import { createProxySlotsByPaymentId } from "../proxy/proxy-slots-activation.ser
 import { createSingboxSlotsByPaymentId } from "../singbox/singbox-slots-activation.service.js";
 import { applyExtraOptionByPaymentId } from "../extra-options/extra-options.service.js";
 import { distributeReferralRewards } from "../referral/referral.service.js";
-import { notifyBalanceToppedUp, notifyTariffActivated, notifyProxySlotsCreated, notifySingboxSlotsCreated } from "../notification/telegram-notify.service.js";
+import { notifyBalanceToppedUp, notifyTariffActivated, notifyTariffActivationFailed, notifyProxySlotsCreated, notifySingboxSlotsCreated } from "../notification/telegram-notify.service.js";
 import { recordPromoCodeUsageFromPayment } from "../payment/promo-code-usage.util.js";
 import { auditPaymentClientBotAlignment } from "../payment/payment-webhook-audit.util.js";
 
@@ -139,7 +139,15 @@ async function findPlategaPaymentByAnyId(candidateIds: string[]): Promise<Paymen
   return null;
 }
 
-async function ensureTariffActivation(paymentId: string): Promise<void> {
+type ActivationOutcome =
+  /** активация выполнена этим вызовом */
+  | { applied: true; ok: true }
+  /** активация выполнялась этим вызовом и упала */
+  | { applied: true; ok: false; error: string }
+  /** делать было нечего: уже применена ранее / in_progress / не PAID */
+  | { applied: false; ok: true; reason: string };
+
+async function ensureTariffActivation(paymentId: string): Promise<ActivationOutcome> {
   const claim = await prisma.$transaction(async (tx) => {
     const row = await tx.payment.findUnique({
       where: { id: paymentId },
@@ -173,7 +181,7 @@ async function ensureTariffActivation(paymentId: string): Promise<void> {
     return { claimed: true as const, reason: "claimed" };
   });
 
-  if (!claim.claimed) return;
+  if (!claim.claimed) return { applied: false, ok: true, reason: claim.reason };
 
   const row = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -226,9 +234,10 @@ async function ensureTariffActivation(paymentId: string): Promise<void> {
 
   if (activation.ok) {
     console.log("[Platega Webhook] Tariff activated", { paymentId });
-  } else {
-    console.error("[Platega Webhook] Tariff activation failed", { paymentId, error: activation.error });
+    return { applied: true, ok: true };
   }
+  console.error("[Platega Webhook] Tariff activation failed", { paymentId, error: activation.error });
+  return { applied: true, ok: false, error: activation.error ?? "unknown activation error" };
 }
 
 /**
@@ -483,9 +492,19 @@ plategaWebhooksRouter.post("/platega", async (req, res) => {
     // Надёжная пост-обработка: даже если платеж уже PAID, повторный webhook
     // догонит активацию тарифа/рефералку.
     await recordPromoCodeUsageFromPayment(payment.id);
-    await ensureTariffActivation(payment.id);
+    // «оплачен и активирован» клиенту и «📦 Оплата тарифа» админам
+    // уходили независимо от результата активации — при упавшей активации все
+    // получали «успех», а реальная ошибка тихо лежала в metadata. Теперь уведомляем
+    // только когда активация реально применена, а при фейле шлём админам алерт.
+    const activationOutcome = await ensureTariffActivation(payment.id);
     if (payment.tariffId) {
-      await notifyTariffActivated(payment.clientId, payment.id).catch(() => {});
+      if (activationOutcome.applied && activationOutcome.ok) {
+        await notifyTariffActivated(payment.clientId, payment.id).catch(() => {});
+      } else if (!activationOutcome.ok) {
+        await notifyTariffActivationFailed(payment.clientId, payment.id, activationOutcome.error).catch(() => {});
+      }
+      // applied=false (already_applied / in_progress) — уведомление уже уходило при
+      // первичной активации; повторный webhook больше не дублирует его.
     }
     // proxyTariffId: notifyProxySlotsCreated вызывается из ensureTariffActivation
 

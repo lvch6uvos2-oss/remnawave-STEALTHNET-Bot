@@ -68,6 +68,9 @@ import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { CabinetLayout } from "@/pages/cabinet/cabinet-layout";
 import { ClientLoginPage } from "@/pages/cabinet/client-login";
 import { ClientRegisterPage } from "@/pages/cabinet/client-register";
+import { ClientForgotPasswordPage } from "@/pages/cabinet/client-forgot-password";
+import { ClientResetPasswordPage } from "@/pages/cabinet/client-reset-password";
+import { ClientPaymentWaitPage } from "@/pages/cabinet/client-payment-wait";
 import { ClientOnboardingPage } from "@/pages/cabinet/client-onboarding";
 import { ClientVerifyEmailPage } from "@/pages/cabinet/client-verify-email";
 import { ClientVerifyLinkEmailPage } from "@/pages/cabinet/client-verify-link-email";
@@ -315,6 +318,8 @@ function AppRoutes() {
         <Route index element={<CabinetIndexRedirect />} />
         <Route path="login" element={<ClientLoginPage />} />
         <Route path="register" element={<ClientRegisterPage />} />
+        <Route path="forgot-password" element={<ClientForgotPasswordPage />} />
+        <Route path="reset-password" element={<ClientResetPasswordPage />} />
         <Route path="verify-email" element={<ClientVerifyEmailPage />} />
         <Route path="verify-link-email" element={<ClientVerifyLinkEmailPage />} />
         <Route
@@ -322,6 +327,15 @@ function AppRoutes() {
           element={
             <RequireClientAuth>
               <ClientDashboardPage />
+            </RequireClientAuth>
+          }
+        />
+        {/* T-pay-wait (портировано из WolfVPN): страница ожидания оплаты (polling) — return_url платёжек ведёт сюда */}
+        <Route
+          path="payment-wait"
+          element={
+            <RequireClientAuth>
+              <ClientPaymentWaitPage />
             </RequireClientAuth>
           }
         />

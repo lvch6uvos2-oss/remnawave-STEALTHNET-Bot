@@ -28,6 +28,12 @@ import {
   X,
   RotateCcw,
   RefreshCw,
+  Globe,
+  Send,
+  UserPlus,
+  Coins,
+  Percent,
+  Sparkles,
 } from "lucide-react";
 import { useClientAuth } from "@/contexts/client-auth";
 import { useCabinetConfig } from "@/contexts/cabinet-config";
@@ -36,8 +42,10 @@ import { api } from "@/lib/api";
 import { formatRuDays } from "@/lib/i18n";
 import type { ClientPayment, ClientReferralStats } from "@/lib/api";
 import { TrialsPickerDialog } from "@/components/cabinet/trials-picker-dialog";
+import { ExtendSubscriptionDialog } from "@/components/payment/extend-subscription-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -131,8 +139,10 @@ function ClassicDashboardPage() {
   const config = useCabinetConfig();
   const [searchParams, setSearchParams] = useSearchParams();
   const [subscription, setSubscription] = useState<unknown>(null);
-  const [secondarySubscriptions, setSecondarySubscriptions] = useState<Array<{ type: string; id: string; subscriptionIndex: number | null; subscription: unknown; tariffDisplayName: string; remnawaveUuid: string | null }>>([]);
-  // id главной подписки (#0) — для кнопки «Продлить» → /cabinet/tariffs?extend=
+  const [secondarySubscriptions, setSecondarySubscriptions] = useState<Array<{ type: string; id: string; subscriptionIndex: number | null; subscription: unknown; tariffDisplayName: string; remnawaveUuid: string | null; trialId?: string | null; trialName?: string | null; trialConvertEnabled?: boolean }>>([]);
+  // root-подписка — триал: лейбл TRIAL + «Конвертировать» (или ничего).
+  const [rootTrial, setRootTrial] = useState<{ isTrial: boolean; convertEnabled: boolean }>({ isTrial: false, convertEnabled: true });
+  // T-unify-cabinet (30.05.2026, WolfVPN): id главной подписки (#0) — для кнопки «Продлить» → /cabinet/tariffs?extend=
   const [rootSubId, setRootSubId] = useState<string | null>(null);
   const [tariffDisplayName, setTariffDisplayName] = useState<string | null>(null);
   const [autoRenewNext, setAutoRenewNext] = useState<{ amount: number | null; at: string | null; currency: string | null }>({ amount: null, at: null, currency: null });
@@ -140,18 +150,26 @@ function ClassicDashboardPage() {
   const [_payments, setPayments] = useState<ClientPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [paymentMessage, setPaymentMessage] = useState<"success_topup" | "success_tariff" | "success" | "failed" | null>(null);
+  // T-pay-success-modal (WolfVPN): модалка успеха при возврате с оплаты (ЮKassa/Platega/Lava/и др.)
+  const [paySuccessModal, setPaySuccessModal] = useState<null | "topup" | "tariff" | "generic">(null);
   const [trialLoading, setTrialLoading] = useState(false);
   const [trialError, setTrialError] = useState<string | null>(null);
-  // новая мульти-триал система.
+  // T15 (26.05.2026, WolfVPN): новая мульти-триал система.
   // hasMultiTrials=null → ещё не загружали; true → открываем модалку; false → legacy /trial.
   const [hasMultiTrials, setHasMultiTrials] = useState<boolean | null>(null);
   const [trialsPickerOpen, setTrialsPickerOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [_referralStats, setReferralStats] = useState<ClientReferralStats | null>(null);
+  // красивая модалка продления вместо редиректа в каталог
+  // (?extend=...). Открывается для ЛЮБОЙ подписки — единый механизм.
+  const [extendSubId, setExtendSubId] = useState<string | null>(null);
+  const [referralStats, setReferralStats] = useState<ClientReferralStats | null>(null);
   const [deviceCount, setDeviceCount] = useState<number | null>(null);
-  // кол-во устройств по каждой подписке (subscriptionId → count) — для доп.подписок.
+  // T-sec-devices (WolfVPN): кол-во устройств по каждой подписке (subscriptionId → count) — для доп.подписок.
   const [devicesBySubId, setDevicesBySubId] = useState<Record<string, number>>({});
-  const [autoRenewLoading, setAutoRenewLoading] = useState(false);
+  // ♻️ Пер-подписочное автосписание (вместо одного глобального Switch в карточке «Баланс»).
+  // Триальные подписки сюда не попадают — автосписание на них не имеет смысла.
+  const [autoRenewSubs, setAutoRenewSubs] = useState<Array<{ type: "root" | "secondary"; id: string; name: string; enabled: boolean }>>([]);
+  const [autoRenewTogglingId, setAutoRenewTogglingId] = useState<string | null>(null);
 
   const token = state.token;
   const isMiniapp = useCabinetMiniapp();
@@ -160,25 +178,26 @@ function ClassicDashboardPage() {
 
   useEffect(() => {
     const payment = searchParams.get("payment");
-    const yoomoneyForm = searchParams.get("yoomoney_form");
     const paymentKind = searchParams.get("payment_kind");
-    if (payment === "success") {
-      if (paymentKind === "topup") setPaymentMessage("success_topup");
-      else if (paymentKind === "tariff") setPaymentMessage("success_tariff");
-      else setPaymentMessage("success");
+    // T-pay-success-modal (WolfVPN): ЕДИНЫЙ детект возврата с любой платёжки.
+    // Бэкенд редиректит по-разному: ?payment=success, ?yookassa=success, ?heleket=success,
+    // ?yoomoney_form=success, ?lava=success, ?lavatop=success, ?overpay=return.
+    const providerSuccess =
+      payment === "success" ||
+      searchParams.get("yoomoney_form") === "success" ||
+      searchParams.get("yookassa") === "success" ||
+      searchParams.get("heleket") === "success" ||
+      searchParams.get("lava") === "success" ||
+      searchParams.get("lavatop") === "success" ||
+      searchParams.get("overpay") === "return";
+    if (providerSuccess) {
+      const kind = paymentKind === "topup" ? "topup" : paymentKind === "tariff" ? "tariff" : "generic";
+      setPaymentMessage(kind === "topup" ? "success_topup" : kind === "tariff" ? "success_tariff" : "success");
+      setPaySuccessModal(kind);
       setSearchParams({}, { replace: true });
       if (token) refreshProfile().catch(() => {});
     } else if (payment === "failed") {
       setPaymentMessage("failed");
-      setSearchParams({}, { replace: true });
-      if (token) refreshProfile().catch(() => {});
-    } else if (yoomoneyForm === "success") {
-      setSearchParams({}, { replace: true });
-      if (token) refreshProfile().catch(() => {});
-    } else if (searchParams.get("yookassa") === "success") {
-      setSearchParams({}, { replace: true });
-      if (token) refreshProfile().catch(() => {});
-    } else if (searchParams.get("heleket") === "success") {
       setSearchParams({}, { replace: true });
       if (token) refreshProfile().catch(() => {});
     }
@@ -209,8 +228,24 @@ function ClassicDashboardPage() {
         setPayments(payRes.items ?? []);
         setDeviceCount(devRes.total ?? null);
         setSecondarySubscriptions((allSubRes.items || []).filter(s => s.type === "secondary"));
-        setRootSubId((allSubRes.items || []).find(s => s.type === "root")?.id ?? null);
-        // счётчик устройств по subscriptionId — для отображения «использовано/лимит» на доп.подписках.
+        // ♻️ Список подписок для блока «Автосписание по подпискам» (без триальных).
+        setAutoRenewSubs(
+          (allSubRes.items || [])
+            .filter((s) => !s.trialId)
+            .map((s) => ({
+              type: s.type,
+              id: s.id,
+              name: s.tariffDisplayName?.trim() || `Подписка #${(s.subscriptionIndex ?? 0) + 1}`,
+              enabled: s.autoRenewEnabled ?? false,
+            })),
+        );
+        const rootItem = (allSubRes.items || []).find(s => s.type === "root");
+        setRootSubId(rootItem?.id ?? null);
+        setRootTrial({
+          isTrial: Boolean(rootItem?.trialId),
+          convertEnabled: rootItem?.trialConvertEnabled ?? true,
+        });
+        // T-sec-devices (WolfVPN): счётчик устройств по subscriptionId — для отображения «использовано/лимит» на доп.подписках.
         const devCounts: Record<string, number> = {};
         for (const d of (allDevRes.items || [])) devCounts[d.subscriptionId] = (devCounts[d.subscriptionId] || 0) + 1;
         setDevicesBySubId(devCounts);
@@ -225,9 +260,9 @@ function ClassicDashboardPage() {
   }, [token, refreshKey]);
 
   useEffect(() => {
-    if (!token || !isMiniapp) return;
+    if (!token) return;
     api.getClientReferralStats(token).then(setReferralStats).catch(() => {});
-  }, [token, isMiniapp]);
+  }, [token]);
 
   // Auto-redeem pending gift code (saved by /gift/:code page before redirect to login/register)
   const [giftRedeemMessage, setGiftRedeemMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -248,16 +283,19 @@ function ClassicDashboardPage() {
       });
   }, [token, loading]);
 
-  async function toggleAutoRenew(enabled: boolean) {
-    if (!token || !client) return;
-    setAutoRenewLoading(true);
+  // ♻️ Тоггл автосписания у конкретной подписки: optimistic-обновление с откатом при ошибке.
+  async function toggleSubAutoRenew(sub: { type: "root" | "secondary"; id: string }, enabled: boolean) {
+    if (!token) return;
+    setAutoRenewTogglingId(sub.id);
+    setAutoRenewSubs((prev) => prev.map((s) => (s.id === sub.id ? { ...s, enabled } : s)));
     try {
-      await api.clientUpdateAutoRenew(token, { enabled });
-      await refreshProfile();
+      await api.clientSetSubscriptionAutoRenew(token, sub.type, sub.id, enabled);
+      refreshProfile().catch(() => {});
     } catch (err) {
-      console.error("Failed to toggle auto-renew", err);
+      console.error("Failed to toggle subscription auto-renew", err);
+      setAutoRenewSubs((prev) => prev.map((s) => (s.id === sub.id ? { ...s, enabled: !enabled } : s)));
     } finally {
-      setAutoRenewLoading(false);
+      setAutoRenewTogglingId(null);
     }
   }
 
@@ -289,7 +327,7 @@ function ClassicDashboardPage() {
     }
   }
 
-  // при заходе грузим список доступных триалов.
+  // T15 (26.05.2026, WolfVPN): при заходе грузим список доступных триалов.
   // Если их > 0 → кнопка «Бесплатный Тест» откроет модалку выбора.
   // Если бэк вернул items=[] AND hasAnyEnabled=false → нет новых триалов вообще, fallback на legacy /trial.
   // Если items=[] AND hasAnyEnabled=true → юзер уже всё использовал, модалку показывать не надо.
@@ -342,10 +380,10 @@ function ClassicDashboardPage() {
   const hasActiveSubscription =
     subscription && typeof subscription === "object" && (subParsed.status === "ACTIVE" || subParsed.status === undefined);
   const vpnUrl = subParsed.subscriptionUrl || null;
-  // если включена настройка «Страница подписки Remna» —
+  // T-remna-connect (27.05.2026, WolfVPN): если включена настройка «Страница подписки Remna» —
   // кнопки «Подключиться» ведут напрямую на remna subscriptionUrl, а не на /cabinet/subscribe.
   const useRemnaPage = config?.useRemnaSubscriptionPage === true;
-  // новые мульти-триалы могут показываться
+  // T-trial-coexist (27.05.2026, WolfVPN): новые мульти-триалы могут показываться
   // ВМЕСТЕ с активной подпиской — юзер мог взять Trial #1, потом купить тариф и захотеть
   // ещё пробников. Legacy single-trial (`config.trialEnabled`) — старая система,
   // показываем только когда нет активной подписки.
@@ -371,6 +409,69 @@ function ClassicDashboardPage() {
       setTimeout(() => setReferralCopied(null), 2000);
     }
   };
+  // ♻️ Автосписание по подпискам — общий узел для mobile/desktop карточки «Баланс».
+  const anyAutoRenewOn = autoRenewSubs.some((s) => s.enabled);
+  const autoRenewListNode = autoRenewSubs.length > 0 ? (
+    <div className="relative overflow-hidden rounded-2xl border border-primary/15 bg-gradient-to-br from-primary/[0.07] via-background/40 to-violet-500/[0.06] backdrop-blur-xl p-4 text-left space-y-3 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)]">
+      {/* мягкое свечение в углу */}
+      <div className="pointer-events-none absolute -top-10 -right-10 h-28 w-28 rounded-full bg-primary/15 blur-3xl" aria-hidden />
+      <div className="relative flex items-start justify-between gap-2">
+        <div className="flex flex-col gap-1">
+          <Label className="text-sm font-semibold inline-flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary/15 ring-1 ring-primary/20">
+              <RotateCcw className="h-3.5 w-3.5 text-primary shrink-0" />
+            </span>
+            Автосписание
+          </Label>
+          {anyAutoRenewOn && autoRenewNext.amount != null ? (
+            <span className="text-[11px] leading-tight text-muted-foreground">
+              Ближайшее списание:{" "}
+              <span className="font-bold tabular-nums text-foreground">
+                {autoRenewNext.amount.toLocaleString("ru-RU")} {autoRenewNext.currency === "RUB" ? "₽" : autoRenewNext.currency === "USD" ? "$" : autoRenewNext.currency}
+              </span>
+              {autoRenewNext.at && (
+                <> · {new Date(autoRenewNext.at).toLocaleDateString("ru-RU", { day: "numeric", month: "short" })}</>
+              )}
+            </span>
+          ) : (
+            <span className="text-[11px] leading-tight text-muted-foreground">
+              {config?.yookassaRecurringEnabled
+                ? <>Сначала с баланса{client.yookassaPaymentMethodTitle ? <>, затем с карты <span className="font-medium">{client.yookassaPaymentMethodTitle}</span></> : ", затем с карты"}</>
+                : "Списание с баланса"
+              }
+            </span>
+          )}
+        </div>
+        <span className={`mt-0.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ring-1 transition-colors ${anyAutoRenewOn ? "bg-emerald-500/10 text-emerald-500 dark:text-emerald-400 ring-emerald-500/25" : "bg-muted/40 text-muted-foreground ring-border/50"}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${anyAutoRenewOn ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/50"}`} />
+          {anyAutoRenewOn ? "Активно" : "Выкл"}
+        </span>
+      </div>
+      <div className="relative space-y-1.5">
+        {autoRenewSubs.map((sub) => (
+          <div
+            key={sub.id}
+            className={`group flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 transition-all duration-300 ${sub.enabled ? "bg-primary/[0.07] border-primary/20 shadow-[0_0_18px_-8px] shadow-primary/30" : "bg-background/40 border-border/40 hover:border-border/70"}`}
+          >
+            <span className="flex items-center gap-2.5 min-w-0">
+              <span className={`h-2 w-2 shrink-0 rounded-full transition-colors duration-300 ${sub.enabled ? "bg-emerald-500 shadow-[0_0_8px] shadow-emerald-500/60" : "bg-muted-foreground/30"}`} />
+              <span className="text-[13px] font-medium text-foreground/90 truncate">{sub.name}</span>
+            </span>
+            <span className="flex items-center gap-2 shrink-0">
+              {autoRenewTogglingId === sub.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+              <Switch
+                checked={sub.enabled}
+                disabled={autoRenewTogglingId === sub.id}
+                onCheckedChange={(v) => toggleSubAutoRenew(sub, v)}
+                className="data-[state=checked]:bg-emerald-500"
+              />
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
   const trafficPercent = subParsed.trafficLimitBytes != null && subParsed.trafficLimitBytes > 0 && subParsed.trafficUsed != null
     ? Math.min(100, Math.round((subParsed.trafficUsed / subParsed.trafficLimitBytes) * 100))
     : null;
@@ -397,20 +498,18 @@ function ClassicDashboardPage() {
           <span className="inline-flex items-center leading-none">{t("cabinet.dashboard.choose_tariff")}</span>
         </Link>
       </Button>
-      {/* T-expired-extend : если главная подписка #0 истекла — даём продлить ИМЕННО её,
+      {/* T-expired-extend (WolfVPN, 2026-06-03): если главная подписка #0 истекла — даём продлить ИМЕННО её,
           а не только «Выбрать тариф». rootSubId есть всегда пока подписка #0 существует в БД (даже EXPIRED). */}
-      {rootSubId && (
-        <Button variant="outline" className="gap-2 h-11 px-6 rounded-xl border-primary/30 hover:bg-primary/10 [&_svg]:self-center [&_span]:leading-none" asChild>
-          <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-2">
-            <RefreshCw className="h-4 w-4 shrink-0" />
-            <span className="inline-flex items-center leading-none">Продлить подписку #0</span>
-          </Link>
-        </Button>
+      {rootActionNode(
+        "gap-2 h-11 px-6 rounded-xl bg-gradient-to-r from-primary via-fuchsia-500 to-purple-500 text-white border-0 shadow-lg shadow-primary/30 hover:opacity-90 [&_svg]:self-center [&_span]:leading-none",
+        "h-4 w-4 shrink-0",
+        "inline-flex items-center leading-none",
+        "Продлить подписку #0",
       )}
     </div>
   );
 
-  // модалка выбора триала — общая для mobile и desktop.
+  // T15 (26.05.2026, WolfVPN): модалка выбора триала — общая для mobile и desktop.
   const trialsPickerNode = (
     <TrialsPickerDialog
       open={trialsPickerOpen}
@@ -420,10 +519,99 @@ function ClassicDashboardPage() {
     />
   );
 
+  // единая кнопка действия root-подписки (для всех 3 мест рендера):
+  // обычная → «Продлить» (модалка); триал → «Конвертировать» (выбор тарифа в каталоге);
+  // триал с запрещённой конвертацией → кнопки нет вовсе.
+  const rootActionNode = (cls: string, iconCls: string, txtCls: string, label = "Продлить") => {
+    if (!rootSubId) return null;
+    if (rootTrial.isTrial) {
+      if (!rootTrial.convertEnabled) return null;
+      return (
+        <Button className={cls} asChild>
+          <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-1.5 leading-none">
+            <RefreshCw className={iconCls} />
+            <span className={txtCls}>Конвертировать</span>
+          </Link>
+        </Button>
+      );
+    }
+    return (
+      <Button className={cls} onClick={() => setExtendSubId(rootSubId)}>
+        <RefreshCw className={iconCls} />
+        <span className={txtCls}>{label}</span>
+      </Button>
+    );
+  };
+
+  // то же для ЛЮБОЙ secondary-подписки (унифицировано с root).
+  const secActionNode = (sec: { id: string; trialId?: string | null; trialConvertEnabled?: boolean }, cls: string, iconCls: string, txtCls: string) => {
+    if (sec.trialId) {
+      if (sec.trialConvertEnabled === false) return null;
+      return (
+        <Button size="sm" className={cls} asChild>
+          <Link to={`/cabinet/tariffs?extend=${sec.id}`} className="inline-flex items-center justify-center gap-1.5 leading-none">
+            <RefreshCw className={iconCls} />
+            <span className={txtCls}>Конвертировать</span>
+          </Link>
+        </Button>
+      );
+    }
+    return (
+      <Button size="sm" className={cls} onClick={() => setExtendSubId(sec.id)}>
+        <RefreshCw className={iconCls} />
+        <span className={txtCls}>Продлить</span>
+      </Button>
+    );
+  };
+
+  // модалка продления подписки (любой — единый механизм) без
+  // редиректа в каталог. После балансовой оплаты обновляем данные дашборда.
+  const extendDialogNode = extendSubId ? (
+    <ExtendSubscriptionDialog
+      subId={extendSubId}
+      open
+      onClose={() => setExtendSubId(null)}
+      onPaidByBalance={() => setRefreshKey((k) => k + 1)}
+    />
+  ) : null;
+
+  // T-pay-success-modal (WolfVPN): модалка успешной оплаты при возврате с платёжки — общая для mobile/desktop.
+  const paySuccessModalNode = (
+    <Dialog open={paySuccessModal !== null} onOpenChange={(o) => !o && setPaySuccessModal(null)}>
+      <DialogContent className="sm:max-w-sm rounded-3xl border-white/10 bg-background/90 backdrop-blur-3xl overflow-hidden">
+        <div className="absolute -top-16 left-1/2 -translate-x-1/2 h-40 w-40 rounded-full bg-emerald-500/25 blur-3xl pointer-events-none" />
+        <div className="relative flex flex-col items-center gap-4 py-3 text-center">
+          <motion.div
+            initial={{ scale: 0, rotate: -25 }}
+            animate={{ scale: 1, rotate: 0 }}
+            transition={{ type: "spring", stiffness: 260, damping: 16 }}
+            className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-green-600 shadow-xl shadow-emerald-500/40"
+          >
+            <Check className="h-10 w-10 text-white" strokeWidth={3} />
+          </motion.div>
+          <DialogTitle className="text-2xl font-black tracking-tight text-foreground">Оплата прошла! ✨</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed text-muted-foreground px-2">
+            {paySuccessModal === "topup"
+              ? "Баланс пополнен — средства уже на счету."
+              : paySuccessModal === "tariff"
+                ? "Спасибо за покупку! Подписка активируется автоматически в течение минуты."
+                : "Спасибо за покупку! Если подписка не появилась сразу — обновите страницу через минуту."}
+          </DialogDescription>
+          <Button
+            onClick={() => setPaySuccessModal(null)}
+            className="mt-1 w-full h-12 rounded-xl text-base font-bold border-0 text-white bg-gradient-to-r from-emerald-500 to-green-600 hover:opacity-90 [&_svg]:self-center [&_span]:leading-none"
+          >
+            Отлично
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+
   if (isMiniapp) {
     return (
       <>
-      <div className="w-full min-w-0 overflow-hidden space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="w-full min-w-0 overflow-hidden flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
         {(paymentMessage === "success" || paymentMessage === "success_topup" || paymentMessage === "success_tariff") && (
           <div className="rounded-xl bg-green-500/15 backdrop-blur-md border border-green-500/30 px-4 py-3 text-sm font-medium text-green-700 dark:text-green-400 shadow-sm">
             {paymentMessage === "success_topup"
@@ -451,12 +639,19 @@ function ClassicDashboardPage() {
         )}
 
         {/* 1. Статус, срок, тариф, трафик, устройства — с иконками */}
-        <section data-tour="subscription" className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300">
-          <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-muted-foreground/80 mb-5">
-            <div className="p-1.5 bg-primary/20 rounded-lg">
-              <Zap className="h-4 w-4 shrink-0 text-primary" />
-            </div>
-            {t("cabinet.dashboard.subscription_status")}
+        <section data-tour="subscription" className="order-1 rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300">
+          <h2 className="flex items-center justify-between gap-2 text-[13px] font-semibold uppercase tracking-wider text-muted-foreground/80 mb-5">
+            <span className="flex items-center gap-2 min-w-0">
+              <span className="inline-flex p-1.5 bg-primary/20 rounded-lg shrink-0">
+                <Zap className="h-4 w-4 shrink-0 text-primary" />
+              </span>
+              <span className="truncate">{t("cabinet.dashboard.subscription_status")}</span>
+            </span>
+            {rootActionNode(
+              "shrink-0 gap-1.5 rounded-full h-8 px-3 bg-gradient-to-r from-primary via-fuchsia-500 to-purple-500 text-white border-0 shadow-md shadow-primary/30 hover:opacity-90 normal-case [&_svg]:self-center [&_span]:leading-none",
+              "h-3.5 w-3.5 shrink-0",
+              "inline-flex items-center text-xs font-medium leading-none",
+            )}
           </h2>
           {loading ? (
             <div className="flex items-center justify-center py-8">
@@ -497,7 +692,7 @@ function ClassicDashboardPage() {
                       <Package className="h-5 w-5" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{t("cabinet.dashboard.tariff_label")}</p>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{rootTrial.isTrial ? "TRIAL" : t("cabinet.dashboard.tariff_label")}</p>
                       <p className="text-[14px] font-semibold truncate text-foreground" title={((tariffDisplayName ?? subParsed.productName?.trim() ?? "").trim()) || t("cabinet.dashboard.test_label")}>
                         {((tariffDisplayName ?? subParsed.productName?.trim() ?? "").trim()) || t("cabinet.dashboard.test_label")}
                       </p>
@@ -541,30 +736,34 @@ function ClassicDashboardPage() {
                   )}
                 </div>
               </div>
-              {/* Кнопки основной подписки: Подключиться + Продлить (как у доп. подписок) */}
-              <div className="pt-2 flex flex-col sm:flex-row gap-2">
-                <Button className="flex-1 gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
-                  {useRemnaPage && vpnUrl ? (
-                    <a href={vpnUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center gap-2">
-                      <Wifi className="h-5 w-5 shrink-0" />
-                      <span className="inline-flex items-center leading-none">Подключиться</span>
-                    </a>
-                  ) : (
-                    <Link to="/cabinet/subscribe" className="inline-flex w-full items-center justify-center gap-2">
-                      <Wifi className="h-5 w-5 shrink-0" />
-                      <span className="inline-flex items-center leading-none">Подключиться</span>
-                    </Link>
-                  )}
-                </Button>
-                {rootSubId && (
-                  <Button variant="outline" className="sm:w-auto gap-2 h-12 rounded-xl text-md border-indigo-500/30 hover:bg-indigo-500/10 [&_svg]:self-center [&_span]:leading-none" asChild>
-                    <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-2">
-                      <RefreshCw className="h-5 w-5 shrink-0" />
-                      <span className="inline-flex items-center leading-none">Продлить</span>
-                    </Link>
-                  </Button>
-                )}
-              </div>
+              {/* T-main-connect (WolfVPN): ссылка подписки + кнопка «Подключиться» прямо в карточке основной подписки (как у доп.подписок) */}
+              {vpnUrl && (
+                <>
+                  <div className="flex gap-2 min-w-0 pt-1">
+                    <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={vpnUrl}>
+                      {vpnUrl}
+                    </code>
+                    <Button size="icon" variant="outline" className="shrink-0 h-auto w-11 rounded-xl bg-background/50 hover:bg-background/80 transition-transform hover:scale-105" onClick={() => { navigator.clipboard.writeText(vpnUrl || ""); window.Telegram?.WebApp?.showPopup?.({ title: t("cabinet.dashboard.copied_title"), message: t("cabinet.dashboard.copied_message") }); }}>
+                      <Copy className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="pt-1">
+                    <Button className="w-full gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none bg-gradient-to-r from-primary via-fuchsia-500 to-purple-500 text-white border-0" asChild>
+                      {useRemnaPage && vpnUrl ? (
+                        <a href={vpnUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center gap-2">
+                          <Wifi className="h-5 w-5 shrink-0" />
+                          <span className="inline-flex items-center leading-none">Подключиться</span>
+                        </a>
+                      ) : (
+                        <Link to="/cabinet/subscribe" className="inline-flex w-full items-center justify-center gap-2">
+                          <Wifi className="h-5 w-5 shrink-0" />
+                          <span className="inline-flex items-center leading-none">Подключиться</span>
+                        </Link>
+                      )}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </section>
@@ -577,14 +776,22 @@ function ClassicDashboardPage() {
           const secTrafficPercent = secParsed.trafficLimitBytes && secParsed.trafficLimitBytes > 0 && secParsed.trafficUsed != null ? Math.min(100, Math.round((secParsed.trafficUsed / secParsed.trafficLimitBytes) * 100)) : null;
 
           return (
-            <section key={sec.id} className="rounded-3xl border border-indigo-500/30 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300">
-              <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-muted-foreground/80 mb-4">
-                <div className="p-1.5 bg-indigo-500/20 rounded-lg">
-                  <Package className="h-4 w-4 shrink-0 text-indigo-400" />
-                </div>
-                Дополнительная подписка #{sec.subscriptionIndex ?? ""}
+            <section key={sec.id} className="order-3 rounded-3xl border border-indigo-500/30 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300">
+              <h2 className="flex items-center justify-between gap-2 text-[13px] font-semibold uppercase tracking-wider text-muted-foreground/80 mb-4">
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="inline-flex p-1.5 bg-indigo-500/20 rounded-lg shrink-0">
+                    <Package className="h-4 w-4 shrink-0 text-indigo-400" />
+                  </span>
+                  <span className="truncate">Подписка #{sec.subscriptionIndex ?? ""}</span>
+                </span>
+                {secActionNode(
+                  sec,
+                  "shrink-0 gap-1.5 rounded-full h-8 px-3 bg-gradient-to-r from-indigo-500 to-purple-500 text-white border-0 shadow-md shadow-indigo-500/30 hover:opacity-90 normal-case [&_svg]:self-center [&_span]:leading-none",
+                  "h-3.5 w-3.5 shrink-0",
+                  "inline-flex items-center text-xs font-medium leading-none",
+                )}
               </h2>
-              
+
               <div className="space-y-4 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   {secHasActive ? (
@@ -593,9 +800,9 @@ function ClassicDashboardPage() {
                       Активна
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold bg-muted/30 text-muted-foreground border border-border/50">
+                    <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20">
                       <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                      Неактивна
+                      Истекла
                     </span>
                   )}
                   {secDaysLeft != null && (
@@ -617,7 +824,7 @@ function ClassicDashboardPage() {
                         <Package className="h-5 w-5" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{t("cabinet.dashboard.tariff_label")}</p>
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{sec.trialId ? "TRIAL" : t("cabinet.dashboard.tariff_label")}</p>
                         <p className="text-[14px] font-semibold truncate text-foreground" title={sec.tariffDisplayName}>
                           {sec.tariffDisplayName}
                         </p>
@@ -662,7 +869,7 @@ function ClassicDashboardPage() {
                   </div>
                 </div>
 
-                {/* T-sub-link : ссылка подписки доп.подписки + копирование прямо на главной (без захода в «Подключиться»). */}
+                {/* T-sub-link (WolfVPN, 2026-06-03): ссылка подписки доп.подписки + копирование прямо на главной (без захода в «Подключиться»). */}
                 {secParsed.subscriptionUrl && (
                   <div className="flex gap-2 min-w-0 pt-1">
                     <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={secParsed.subscriptionUrl}>
@@ -687,21 +894,16 @@ function ClassicDashboardPage() {
                       </Link>
                     )}
                   </Button>
-                  {/* T-unify-cabinet: продлить ИМЕННО эту доп. подписку */}
-                  <Button variant="outline" className="sm:w-auto gap-2 h-12 rounded-xl text-md border-indigo-500/30 hover:bg-indigo-500/10 [&_svg]:self-center [&_span]:leading-none" asChild>
-                    <Link to={`/cabinet/tariffs?extend=${sec.id}`} className="inline-flex items-center justify-center gap-2">
-                      <RefreshCw className="h-5 w-5 shrink-0" />
-                      <span className="inline-flex items-center leading-none">Продлить</span>
-                    </Link>
-                  </Button>
                 </div>
               </div>
             </section>
           );
         })}
 
-        {/* 2. Как подключиться — ссылка и кнопка */}
-        <section className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300">
+        {/* 2. Как подключиться — показываем ТОЛЬКО когда нет активной ссылки (триал/выбор тарифа)
+            или есть доп.пробники. При активной подписке блок скрыт — подключение уже в её карточке. */}
+        {(!vpnUrl || showMultiTrials) && (
+        <section className="order-4 rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300">
           <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wider text-muted-foreground/80 mb-4">
              <div className="p-1.5 bg-primary/20 rounded-lg">
               <Wifi className="h-4 w-4 shrink-0 text-primary" />
@@ -710,39 +912,6 @@ function ClassicDashboardPage() {
           </h2>
           {vpnUrl ? (
             <div className="space-y-4">
-              <p className="text-[14px] text-muted-foreground leading-relaxed">{t("cabinet.dashboard.connection_desc")}</p>
-              <div className="flex gap-2 min-w-0">
-                <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={vpnUrl}>
-                  {vpnUrl}
-                </code>
-                <Button
-                  size="icon"
-                  variant="outline"
-                  className="shrink-0 h-auto w-11 rounded-xl bg-background/50 hover:bg-background/80 transition-transform hover:scale-105"
-                  onClick={() => {
-                    navigator.clipboard.writeText(vpnUrl);
-                    window.Telegram?.WebApp?.showPopup?.({ title: t("cabinet.dashboard.copied_title"), message: t("cabinet.dashboard.copied_message") });
-                  }}
-                >
-                  <Copy className="h-4 w-4" />
-                </Button>
-              </div>
-              <Button className="w-full gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none" asChild>
-                <Link to="/cabinet/subscribe" className="inline-flex w-full items-center justify-center gap-2">
-                  <Wifi className="h-5 w-5 shrink-0" />
-                  <span className="inline-flex items-center leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
-                </Link>
-              </Button>
-              {/* продлить главную подписку (#0) — как в боте */}
-              {rootSubId && (
-                <Button variant="outline" className="w-full gap-2 h-12 rounded-xl text-md border-primary/30 hover:bg-primary/10 [&_svg]:self-center [&_span]:leading-none" asChild>
-                  <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex w-full items-center justify-center gap-2">
-                    <RefreshCw className="h-5 w-5 shrink-0" />
-                    <span className="inline-flex items-center leading-none">Продлить подписку #0</span>
-                  </Link>
-                </Button>
-              )}
-              {/* дополнительные пробники доступны рядом с активной подпиской. */}
               {showMultiTrials && (
                 <Button className="w-full gap-2 bg-green-600 hover:bg-green-700 text-white shadow-lg h-12 rounded-xl hover:scale-[1.02] transition-transform duration-300 [&_svg]:self-center [&_span]:leading-none" onClick={activateTrial} disabled={trialLoading}>
                   {trialLoading ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" /> : <Gift className="h-5 w-5 shrink-0" />}
@@ -781,9 +950,10 @@ function ClassicDashboardPage() {
             </div>
           )}
         </section>
+        )}
 
-        {/* 3. Баланс */}
-        <section data-tour="balance" className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300 flex flex-col gap-4">
+        {/* 3. Баланс — order-2: сразу под основной подпиской (mobile) */}
+        <section data-tour="balance" className="order-2 rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl p-5 shadow-sm overflow-hidden transition-all duration-300 flex flex-col gap-4">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-primary/20 rounded-xl">
               <Wallet className="h-5 w-5 text-primary" />
@@ -793,37 +963,8 @@ function ClassicDashboardPage() {
               <p className="text-2xl font-bold tracking-tight text-foreground leading-none mt-1">{formatMoney(client.balance, client.preferredCurrency)}</p>
             </div>
           </div>
-          <div className="flex items-center justify-between p-3 rounded-2xl bg-background/40 border border-border/50">
-            <div className="flex flex-col min-w-0">
-              <Label className="text-sm font-semibold">{t("cabinet.dashboard.auto_renew")}</Label>
-              {client.autoRenewEnabled && autoRenewNext.amount != null ? (
-                <span className="text-[11px] mt-0.5 leading-tight inline-flex items-center gap-1 truncate">
-                  <RotateCcw className="h-3 w-3 text-primary shrink-0" />
-                  <span className="font-bold tabular-nums text-foreground">
-                    {autoRenewNext.amount.toLocaleString("ru-RU")} {autoRenewNext.currency === "RUB" ? "₽" : autoRenewNext.currency === "USD" ? "$" : autoRenewNext.currency}
-                  </span>
-                  {autoRenewNext.at && (
-                    <span className="text-muted-foreground">
-                      · {new Date(autoRenewNext.at).toLocaleDateString("ru-RU", { day: "numeric", month: "short" })}
-                    </span>
-                  )}
-                </span>
-              ) : (
-                <span className="text-[11px] text-muted-foreground mt-0.5 leading-tight">
-                  {config?.yookassaRecurringEnabled
-                    ? <>Сначала с баланса{client.yookassaPaymentMethodTitle ? <>, затем с карты <span className="font-medium">{client.yookassaPaymentMethodTitle}</span></> : ", затем с карты"}</>
-                    : "Списание с баланса"
-                  }
-                </span>
-              )}
-            </div>
-            <Switch
-              checked={client.autoRenewEnabled ?? false}
-              disabled={autoRenewLoading}
-              onCheckedChange={toggleAutoRenew}
-            />
-          </div>
-          {client.autoRenewEnabled && (
+          {autoRenewListNode}
+          {anyAutoRenewOn && (
             <div className="flex items-center gap-2 p-2.5 pl-3 rounded-2xl bg-background/40 border border-border/50">
               <Tag className="h-4 w-4 text-primary shrink-0" />
               <Input
@@ -859,7 +1000,7 @@ function ClassicDashboardPage() {
               )}
             </div>
           )}
-          {client.autoRenewEnabled && autoRenewPromoError && (
+          {anyAutoRenewOn && autoRenewPromoError && (
             <p className="text-[11px] font-medium text-red-500 dark:text-red-400 -mt-2">{autoRenewPromoError}</p>
           )}
           <Button className="w-full gap-2 shadow-md hover:scale-[1.02] transition-transform duration-300 rounded-xl h-12 [&_svg]:self-center [&_span]:leading-none" asChild>
@@ -871,6 +1012,8 @@ function ClassicDashboardPage() {
         </section>
       </div>
       {trialsPickerNode}
+      {paySuccessModalNode}
+      {extendDialogNode}
       </>
     );
   }
@@ -921,32 +1064,9 @@ function ClassicDashboardPage() {
           </div>
 
           <div className="flex flex-col sm:flex-row md:flex-col gap-3 shrink-0 min-w-[240px]">
-            {/* «Бесплатный Тест» (мульти-триал) и
+            {/* T-trial-coexist (27.05.2026, WolfVPN): «Бесплатный Тест» (мульти-триал) и
                 «Подключиться» могут показываться ВМЕСТЕ. Legacy single-trial — только когда нет подписки. */}
-            {vpnUrl && (
-              <Button size="lg" className="w-full gap-2 shadow-xl rounded-xl h-14 hover:scale-105 transition-transform bg-primary text-primary-foreground [&_svg]:self-center [&_span]:leading-none" asChild>
-                {useRemnaPage ? (
-                  <a href={vpnUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center gap-2 leading-none">
-                    <Wifi className="h-5 w-5 shrink-0" />
-                    <span className="inline-flex items-center text-base font-medium leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
-                  </a>
-                ) : (
-                  <Link to="/cabinet/subscribe" className="inline-flex items-center justify-center gap-2 leading-none">
-                    <Wifi className="h-5 w-5 shrink-0" />
-                    <span className="inline-flex items-center text-base font-medium leading-none">{t("cabinet.dashboard.connect_vpn")}</span>
-                  </Link>
-                )}
-              </Button>
-            )}
-            {/* продлить главную подписку (#0) */}
-            {vpnUrl && rootSubId && (
-              <Button variant="outline" size="lg" className="w-full gap-2 rounded-xl h-14 hover:scale-105 transition-transform border-primary/30 hover:bg-primary/10 [&_svg]:self-center [&_span]:leading-none" asChild>
-                <Link to={`/cabinet/tariffs?extend=${rootSubId}`} className="inline-flex items-center justify-center gap-2 leading-none">
-                  <RefreshCw className="h-5 w-5 shrink-0" />
-                  <span className="inline-flex items-center text-base font-medium leading-none">Продлить #0</span>
-                </Link>
-              </Button>
-            )}
+            {/* T-main-connect (WolfVPN): кнопка «Подключиться к VPN» убрана из hero — теперь она в карточке основной подписки (со ссылкой) */}
             {showAnyTrial && (
               <Button size="lg" className="w-full gap-2 shadow-xl bg-green-600 hover:bg-green-700 text-white rounded-xl h-14 hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none" onClick={activateTrial} disabled={trialLoading}>
                 {trialLoading ? <Loader2 className="h-5 w-5 shrink-0 animate-spin" /> : <Gift className="h-5 w-5 shrink-0" />}
@@ -982,11 +1102,18 @@ function ClassicDashboardPage() {
         {/* Подписка / тариф */}
         <Card data-tour="subscription" className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all duration-300 sm:col-span-2 lg:col-span-1 flex flex-col">
           <CardHeader className="pb-4">
-            <CardTitle className="flex items-center gap-3 text-xl text-foreground">
-              <div className="p-2.5 bg-primary/20 rounded-xl">
-                <Package className="h-6 w-6 text-primary" />
+            <CardTitle className="flex items-center justify-between gap-2 text-xl text-foreground">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="p-2.5 bg-primary/20 rounded-xl shrink-0">
+                  <Package className="h-6 w-6 text-primary" />
+                </div>
+                <span className="truncate">{t("cabinet.dashboard.my_subscription")}</span>
               </div>
-              {t("cabinet.dashboard.my_subscription")}
+              {rootActionNode(
+                "shrink-0 gap-1.5 rounded-full h-9 px-4 bg-gradient-to-r from-primary via-fuchsia-500 to-purple-500 text-white border-0 shadow-md shadow-primary/30 hover:opacity-90 hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none",
+                "h-4 w-4 shrink-0",
+                "inline-flex items-center text-sm font-medium leading-none",
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col justify-center">
@@ -1025,7 +1152,7 @@ function ClassicDashboardPage() {
                       <Package className="h-6 w-6" />
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{t("cabinet.dashboard.tariff_label")}</p>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{rootTrial.isTrial ? "TRIAL" : t("cabinet.dashboard.tariff_label")}</p>
                       <p className="text-[15px] font-semibold truncate text-foreground">
                         {((tariffDisplayName ?? subParsed.productName?.trim() ?? "").trim()) || t("cabinet.dashboard.test_label")}
                       </p>
@@ -1068,61 +1195,66 @@ function ClassicDashboardPage() {
                     </div>
                   )}
                 </div>
+                {/* T-main-connect (WolfVPN): ссылка подписки + кнопка «Подключиться» в карточке основной подписки (desktop) */}
+                {vpnUrl && (
+                  <>
+                    <div className="flex gap-2 min-w-0">
+                      <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={vpnUrl}>
+                        {vpnUrl}
+                      </code>
+                      <Button size="icon" variant="outline" className="shrink-0 h-auto w-11 rounded-xl bg-background/50 hover:bg-background/80 transition-transform hover:scale-105" onClick={() => { navigator.clipboard.writeText(vpnUrl || ""); }}>
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <Button className="w-full gap-2 shadow-lg h-12 rounded-xl text-md hover:scale-[1.02] transition-transform [&_svg]:self-center [&_span]:leading-none bg-gradient-to-r from-primary via-fuchsia-500 to-purple-500 text-white border-0" asChild>
+                      {useRemnaPage && vpnUrl ? (
+                        <a href={vpnUrl} target="_blank" rel="noopener noreferrer" className="inline-flex w-full items-center justify-center gap-2">
+                          <Wifi className="h-5 w-5 shrink-0" />
+                          <span className="inline-flex items-center leading-none">Подключиться</span>
+                        </a>
+                      ) : (
+                        <Link to="/cabinet/subscribe" className="inline-flex w-full items-center justify-center gap-2">
+                          <Wifi className="h-5 w-5 shrink-0" />
+                          <span className="inline-flex items-center leading-none">Подключиться</span>
+                        </Link>
+                      )}
+                    </Button>
+                  </>
+                )}
               </div>
             )}
           </CardContent>
         </Card>
 
         {/* Баланс + пополнение */}
-        <Card data-tour="balance" className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all duration-300 flex flex-col justify-between">
-          <CardHeader className="pb-4">
+        <Card data-tour="balance" className="group relative overflow-hidden rounded-3xl border border-primary/15 bg-card/40 backdrop-blur-xl shadow-lg hover:shadow-xl hover:border-primary/30 transition-all duration-500 flex flex-col justify-between">
+          {/* декоративные блобы */}
+          <div className="pointer-events-none absolute -top-20 -right-16 h-48 w-48 rounded-full bg-primary/15 blur-3xl transition-opacity duration-700 group-hover:opacity-100 opacity-60" aria-hidden />
+          <div className="pointer-events-none absolute -bottom-24 -left-16 h-48 w-48 rounded-full bg-violet-500/10 blur-3xl" aria-hidden />
+          {/* градиентный хайлайт по верхней кромке */}
+          <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" aria-hidden />
+          <CardHeader className="relative pb-4">
             <CardTitle className="flex items-center gap-3 text-xl text-foreground">
-              <div className="p-2.5 bg-primary/20 rounded-xl">
+              <div className="p-2.5 rounded-xl bg-gradient-to-br from-primary/25 to-violet-500/20 ring-1 ring-primary/25 shadow-[0_0_20px_-6px] shadow-primary/40">
                 <Wallet className="h-6 w-6 text-primary" />
               </div>
               {t("cabinet.dashboard.balance")}
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-6 flex-1 flex flex-col justify-center text-center">
+          <CardContent className="relative space-y-6 flex-1 flex flex-col justify-center text-center">
             <div>
-              <p className="text-5xl font-extrabold tracking-tight text-foreground drop-shadow-sm">
+              <p className="bg-gradient-to-br from-foreground via-foreground to-primary bg-clip-text text-transparent text-5xl font-extrabold tracking-tight tabular-nums drop-shadow-sm">
                 {formatMoney(client.balance, client.preferredCurrency)}
               </p>
-              <p className="text-[15px] text-muted-foreground mt-3">На счету для продления тарифов</p>
-            </div>
-            
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-background/40 border border-border/50 text-left">
-              <div className="flex flex-col min-w-0">
-                <Label className="text-[15px] font-semibold">{t("cabinet.dashboard.auto_renew")}</Label>
-                {client.autoRenewEnabled && autoRenewNext.amount != null ? (
-                  <span className="text-sm mt-0.5 inline-flex items-center gap-1.5 truncate">
-                    <RotateCcw className="h-3.5 w-3.5 text-primary shrink-0" />
-                    <span className="font-bold tabular-nums text-foreground">
-                      {autoRenewNext.amount.toLocaleString("ru-RU")} {autoRenewNext.currency === "RUB" ? "₽" : autoRenewNext.currency === "USD" ? "$" : autoRenewNext.currency}
-                    </span>
-                    {autoRenewNext.at && (
-                      <span className="text-muted-foreground">
-                        · {new Date(autoRenewNext.at).toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}
-                      </span>
-                    )}
-                  </span>
-                ) : (
-                  <span className="text-sm text-muted-foreground mt-0.5">
-                    {config?.yookassaRecurringEnabled
-                      ? <>Сначала с баланса{client.yookassaPaymentMethodTitle ? <>, затем с карты <span className="font-medium">{client.yookassaPaymentMethodTitle}</span></> : ", затем с карты"}</>
-                      : "Списание с баланса"
-                    }
-                  </span>
-                )}
-              </div>
-              <Switch
-                checked={client.autoRenewEnabled ?? false}
-                disabled={autoRenewLoading}
-                onCheckedChange={toggleAutoRenew}
-              />
+              <span className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-background/40 border border-border/40 px-3 py-1 text-[12px] text-muted-foreground">
+                <Sparkles className="h-3 w-3 text-primary/70" />
+                На счету для продления тарифов
+              </span>
             </div>
 
-            {client.autoRenewEnabled && (
+            {autoRenewListNode}
+
+            {anyAutoRenewOn && (
               <div className="flex items-center gap-2 p-3 pl-4 rounded-2xl bg-background/40 border border-border/50">
                 <Tag className="h-4 w-4 text-primary shrink-0" />
                 <Input
@@ -1158,11 +1290,11 @@ function ClassicDashboardPage() {
                 )}
               </div>
             )}
-            {client.autoRenewEnabled && autoRenewPromoError && (
+            {anyAutoRenewOn && autoRenewPromoError && (
               <p className="text-[11px] font-medium text-red-500 dark:text-red-400 -mt-2">{autoRenewPromoError}</p>
             )}
 
-            <Button variant="default" size="lg" className="w-full gap-2 shadow-lg h-14 rounded-xl text-[16px] hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none" asChild>
+            <Button variant="default" size="lg" className="relative w-full gap-2 h-14 rounded-2xl text-[16px] font-semibold bg-gradient-to-r from-primary via-primary to-violet-500 text-primary-foreground border-0 shadow-[0_8px_30px_-8px] shadow-primary/50 hover:shadow-[0_10px_40px_-8px] hover:shadow-primary/60 hover:scale-[1.03] active:scale-[0.99] transition-all duration-300 [&_svg]:self-center [&_span]:leading-none" asChild>
               <Link to="/cabinet/profile#topup" className="inline-flex items-center justify-center gap-2 leading-none">
                 <PlusCircle className="h-5 w-5 shrink-0" />
                 <span className="inline-flex items-center leading-none">{t("cabinet.dashboard.top_up")}</span>
@@ -1172,37 +1304,83 @@ function ClassicDashboardPage() {
         </Card>
 
         {/* Справа от баланса: Рефералы или Подключение */}
-        <Card className="rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all duration-300 sm:col-span-2 lg:col-span-1">
-          <CardHeader className="pb-4">
+        <Card className="group relative overflow-hidden rounded-3xl border border-border/50 bg-card/40 backdrop-blur-xl shadow-lg hover:shadow-xl hover:border-violet-500/25 transition-all duration-500 sm:col-span-2 lg:col-span-1">
+          {/* декоративные блобы */}
+          <div className="pointer-events-none absolute -top-20 -left-16 h-48 w-48 rounded-full bg-violet-500/10 blur-3xl" aria-hidden />
+          <div className="pointer-events-none absolute -bottom-24 -right-16 h-48 w-48 rounded-full bg-primary/10 blur-3xl" aria-hidden />
+          <div className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-violet-500/40 to-transparent" aria-hidden />
+          <CardHeader className="relative pb-4">
             <CardTitle className="flex items-center gap-3 text-xl text-foreground">
-              <div className="p-2.5 bg-primary/20 rounded-xl">
+              <div className="p-2.5 rounded-xl bg-gradient-to-br from-violet-500/25 to-primary/20 ring-1 ring-violet-500/25 shadow-[0_0_20px_-6px] shadow-violet-500/40">
                 {hasReferralLinks ? <Users className="h-6 w-6 text-primary" /> : <Wifi className="h-6 w-6 text-primary" />}
               </div>
               {hasReferralLinks ? t("cabinet.dashboard.referrals") : t("cabinet.dashboard.connection")}
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-5 pt-2 flex flex-col justify-center h-[calc(100%-5rem)]">
+          <CardContent className="relative space-y-5 pt-2 flex flex-col justify-center h-[calc(100%-5rem)]">
             {hasReferralLinks ? (
               <>
-                <p className="text-[15px] text-muted-foreground leading-relaxed">Делитесь ссылкой и получайте <strong className="text-foreground">бонус на баланс</strong> за каждого приглашенного друга!</p>
-                {referralLinkSite && (
-                  <div className="space-y-2">
-                    <p className="text-[13px] font-semibold uppercase tracking-wider text-muted-foreground">Сайт</p>
-                    <div className="flex items-center gap-2">
-                      <code className="rounded-xl bg-background/50 border border-border/50 px-4 py-3 text-[15px] font-mono flex-1 truncate block text-foreground/80" title={referralLinkSite}>
-                        {referralLinkSite}
-                      </code>
-                      <Button variant="secondary" size="icon" onClick={() => copyReferral("site")} className="shrink-0 h-12 w-12 rounded-xl hover:scale-105 transition-transform border border-border/50 bg-background/50" title="Копировать">
-                        {referralCopied === "site" ? <Check className="h-5 w-5 text-green-500" /> : <Copy className="h-5 w-5 text-foreground/70" />}
-                      </Button>
-                    </div>
+                <p className="text-[14px] text-muted-foreground leading-relaxed">Делитесь ссылкой и получайте <strong className="bg-gradient-to-r from-primary to-violet-400 bg-clip-text text-transparent font-bold">бонус на баланс</strong> за каждого приглашённого друга!</p>
+                {referralStats && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { label: "Приглашено", value: referralStats.referralCount.toLocaleString("ru-RU"), icon: UserPlus, tint: "text-primary", ring: "ring-primary/20", glow: "shadow-primary/25", bg: "from-primary/10" },
+                      { label: "Заработано", value: `${referralStats.totalEarnings.toLocaleString("ru-RU")} ₽`, icon: Coins, tint: "text-emerald-500 dark:text-emerald-400", ring: "ring-emerald-500/20", glow: "shadow-emerald-500/25", bg: "from-emerald-500/10" },
+                      { label: "Ваш %", value: `${referralStats.referralPercent}%`, icon: Percent, tint: "text-violet-500 dark:text-violet-400", ring: "ring-violet-500/20", glow: "shadow-violet-500/25", bg: "from-violet-500/10" },
+                    ].map((tile) => (
+                      <div key={tile.label} className={`rounded-2xl bg-gradient-to-b ${tile.bg} to-background/40 border border-border/40 ring-1 ${tile.ring} backdrop-blur-xl px-2 py-3.5 text-center shadow-[0_0_24px_-12px] ${tile.glow} hover:-translate-y-0.5 transition-transform duration-300`}>
+                        <tile.icon className={`h-4 w-4 mx-auto mb-1.5 ${tile.tint}`} />
+                        <p className="text-lg font-extrabold tracking-tight text-foreground leading-none tabular-nums">{tile.value}</p>
+                        <p className="text-[10px] uppercase tracking-wider text-muted-foreground mt-1.5">{tile.label}</p>
+                      </div>
+                    ))}
                   </div>
                 )}
-                <div className="pt-3">
-                  <Button variant="outline" className="w-full rounded-xl h-12 text-[15px] bg-background/30 hover:bg-background/60 transition-colors border-border/50 [&_svg]:self-center [&_span]:leading-none" asChild>
+                <div className="rounded-2xl border border-border/40 bg-background/30 backdrop-blur-xl divide-y divide-border/40 overflow-hidden">
+                  {referralLinkSite && (
+                    <button
+                      type="button"
+                      onClick={() => copyReferral("site")}
+                      title={referralLinkSite}
+                      className="group/row w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-primary/[0.06] transition-colors"
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 ring-1 ring-primary/20">
+                        <Globe className="h-4 w-4 text-primary" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Сайт</span>
+                        <span className="block truncate font-mono text-[13px] text-foreground/85">{referralLinkSite}</span>
+                      </span>
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-background/40 text-foreground/60 group-hover/row:text-primary group-hover/row:border-primary/30 group-hover/row:scale-105 transition-all">
+                        {referralCopied === "site" ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
+                      </span>
+                    </button>
+                  )}
+                  {referralLinkBot && (
+                    <button
+                      type="button"
+                      onClick={() => copyReferral("bot")}
+                      title={referralLinkBot}
+                      className="group/row w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-violet-500/[0.06] transition-colors"
+                    >
+                      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-500/10 ring-1 ring-violet-500/20">
+                        <Send className="h-4 w-4 text-violet-500 dark:text-violet-400" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Бот</span>
+                        <span className="block truncate font-mono text-[13px] text-foreground/85">{referralLinkBot}</span>
+                      </span>
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border/40 bg-background/40 text-foreground/60 group-hover/row:text-violet-400 group-hover/row:border-violet-500/30 group-hover/row:scale-105 transition-all">
+                        {referralCopied === "bot" ? <Check className="h-4 w-4 text-emerald-500" /> : <Copy className="h-4 w-4" />}
+                      </span>
+                    </button>
+                  )}
+                </div>
+                <div className="pt-1">
+                  <Button variant="outline" className="group/btn w-full rounded-2xl h-12 text-[15px] font-medium bg-background/30 hover:bg-gradient-to-r hover:from-primary/10 hover:to-violet-500/10 hover:border-primary/30 transition-all duration-300 border-border/50 [&_svg]:self-center [&_span]:leading-none" asChild>
                      <Link to="/cabinet/referral" className="inline-flex items-center justify-center gap-2 leading-none">
                        <span className="inline-flex items-center leading-none">Подробная статистика</span>
-                       <ArrowRight className="h-4 w-4 shrink-0" />
+                       <ArrowRight className="h-4 w-4 shrink-0 group-hover/btn:translate-x-1 transition-transform duration-300" />
                      </Link>
                   </Button>
                 </div>
@@ -1247,7 +1425,7 @@ function ClassicDashboardPage() {
         >
           <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-foreground ml-1">
             <Package className="h-6 w-6 text-indigo-400" />
-            Дополнительные подписки
+            Остальные подписки
           </h2>
           <div className="grid gap-6 sm:grid-cols-2">
             {secondarySubscriptions.map((sec) => {
@@ -1260,24 +1438,32 @@ function ClassicDashboardPage() {
               return (
                 <Card key={sec.id} className="rounded-3xl border border-indigo-500/30 bg-card/40 backdrop-blur-xl shadow-lg hover:shadow-xl transition-all duration-300 flex flex-col">
                   <CardHeader className="pb-4">
-                    <CardTitle className="flex items-center justify-between text-lg text-foreground">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2.5 bg-indigo-500/20 rounded-xl">
+                    <CardTitle className="flex items-center justify-between gap-2 text-lg text-foreground">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="p-2.5 bg-indigo-500/20 rounded-xl shrink-0">
                           <Package className="h-5 w-5 text-indigo-400" />
                         </div>
-                        Подписка #{sec.subscriptionIndex ?? ""}
+                        <span className="truncate">Подписка #{sec.subscriptionIndex ?? ""}</span>
                       </div>
-                      {secHasActive ? (
-                        <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-indigo-500/15 text-indigo-400 border border-indigo-500/20">
-                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                          Активна
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-muted/30 text-muted-foreground border border-border/50">
-                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                          Неактивна
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {secHasActive ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-indigo-500/15 text-indigo-400 border border-indigo-500/20">
+                            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                            Активна
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[13px] font-semibold bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20">
+                            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                            Истекла
+                          </span>
+                        )}
+                        {secActionNode(
+                          sec,
+                          "shrink-0 gap-1.5 rounded-full h-9 px-4 bg-gradient-to-r from-indigo-500 to-purple-500 text-white border-0 shadow-md shadow-indigo-500/30 hover:opacity-90 hover:scale-105 transition-transform [&_svg]:self-center [&_span]:leading-none",
+                          "h-4 w-4 shrink-0",
+                          "inline-flex items-center text-sm font-medium leading-none",
+                        )}
+                      </div>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="flex-1 flex flex-col justify-center">
@@ -1301,7 +1487,7 @@ function ClassicDashboardPage() {
                             <Package className="h-6 w-6" />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{t("cabinet.dashboard.tariff_label")}</p>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-0.5">{sec.trialId ? "TRIAL" : t("cabinet.dashboard.tariff_label")}</p>
                             <p className="text-[15px] font-semibold truncate text-foreground">
                               {sec.tariffDisplayName}
                             </p>
@@ -1347,7 +1533,7 @@ function ClassicDashboardPage() {
                         )}
                       </div>
 
-                      {/* T-sub-link : ссылка подписки доп.подписки + копирование прямо на главной (без захода в «Подключиться»). */}
+                      {/* T-sub-link (WolfVPN, 2026-06-03): ссылка подписки доп.подписки + копирование прямо на главной (без захода в «Подключиться»). */}
                       {secParsed.subscriptionUrl && (
                         <div className="flex gap-2 min-w-0 pt-1 mb-2">
                           <code className="flex-1 min-w-0 truncate rounded-xl bg-background/50 border border-border/50 px-3 py-2.5 text-xs font-mono flex items-center text-foreground/80" title={secParsed.subscriptionUrl}>
@@ -1372,13 +1558,6 @@ function ClassicDashboardPage() {
                             </Link>
                           )}
                         </Button>
-                        {/* продлить ИМЕННО эту доп. подписку */}
-                        <Button variant="outline" size="lg" className="w-full gap-2 rounded-xl h-14 text-[16px] hover:scale-105 transition-transform border-indigo-500/30 hover:bg-indigo-500/10 [&_svg]:self-center [&_span]:leading-none" asChild>
-                          <Link to={`/cabinet/tariffs?extend=${sec.id}`} className="inline-flex items-center justify-center gap-2 leading-none">
-                            <RefreshCw className="h-5 w-5 shrink-0" />
-                            <span className="inline-flex items-center leading-none">Продлить</span>
-                          </Link>
-                        </Button>
                       </div>
 
                     </div>
@@ -1391,6 +1570,8 @@ function ClassicDashboardPage() {
       )}
     </div>
     {trialsPickerNode}
+    {paySuccessModalNode}
+    {extendDialogNode}
     </>
   );
 }

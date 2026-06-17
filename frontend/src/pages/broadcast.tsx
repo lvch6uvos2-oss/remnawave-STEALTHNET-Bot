@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@/contexts/auth";
-import { api, type BroadcastResult, type BroadcastProgress, type BroadcastHistoryItem } from "@/lib/api";
+import { api, type BroadcastResult, type BroadcastProgress, type BroadcastHistoryItem, type ListSendJobStatus } from "@/lib/api";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,8 +15,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fmtMsk } from "@/lib/datetime";
+import { parseTable, autoDetectIdColumn, extractIds, autoDetectEmailColumn, extractEmails, type ParsedTable } from "@/lib/parse-id-list";
 
-// подняли с 20 до 50 МБ ради видео-вложений (sendVideo
+// 25.05.2026, WolfVPN — подняли с 20 до 50 МБ ради видео-вложений (sendVideo
 // через основной bot API лимит ~50 МБ). Совпадает с лимитом multer на бэке.
 const MAX_ATTACHMENT_MB = 50;
 
@@ -77,7 +78,7 @@ export function BroadcastPage() {
   const token = state.accessToken ?? "";
   const [broadcastRecipients, setBroadcastRecipients] = useState<{ withTelegram: number; withEmail: number } | null>(null);
   const [broadcastChannel, setBroadcastChannel] = useState<ChannelKey>("telegram");
-  // целевая группа получателей.
+  // T-unify (12.05.2026, WolfVPN): целевая группа получателей.
   const [broadcastTargetGroup, setBroadcastTargetGroup] = useState<string>("all");
   const [broadcastSubject, setBroadcastSubject] = useState("");
   const [broadcastMessage, setBroadcastMessage] = useState("");
@@ -88,11 +89,39 @@ export function BroadcastPage() {
   const [broadcastLoading, setBroadcastLoading] = useState(false);
   const [broadcastResult, setBroadcastResult] = useState<BroadcastResult | null>(null);
   const [broadcastProgress, setBroadcastProgress] = useState<BroadcastProgress | null>(null);
-  // jobId активной рассылки + флаг «отмена запрошена».
+  // 19.05.2026, WolfVPN — jobId активной рассылки + флаг «отмена запрошена».
   const [broadcastJobId, setBroadcastJobId] = useState<string | null>(null);
   const [broadcastCancelRequested, setBroadcastCancelRequested] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [activeTab, setActiveTab] = useState<"compose" | "history">("compose");
+  const [activeTab, setActiveTab] = useState<"compose" | "single" | "history">("compose");
+  // T-direct-send (WolfVPN): точечная отправка ОДНОМУ юзеру по Telegram ID.
+  const [singleTgId, setSingleTgId] = useState("");
+  const [singleMsg, setSingleMsg] = useState("");
+  const [singleSending, setSingleSending] = useState(false);
+  const [singleResult, setSingleResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  // T-list-send: режим (один / список) + состояние рассылки по списку Telegram ID.
+  const [singleMode, setSingleMode] = useState<"one" | "list">("one");
+  const [listRaw, setListRaw] = useState("");
+  const [listMsg, setListMsg] = useState("");
+  const [listSending, setListSending] = useState(false);
+  const [listJob, setListJob] = useState<ListSendJobStatus | null>(null);
+  const listPollRef = useRef(false);
+  // T-list-send: загрузка списка из файла (.txt / .csv с несколькими столбцами).
+  const [listTable, setListTable] = useState<ParsedTable | null>(null);
+  const [listColIndex, setListColIndex] = useState(0);
+  const [listFileName, setListFileName] = useState<string | null>(null);
+  const listFileRef = useRef<HTMLInputElement>(null);
+  // T-direct-send: общие для режимов «Один»/«Список» — вложение + inline-кнопка (как в обычной рассылке).
+  const [singleAttachment, setSingleAttachment] = useState<File | null>(null);
+  const [singleDragOver, setSingleDragOver] = useState(false);
+  const singleFileRef = useRef<HTMLInputElement>(null);
+  const [singleBtnAction, setSingleBtnAction] = useState("");
+  const [singleBtnText, setSingleBtnText] = useState("");
+  const [singleBtnCustomUrl, setSingleBtnCustomUrl] = useState("");
+  // T-email-direct: канал (telegram/email) + поля email-режима.
+  const [singleChannel, setSingleChannel] = useState<"telegram" | "email">("telegram");
+  const [singleEmail, setSingleEmail] = useState("");
+  const [singleSubject, setSingleSubject] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleBroadcastCancel() {
@@ -105,6 +134,109 @@ export function BroadcastPage() {
       const msg = e instanceof Error ? e.message : "Ошибка";
       alert(`Не удалось отменить: ${msg}`);
       setBroadcastCancelRequested(false);
+    }
+  }
+
+  // T-direct-send: отправить одно сообщение — Telegram (по id) или Email (по адресу).
+  async function handleSendToUser(e: React.FormEvent) {
+    e.preventDefault();
+    const recipient = singleChannel === "email" ? singleEmail.trim() : singleTgId.trim();
+    const text = singleMsg.trim();
+    if (!recipient || !text || !token || singleSending) return;
+    setSingleSending(true);
+    setSingleResult(null);
+    try {
+      await api.sendBroadcastToUser(token, {
+        channel: singleChannel,
+        telegramId: recipient,
+        subject: singleSubject,
+        message: text,
+        buttonText: singleBtnText,
+        buttonUrl: resolvedSingleBtnUrl,
+      }, singleAttachment);
+      setSingleResult({ ok: true });
+      setSingleMsg("");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Не удалось отправить сообщение";
+      setSingleResult({ ok: false, error: msg });
+    } finally {
+      setSingleSending(false);
+    }
+  }
+
+  // T-list-send: распознанные получатели из textarea — ID (числа) или email, по каналу. Дедуп.
+  const parsedListIds = useMemo(() => {
+    const ids = listRaw.split(/[^\d]+/).map((s) => s.trim()).filter(Boolean);
+    return Array.from(new Set(ids));
+  }, [listRaw]);
+  const parsedListEmails = useMemo(() => {
+    const tokens = listRaw.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+    return Array.from(new Set(tokens.filter((t) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)).map((t) => t.toLowerCase())));
+  }, [listRaw]);
+  const parsedListRecipients = singleChannel === "email" ? parsedListEmails : parsedListIds;
+
+  // T-list-send: применить выбранную колонку файла → заполнить textarea (ID или email по каналу).
+  function applyTableColumn(table: ParsedTable, idx: number) {
+    const vals = singleChannel === "email" ? extractEmails(table, idx) : extractIds(table, idx);
+    setListRaw(vals.join("\n"));
+    setListJob(null);
+  }
+  function handleListFile(file: File) {
+    setListFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const table = parseTable(String(reader.result ?? ""));
+      const col = singleChannel === "email" ? autoDetectEmailColumn(table) : autoDetectIdColumn(table);
+      setListTable(table);
+      setListColIndex(col);
+      applyTableColumn(table, col);
+    };
+    reader.onerror = () => { setListFileName(null); setListTable(null); };
+    reader.readAsText(file);
+  }
+  function handleListColChange(idx: number) {
+    setListColIndex(idx);
+    if (listTable) applyTableColumn(listTable, idx);
+  }
+  function clearListFile() {
+    setListFileName(null);
+    setListTable(null);
+    setListColIndex(0);
+  }
+
+  // T-list-send: остановить polling при размонтировании.
+  useEffect(() => () => { listPollRef.current = false; }, []);
+
+  async function handleSendToList(e: React.FormEvent) {
+    e.preventDefault();
+    const text = listMsg.trim();
+    if (!parsedListRecipients.length || !text || !token || listSending) return;
+    setListSending(true);
+    setListJob(null);
+    try {
+      const { jobId } = await api.startSendToList(token, { channel: singleChannel, telegramIds: parsedListRecipients, subject: singleSubject, message: text, buttonText: singleBtnText, buttonUrl: resolvedSingleBtnUrl }, singleAttachment);
+      listPollRef.current = true;
+      const poll = async () => {
+        if (!listPollRef.current) return;
+        try {
+          const st = await api.getSendToListStatus(token, jobId);
+          setListJob(st);
+          if (st.done) {
+            setListSending(false);
+            listPollRef.current = false;
+          } else {
+            setTimeout(poll, 1200);
+          }
+        } catch {
+          setListSending(false);
+          listPollRef.current = false;
+        }
+      };
+      poll();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Не удалось запустить рассылку";
+      setListSending(false);
+      setListJob({ id: "", total: parsedListRecipients.length, sent: 0, failed: parsedListRecipients.length, done: true, errors: [{ telegramId: "—", error: msg }] });
     }
   }
 
@@ -191,7 +323,7 @@ export function BroadcastPage() {
         if (s.cancelRequested) setBroadcastCancelRequested(true);
         if (s.status === "completed" && s.result) return s.result;
         if (s.status === "cancelled") {
-          // рассылка прервана админом, возвращаем то что успели.
+          // 19.05.2026, WolfVPN — рассылка прервана админом, возвращаем то что успели.
           return {
             ok: true,
             sentTelegram: s.progress?.sentTelegram ?? 0,
@@ -235,6 +367,126 @@ export function BroadcastPage() {
     const f = e.dataTransfer.files?.[0];
     if (f) setBroadcastAttachment(f);
   }
+
+  // T-direct-send: итоговый URL/действие кнопки (для __custom_url__ берём введённую ссылку).
+  const resolvedSingleBtnUrl = singleBtnAction === "__custom_url__" ? singleBtnCustomUrl.trim() : singleBtnAction;
+
+  // T-direct-send: общий блок «вложение + кнопка» для обоих режимов вкладки «Личное».
+  const singleRichControls = (
+    <>
+      {/* ВЛОЖЕНИЕ */}
+      <section>
+        <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+          <Paperclip className="inline h-3 w-3 mr-1" /> Вложение
+          <span className="ml-1 text-[10px] normal-case text-muted-foreground/70">до {MAX_ATTACHMENT_MB} МБ (необязательно)</span>
+        </Label>
+        <input
+          ref={singleFileRef}
+          type="file"
+          accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+          className="hidden"
+          onChange={(e) => setSingleAttachment(e.target.files?.[0] ?? null)}
+        />
+        {!singleAttachment ? (
+          <div
+            onClick={() => singleFileRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setSingleDragOver(true); }}
+            onDragLeave={() => setSingleDragOver(false)}
+            onDrop={(e) => { e.preventDefault(); setSingleDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) setSingleAttachment(f); }}
+            className={cn(
+              "cursor-pointer rounded-2xl border-2 border-dashed p-5 text-center transition-all",
+              singleDragOver ? "border-sky-400/60 bg-sky-500/10" : "border-white/15 bg-foreground/[0.02] dark:bg-white/[0.02] hover:border-white/30 hover:bg-white/[0.04]"
+            )}
+          >
+            <ImageIcon className={cn("h-7 w-7 mx-auto mb-2", singleDragOver ? "text-sky-500" : "text-muted-foreground")} />
+            <p className="text-sm font-medium">Перетащи файл сюда или <span className="text-sky-500 underline">выбери</span></p>
+            <p className="text-[11px] text-muted-foreground mt-1">Картинка → фото, видео → плеер, остальное → файл</p>
+          </div>
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="flex items-center gap-3 rounded-2xl border border-sky-400/30 bg-sky-500/10 p-3.5"
+          >
+            <div className="h-11 w-11 rounded-xl bg-sky-500/20 flex items-center justify-center shrink-0">
+              {singleAttachment.type.startsWith("image/")
+                ? <ImageIcon className="h-5 w-5 text-sky-500" />
+                : singleAttachment.type.startsWith("video/")
+                  ? <Film className="h-5 w-5 text-sky-500" />
+                  : <FileText className="h-5 w-5 text-sky-500" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{singleAttachment.name}</p>
+              <p className="text-[11px] text-muted-foreground">{(singleAttachment.size / 1024).toFixed(1)} КБ · {singleAttachment.type || "—"}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSingleAttachment(null)}
+              className="h-8 w-8 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 flex items-center justify-center transition"
+              aria-label="Удалить вложение"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </motion.div>
+        )}
+      </section>
+
+      {/* INLINE-КНОПКА (только Telegram — email не поддерживает inline-кнопки) */}
+      {singleChannel === "telegram" && (
+      <section>
+        <div className="rounded-2xl border border-sky-500/20 bg-gradient-to-br from-sky-500/5 via-blue-500/5 to-indigo-500/5 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-xl bg-sky-500/20 flex items-center justify-center">
+              <MousePointerClick className="h-4 w-4 text-sky-500 dark:text-sky-400" />
+            </div>
+            <p className="text-sm font-semibold">Кнопка под сообщением <span className="text-[11px] font-normal text-muted-foreground">(необязательно)</span></p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Действие</Label>
+              <select
+                className="flex h-11 w-full rounded-xl border border-white/10 bg-background/60 px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/50"
+                value={singleBtnAction}
+                onChange={(e) => setSingleBtnAction(e.target.value)}
+              >
+                {BUTTON_ACTIONS.map((a) => (
+                  <option key={a.value} value={a.value}>{a.label}</option>
+                ))}
+              </select>
+            </div>
+            {singleBtnAction && (
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Текст кнопки</Label>
+                <Input
+                  value={singleBtnText}
+                  onChange={(e) => setSingleBtnText(e.target.value)}
+                  placeholder="Открыть тарифы"
+                  maxLength={64}
+                  className="h-11 rounded-xl bg-background/60 border-white/10 focus-visible:ring-sky-500/40"
+                />
+              </div>
+            )}
+          </div>
+          {singleBtnAction === "__custom_url__" && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Ссылка (URL)</Label>
+              <Input
+                value={singleBtnCustomUrl}
+                onChange={(e) => setSingleBtnCustomUrl(e.target.value)}
+                placeholder="https://example.com/tariffs"
+                maxLength={500}
+                className="h-11 rounded-xl bg-background/60 border-white/10 focus-visible:ring-sky-500/40"
+              />
+            </div>
+          )}
+          {singleBtnAction && !singleBtnText.trim() && (
+            <p className="text-[11px] text-amber-500">Укажите текст кнопки, иначе она не добавится.</p>
+          )}
+        </div>
+      </section>
+      )}
+    </>
+  );
 
   return (
     <div className="space-y-6 px-4 sm:px-6 md:px-8 pt-6 pb-10 relative">
@@ -283,6 +535,9 @@ export function BroadcastPage() {
         <TabsList className="bg-background/40 backdrop-blur-3xl border border-white/10 rounded-2xl p-1.5 shadow-lg h-auto">
           <TabsTrigger value="compose" className="rounded-xl px-5 py-2.5 data-[state=active]:bg-gradient-to-r data-[state=active]:from-primary data-[state=active]:to-fuchsia-500 data-[state=active]:text-white data-[state=active]:shadow-md">
             <Send className="h-4 w-4 mr-2" /> Создать
+          </TabsTrigger>
+          <TabsTrigger value="single" className="rounded-xl px-5 py-2.5 data-[state=active]:bg-gradient-to-r data-[state=active]:from-sky-500 data-[state=active]:to-blue-500 data-[state=active]:text-white data-[state=active]:shadow-md">
+            <MessageSquare className="h-4 w-4 mr-2" /> Личное
           </TabsTrigger>
           <TabsTrigger value="history" className="rounded-xl px-5 py-2.5 data-[state=active]:bg-gradient-to-r data-[state=active]:from-primary data-[state=active]:to-fuchsia-500 data-[state=active]:text-white data-[state=active]:shadow-md">
             <HistoryIcon className="h-4 w-4 mr-2" /> История
@@ -350,7 +605,7 @@ export function BroadcastPage() {
                 </div>
               </section>
 
-              {/* селектор целевой группы получателей */}
+              {/* T-unify (12.05.2026, WolfVPN): селектор целевой группы получателей */}
               <section>
                 <Label className="text-xs uppercase tracking-wider text-muted-foreground mb-3 block">
                   <Zap className="inline h-3 w-3 mr-1" /> Кому отправлять
@@ -431,7 +686,7 @@ export function BroadcastPage() {
                 <input
                   ref={fileInputRef}
                   type="file"
-                  /* добавили video/* (mp4, mov, webm и т.д.) */
+                  /* 25.05.2026, WolfVPN — добавили video/* (mp4, mov, webm и т.д.) */
                   accept="image/*,video/*,.pdf,.doc,.docx,.txt"
                   className="hidden"
                   onChange={(e) => setBroadcastAttachment(e.target.files?.[0] ?? null)}
@@ -451,7 +706,7 @@ export function BroadcastPage() {
                   >
                     <ImageIcon className={cn("h-8 w-8 mx-auto mb-2", dragOver ? "text-primary" : "text-muted-foreground")} />
                     <p className="text-sm font-medium">Перетащи файл сюда или <span className="text-primary underline">выбери</span></p>
-                    {/* добавили видео в список форматов. */}
+                    {/* 25.05.2026, WolfVPN — добавили видео в список форматов. */}
                     <p className="text-[11px] text-muted-foreground mt-1">Картинки → как фото с подписью. Видео → как плеер с подписью. Документы → как файл.</p>
                   </div>
                 ) : (
@@ -461,7 +716,7 @@ export function BroadcastPage() {
                     className="flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/10 p-4"
                   >
                     <div className="h-12 w-12 rounded-xl bg-primary/20 flex items-center justify-center shrink-0">
-                      {/* отдельная иконка Film для видео. */}
+                      {/* 25.05.2026, WolfVPN — отдельная иконка Film для видео. */}
                       {broadcastAttachment.type.startsWith("image/")
                         ? <ImageIcon className="h-6 w-6 text-primary" />
                         : broadcastAttachment.type.startsWith("video/")
@@ -623,6 +878,384 @@ export function BroadcastPage() {
           </Card>
         </TabsContent>
 
+        {/* ────────── SINGLE (точечная отправка одному юзеру) ────────── */}
+        <TabsContent value="single" className="mt-5">
+          <Card className="relative overflow-hidden bg-background/60 backdrop-blur-3xl border-white/10 rounded-[2rem] shadow-xl max-w-2xl">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-500 via-blue-500 to-indigo-500" />
+            <div className="p-5 sm:p-7 space-y-6">
+              {/* HEADER + переключатель режима */}
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-sky-500/20 to-blue-500/10 flex items-center justify-center border border-sky-400/30 shrink-0">
+                    <MessageSquare className="h-6 w-6 text-sky-500 dark:text-sky-400" />
+                  </div>
+                  <div>
+                    <h2 className="font-bold text-lg leading-tight">Личное сообщение</h2>
+                    <p className="text-sm text-muted-foreground mt-0.5">
+                      {singleChannel === "email"
+                        ? (singleMode === "one" ? "Отправить письмо одному адресату" : "Отправить письмо списку адресов")
+                        : (singleMode === "one" ? "Отправить в Telegram одному пользователю по его ID" : "Отправить в Telegram сразу списку пользователей")}
+                    </p>
+                  </div>
+                </div>
+                <div className="inline-flex rounded-2xl bg-background/50 border border-white/10 p-1 gap-1 self-start shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setSingleMode("one")}
+                    className={cn(
+                      "px-4 py-2 rounded-xl text-sm font-medium transition-all",
+                      singleMode === "one" ? "bg-gradient-to-r from-sky-500 to-blue-500 text-white shadow" : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <MessageSquare className="inline h-3.5 w-3.5 mr-1.5" />Один
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSingleMode("list")}
+                    className={cn(
+                      "px-4 py-2 rounded-xl text-sm font-medium transition-all",
+                      singleMode === "list" ? "bg-gradient-to-r from-sky-500 to-blue-500 text-white shadow" : "text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    <Users className="inline h-3.5 w-3.5 mr-1.5" />Список
+                  </button>
+                </div>
+              </div>
+
+              {/* КАНАЛ: Telegram / Email */}
+              <div className="inline-flex rounded-2xl bg-background/50 border border-white/10 p-1 gap-1">
+                <button
+                  type="button"
+                  onClick={() => { setSingleChannel("telegram"); setSingleResult(null); setListJob(null); setListRaw(""); setListTable(null); setListFileName(null); }}
+                  className={cn(
+                    "px-4 py-2 rounded-xl text-sm font-medium transition-all",
+                    singleChannel === "telegram" ? "bg-gradient-to-r from-sky-500 to-blue-500 text-white shadow" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <MessageSquare className="inline h-3.5 w-3.5 mr-1.5" />Telegram
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setSingleChannel("email"); setSingleResult(null); setListJob(null); setListRaw(""); setListTable(null); setListFileName(null); }}
+                  className={cn(
+                    "px-4 py-2 rounded-xl text-sm font-medium transition-all",
+                    singleChannel === "email" ? "bg-gradient-to-r from-cyan-500 to-teal-500 text-white shadow" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <Mail className="inline h-3.5 w-3.5 mr-1.5" />Email
+                </button>
+              </div>
+
+              {/* ───────── РЕЖИМ: ОДИН ПОЛУЧАТЕЛЬ ───────── */}
+              {singleMode === "one" && (
+                <form onSubmit={handleSendToUser} className="space-y-6">
+                  {/* ПОЛУЧАТЕЛЬ */}
+                  {singleChannel === "telegram" ? (
+                    <section>
+                      <Label htmlFor="single-tg-id" className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+                        <Users className="inline h-3 w-3 mr-1" /> Telegram ID получателя
+                      </Label>
+                      <Input
+                        id="single-tg-id"
+                        value={singleTgId}
+                        onChange={(e) => { setSingleTgId(e.target.value.replace(/\D/g, "")); setSingleResult(null); }}
+                        placeholder="например, 488948685"
+                        inputMode="numeric"
+                        className="rounded-2xl"
+                      />
+                      <p className="text-[11px] text-muted-foreground mt-1.5">
+                        Числовой ID из Telegram. Пользователь должен был хоть раз написать боту, иначе отправка невозможна.
+                      </p>
+                    </section>
+                  ) : (
+                    <>
+                      <section>
+                        <Label htmlFor="single-email" className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+                          <Mail className="inline h-3 w-3 mr-1" /> Email получателя
+                        </Label>
+                        <Input
+                          id="single-email"
+                          type="email"
+                          value={singleEmail}
+                          onChange={(e) => { setSingleEmail(e.target.value); setSingleResult(null); }}
+                          placeholder="user@example.com"
+                          className="rounded-2xl"
+                        />
+                      </section>
+                      <section>
+                        <Label htmlFor="single-subject" className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+                          <FileText className="inline h-3 w-3 mr-1" /> Тема письма
+                        </Label>
+                        <Input
+                          id="single-subject"
+                          value={singleSubject}
+                          onChange={(e) => setSingleSubject(e.target.value)}
+                          placeholder="Сообщение от сервиса"
+                          maxLength={300}
+                          className="rounded-2xl"
+                        />
+                      </section>
+                    </>
+                  )}
+
+                  {/* MESSAGE */}
+                  <section>
+                    <div className="flex items-center justify-between mb-2">
+                      <Label htmlFor="single-msg" className="text-xs uppercase tracking-wider text-muted-foreground block">
+                        <MessageSquare className="inline h-3 w-3 mr-1" /> Текст сообщения
+                      </Label>
+                      <span className={cn(
+                        "text-[11px] px-2 py-0.5 rounded-full border",
+                        singleMsg.length > 3800
+                          ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                          : "bg-foreground/5 text-muted-foreground border-white/10"
+                      )}>
+                        {singleMsg.length} / 4096
+                      </span>
+                    </div>
+                    <textarea
+                      id="single-msg"
+                      className="flex min-h-[160px] w-full rounded-2xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.02] px-4 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 resize-y leading-relaxed"
+                      value={singleMsg}
+                      onChange={(e) => { setSingleMsg(e.target.value); setSingleResult(null); }}
+                      placeholder={`Введите текст сообщения.\n\nПоддерживается HTML: <b>жирный</b>, <i>курсив</i>, <a href="...">ссылка</a>.`}
+                      maxLength={4096}
+                      required
+                    />
+                  </section>
+
+                  {singleRichControls}
+
+                  {/* RESULT */}
+                  <AnimatePresence>
+                    {singleResult && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className={cn(
+                          "flex items-center gap-2 rounded-2xl px-4 py-3 text-sm border",
+                          singleResult.ok
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                            : "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30"
+                        )}
+                      >
+                        {singleResult.ok
+                          ? <><CheckCircle2 className="h-4 w-4 shrink-0" /> Сообщение отправлено!</>
+                          : <><AlertTriangle className="h-4 w-4 shrink-0" /> {singleResult.error}</>}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* SUBMIT */}
+                  <Button
+                    type="submit"
+                    disabled={singleSending || (singleChannel === "email" ? !singleEmail.trim() : !singleTgId.trim()) || !singleMsg.trim()}
+                    className="w-full h-12 rounded-2xl text-base font-semibold bg-gradient-to-r from-sky-500 to-blue-500 hover:from-sky-400 hover:to-blue-400 text-white shadow-lg shadow-sky-500/20 transition-all"
+                  >
+                    {singleSending
+                      ? <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Отправка…</>
+                      : <><Send className="h-5 w-5 mr-2" /> Отправить сообщение</>}
+                  </Button>
+                </form>
+              )}
+
+              {/* ───────── РЕЖИМ: СПИСОК ID ───────── */}
+              {singleMode === "list" && (
+                <form onSubmit={handleSendToList} className="space-y-6">
+                  {/* ИСТОЧНИК: загрузка файла */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={listFileRef}
+                      type="file"
+                      accept=".txt,.csv,text/plain,text/csv"
+                      className="hidden"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleListFile(f); e.target.value = ""; }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => listFileRef.current?.click()}
+                      className="rounded-xl border-white/15"
+                    >
+                      <Paperclip className="h-4 w-4 mr-2" /> Загрузить .txt / .csv
+                    </Button>
+                    <span className="text-[11px] text-muted-foreground">или вставьте ID вручную ниже</span>
+                    {listFileName && (
+                      <span className="text-xs text-muted-foreground inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-foreground/5 border border-white/10">
+                        <FileText className="h-3.5 w-3.5 shrink-0" /> {listFileName}
+                        <button type="button" onClick={clearListFile} className="hover:text-foreground" aria-label="Убрать файл">
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* ВЫБОР КОЛОНКИ (если в файле несколько столбцов) */}
+                  {listTable && listTable.columnCount > 1 && (
+                    <div className="rounded-2xl border border-sky-400/30 bg-sky-500/5 p-3.5 space-y-2.5">
+                      <p className="text-xs text-muted-foreground">
+                        В файле <b className="text-foreground">{listTable.columnCount}</b> {listTable.columnCount < 5 ? "столбца" : "столбцов"} — выбери, в каком {singleChannel === "email" ? "Email" : "Telegram ID"}:
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {Array.from({ length: listTable.columnCount }).map((_, idx) => {
+                          const label = listTable.header?.[idx] || `Колонка ${idx + 1}`;
+                          const sampleRow = listTable.hasHeader ? listTable.rows[1] : listTable.rows[0];
+                          const sample = sampleRow?.[idx] ?? "";
+                          return (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => handleListColChange(idx)}
+                              className={cn(
+                                "px-3 py-1.5 rounded-xl text-xs border transition-all text-left",
+                                listColIndex === idx
+                                  ? "bg-sky-500 text-white border-sky-500 shadow"
+                                  : "bg-background/40 border-white/10 hover:border-white/30"
+                              )}
+                            >
+                              <span className="font-medium block">{label}</span>
+                              {sample && <span className="block text-[10px] opacity-70 truncate max-w-[120px]">{sample}</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* RECIPIENTS */}
+                  <section>
+                    <div className="flex items-center justify-between mb-2">
+                      <Label htmlFor="list-ids" className="text-xs uppercase tracking-wider text-muted-foreground block">
+                        {singleChannel === "email"
+                          ? <><Mail className="inline h-3 w-3 mr-1" /> Список Email</>
+                          : <><Users className="inline h-3 w-3 mr-1" /> Список Telegram ID</>}
+                      </Label>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full border bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30">
+                        распознано: {parsedListRecipients.length}
+                      </span>
+                    </div>
+                    <textarea
+                      id="list-ids"
+                      className="flex min-h-[120px] w-full rounded-2xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.02] px-4 py-3 text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 resize-y leading-relaxed"
+                      value={listRaw}
+                      onChange={(e) => { setListRaw(e.target.value); setListJob(null); }}
+                      placeholder={singleChannel === "email"
+                        ? "Вставьте email — по одному на строку\nили через запятую/пробел:\n\nuser@example.com\nivan@mail.ru, petr@gmail.com"
+                        : "Вставьте ID получателей — по одному на строку\nили через запятую/пробел:\n\n488948685\n123456789, 987654321"}
+                    />
+                    <p className="text-[11px] text-muted-foreground mt-1.5">
+                      {singleChannel === "email" ? "Дубликаты и некорректные адреса отбрасываются автоматически." : "Дубликаты и нечисловые значения отбрасываются автоматически."}
+                    </p>
+                  </section>
+
+                  {/* SUBJECT (email) */}
+                  {singleChannel === "email" && (
+                    <section>
+                      <Label htmlFor="list-subject" className="text-xs uppercase tracking-wider text-muted-foreground mb-2 block">
+                        <FileText className="inline h-3 w-3 mr-1" /> Тема письма
+                      </Label>
+                      <Input
+                        id="list-subject"
+                        value={singleSubject}
+                        onChange={(e) => setSingleSubject(e.target.value)}
+                        placeholder="Сообщение от сервиса"
+                        maxLength={300}
+                        className="rounded-2xl"
+                      />
+                    </section>
+                  )}
+
+                  {/* MESSAGE */}
+                  <section>
+                    <div className="flex items-center justify-between mb-2">
+                      <Label htmlFor="list-msg" className="text-xs uppercase tracking-wider text-muted-foreground block">
+                        <MessageSquare className="inline h-3 w-3 mr-1" /> Текст сообщения
+                      </Label>
+                      <span className={cn(
+                        "text-[11px] px-2 py-0.5 rounded-full border",
+                        listMsg.length > 3800
+                          ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30"
+                          : "bg-foreground/5 text-muted-foreground border-white/10"
+                      )}>
+                        {listMsg.length} / 4096
+                      </span>
+                    </div>
+                    <textarea
+                      id="list-msg"
+                      className="flex min-h-[140px] w-full rounded-2xl border border-white/10 bg-foreground/[0.03] dark:bg-white/[0.02] px-4 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50 resize-y leading-relaxed"
+                      value={listMsg}
+                      onChange={(e) => setListMsg(e.target.value)}
+                      placeholder={`Введите текст сообщения.\n\nПоддерживается HTML: <b>жирный</b>, <i>курсив</i>, <a href="...">ссылка</a>.`}
+                      maxLength={4096}
+                      required
+                    />
+                  </section>
+
+                  {singleRichControls}
+
+                  {/* ПРОГРЕСС / ОТЧЁТ */}
+                  <AnimatePresence>
+                    {listJob && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className="rounded-2xl border border-white/10 bg-foreground/[0.02] p-4 space-y-3"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between text-xs mb-1.5">
+                            <span className="text-muted-foreground">{listJob.done ? "Готово" : "Отправка…"}</span>
+                            <span className="font-medium">{listJob.sent + listJob.failed} / {listJob.total}</span>
+                          </div>
+                          <div className="h-2 rounded-full bg-white/10 overflow-hidden">
+                            <motion.div
+                              className="h-full bg-gradient-to-r from-sky-500 to-blue-500"
+                              initial={{ width: 0 }}
+                              animate={{ width: `${listJob.total ? Math.round(((listJob.sent + listJob.failed) / listJob.total) * 100) : 0}%` }}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+                            <CheckCircle2 className="h-3.5 w-3.5" /> Доставлено: {listJob.sent}
+                          </span>
+                          {listJob.failed > 0 && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30">
+                              <AlertTriangle className="h-3.5 w-3.5" /> Ошибок: {listJob.failed}
+                            </span>
+                          )}
+                        </div>
+                        {listJob.done && listJob.errors.length > 0 && (
+                          <details className="text-xs">
+                            <summary className="cursor-pointer text-muted-foreground hover:text-foreground select-none">Показать ошибки ({listJob.errors.length})</summary>
+                            <div className="mt-2 max-h-40 overflow-auto space-y-1 rounded-xl bg-background/40 p-2 font-mono">
+                              {listJob.errors.map((er, i) => (
+                                <div key={i} className="text-red-500/90"><span className="text-muted-foreground">{er.telegramId}:</span> {er.error}</div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* SUBMIT */}
+                  <Button
+                    type="submit"
+                    disabled={listSending || !parsedListRecipients.length || !listMsg.trim()}
+                    className="w-full h-12 rounded-2xl text-base font-semibold bg-gradient-to-r from-sky-500 to-blue-500 hover:from-sky-400 hover:to-blue-400 text-white shadow-lg shadow-sky-500/20 transition-all"
+                  >
+                    {listSending
+                      ? <><Loader2 className="h-5 w-5 mr-2 animate-spin" /> Рассылка… {listJob ? `${listJob.sent + listJob.failed}/${listJob.total}` : ""}</>
+                      : <><Send className="h-5 w-5 mr-2" /> Разослать{parsedListRecipients.length > 0 ? ` (${parsedListRecipients.length})` : ""}</>}
+                  </Button>
+                </form>
+              )}
+            </div>
+          </Card>
+        </TabsContent>
+
         {/* ────────── HISTORY ────────── */}
         <TabsContent value="history" className="mt-5">
           <BroadcastHistoryPanel token={token} />
@@ -772,14 +1405,14 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
   const [loading, setLoading] = useState(false);
   const [total, setTotal] = useState(0);
   const [detail, setDetail] = useState<BroadcastHistoryItem | null>(null);
-  // state для функции «Возобновить рассылку».
+  // 25.05.2026, WolfVPN — state для функции «Возобновить рассылку».
   const resumeFileInputRef = useRef<HTMLInputElement>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
-  // state для «Остановить» из истории (живой cancel либо zombie cleanup).
+  // 25.05.2026, WolfVPN — state для «Остановить» из истории (живой cancel либо zombie cleanup).
   const [stopLoading, setStopLoading] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
-  // скачивание CSV получателей.
+  // 25.05.2026, WolfVPN — скачивание CSV получателей.
   const [recipientsLoading, setRecipientsLoading] = useState(false);
 
   const handleDownloadRecipients = async () => {
@@ -1025,7 +1658,7 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
                 </div>
               )}
 
-              {/* скачать CSV всех получателей этой рассылки. */}
+              {/* 25.05.2026, WolfVPN — скачать CSV всех получателей этой рассылки. */}
               {detail.sentTelegram > 0 && (
                 <div className="flex justify-start">
                   <Button
@@ -1041,7 +1674,7 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
                 </div>
               )}
 
-              {/* кнопка «Остановить» для running рассылок прямо из истории.
+              {/* 25.05.2026, WolfVPN — кнопка «Остановить» для running рассылок прямо из истории.
                   Если job живой в памяти api — graceful cancel. Если зомби после рестарта —
                   бэк помечает как cancelled в DB (zombie_cleanup). */}
               {detail.status === "running" && (
@@ -1071,7 +1704,7 @@ function BroadcastHistoryPanel({ token }: { token: string }) {
                 </div>
               )}
 
-              {/* кнопка «Возобновить» для cancelled/error.
+              {/* 25.05.2026, WolfVPN — кнопка «Возобновить» для cancelled/error.
                   Skip уже отправленных через broadcast_sent_log → почти 0 дублей. */}
               {(detail.status === "cancelled" || detail.status === "error") && detail.channel !== "email" && (
                 <div className="p-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/[0.05] space-y-3">

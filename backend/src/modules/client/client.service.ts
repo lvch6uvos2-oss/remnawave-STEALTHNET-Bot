@@ -109,6 +109,12 @@ const SYSTEM_CONFIG_KEYS = [
   "notification_topic_new_clients",
   "notification_topic_payments",
   "notification_topic_tickets",
+  "notification_topic_trials",
+  "notification_topic_conversions",
+  "notification_topic_withdrawals",
+  "notification_topic_promo",
+  "notification_topic_gifts",
+  "notification_topic_auto_renew",
   "platega_merchant_id", "platega_secret", "platega_methods", "payment_providers_config",
   // Webhook secret для проверки HMAC-подписи от Platega (security fix против форджинга платежей).
   "platega_webhook_secret",
@@ -132,6 +138,8 @@ const SYSTEM_CONFIG_KEYS = [
   "referral_instructions_url", // ссылка на инструкцию по рефералке (кнопка «📖 Инструкции»)
   // T11+T13+T14 (11.05.2026): редактируемые тексты бота + URL'ы для документов и Telegram-прокси.
   "refund_link", // Политика возврата (URL — Telegraph)
+  "tariff_restriction_message", // T-tariff-restriction: дефолтный текст причины ограничения тарифа
+  "password_reset_enabled", // T-pwd-reset: вкл/выкл восстановление пароля клиента (по умолчанию выкл)
   "support_hours_from", "support_hours_to", // Часы работы поддержки (формат "10:00")
   "tg_proxy_text", "tg_proxy_url_primary", "tg_proxy_url_backup", "tg_proxy_servers", // Бесплатный TG-прокси: текст экрана + 2 legacy-URL + список прокси-серверов (JSON)
   "reissue_warning_text", // T13: текст диалога «Обновление подписки»
@@ -140,6 +148,25 @@ const SYSTEM_CONFIG_KEYS = [
   "gift_intro_text", // T11: приглашение на экране «Подарить подписку» (скрин 11)
   "bot_devices_text", // текст шапки экрана «📱 Мои устройства»
   "bot_instruction_fallback_text", // подсказка «если инструкция не открылась»
+  "bot_extra_options_text", // текст экрана «📦 Дополнительные опции» (был захардкожен в боте)
+  "bot_gift_url_note", // приписка под ссылкой подписки при активации подарка (была захардкожена)
+  // редактируемые тексты экранов бота (раньше захардкожены в bot/src/index.ts)
+  "bot_balance_text", // подсказка внизу экрана «💼 Мой баланс»
+  "bot_topup_text", // экран «💳 Пополнить баланс» (выбор суммы)
+  "bot_referral_intro_text", // рефералка: строка под заголовком
+  "bot_referral_footer_text", // рефералка: подсказка «💡 …» внизу
+  "bot_referral_share_text", // текст шаринга реферальной ссылки
+  "bot_trial_text", // заголовок экрана выбора пробной подписки
+  "bot_trial_used_text", // «все триалы использованы»
+  "bot_gift_buy_text", // экран выбора тарифа для подарка
+  "bot_promocode_text", // приглашение ввести промокод
+  // тогглы кнопок на экране «Тарифы» бота (default true)
+  "bot_tariffs_show_extra_devices_button",
+  "bot_tariffs_show_balance_button",
+  // меню выбора категорий перед списком тарифов в боте (default true)
+  "bot_show_tariff_categories",
+  // заявки на вывод реф. баланса: вкл/выкл + мин. сумма (была захардкожена 3000₽)
+  "withdrawals_enabled", "withdrawal_min_amount",
   // Приветственное сообщение бота (показывается при /start, до главного меню)
   "bot_welcome_enabled", "bot_welcome_text", "bot_welcome_image", "bot_welcome_show_once",
   // Применять выбранный дизайн (Stealth) и в обычном браузере, не только в Telegram Mini App
@@ -525,6 +552,33 @@ export async function getSystemConfig() {
   return data;
 }
 
+/**
+ * T-tariff-restriction (портировано из WolfVPN): проверка, разрешён ли клиенту тариф.
+ * Используется явно перед списанием с баланса (payByBalance). Для внешних платёжек —
+ * бэкстоп в db.ts createPayment. Возвращает { allowed, reason? }.
+ */
+export async function checkTariffRestriction(clientId: string, tariffId: string): Promise<{ allowed: boolean; reason?: string }> {
+  if (!clientId || !tariffId) return { allowed: true };
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { restrictedTariffIds: true, tariffRestrictionReason: true },
+  });
+  if (!client?.restrictedTariffIds) return { allowed: true };
+  let ids: string[] = [];
+  try {
+    const parsed = JSON.parse(client.restrictedTariffIds);
+    if (Array.isArray(parsed)) ids = parsed.map((x) => String(x));
+  } catch { /* битый JSON → ограничений нет */ }
+  if (!ids.includes(tariffId)) return { allowed: true };
+  let reason = (client.tariffRestrictionReason ?? "").trim();
+  if (!reason) {
+    const cfg = await getSystemConfig();
+    reason = (cfg.tariffRestrictionMessage ?? "").trim()
+      || "Покупка этого тарифа ограничена в связи с нарушением условий оферты. Пожалуйста, выберите другой тариф.";
+  }
+  return { allowed: false, reason };
+}
+
 async function loadSystemConfigFromDb() {
   const settings = await prisma.systemSetting.findMany({
     where: { key: { in: SYSTEM_CONFIG_KEYS } },
@@ -567,6 +621,12 @@ async function loadSystemConfigFromDb() {
     notificationTopicNewClients: (map.notification_topic_new_clients ?? "").trim() || null,
     notificationTopicPayments: (map.notification_topic_payments ?? "").trim() || null,
     notificationTopicTickets: (map.notification_topic_tickets ?? "").trim() || null,
+    notificationTopicTrials: (map.notification_topic_trials ?? "").trim() || null,
+    notificationTopicConversions: (map.notification_topic_conversions ?? "").trim() || null,
+    notificationTopicWithdrawals: (map.notification_topic_withdrawals ?? "").trim() || null,
+    notificationTopicPromo: (map.notification_topic_promo ?? "").trim() || null,
+    notificationTopicGifts: (map.notification_topic_gifts ?? "").trim() || null,
+    notificationTopicAutoRenew: (map.notification_topic_auto_renew ?? "").trim() || null,
     notificationTopicBackups: (map.notification_topic_backups ?? "").trim() || null,
     autoBackupEnabled: map.auto_backup_enabled === "true" || map.auto_backup_enabled === "1",
     autoBackupCron: (map.auto_backup_cron ?? "").trim() || null,
@@ -614,6 +674,7 @@ async function loadSystemConfigFromDb() {
     groqFallback3: (map.groq_fallback_3 ?? "").trim() || null,
     aiSystemPrompt: map.ai_system_prompt || "Ты — лучший менеджер техподдержки VPN-сервиса. Твоя цель — вежливо, быстро и точно помогать пользователям с настройкой VPN, тарифами и решением технических проблем. Отвечай кратко и по делу.",
     skipEmailVerification: map.skip_email_verification === "true" || map.skip_email_verification === "1",
+    passwordResetEnabled: map.password_reset_enabled === "true" || map.password_reset_enabled === "1",
     /** Master switch для антибот-фильтра. По умолчанию включён. */
     signupProtectionEnabled: (map.signup_protection_enabled ?? "true").trim() !== "false",
     /** Дополнительный список заблокированных доменов (через запятую) — расширяет встроенный */
@@ -674,6 +735,7 @@ async function loadSystemConfigFromDb() {
     referralInstructionsUrl: (map.referral_instructions_url ?? "").trim() || "https://telegra.ph/Kak-polzovatsya-referalnoj-programmoj-i-zarabatyvat-05-28",
     // T11+T13+T14 (11.05.2026): новые редактируемые поля для бота.
     refundLink: (map.refund_link ?? "").trim() || null,
+    tariffRestrictionMessage: (map.tariff_restriction_message ?? "").trim() || null,
     supportHoursFrom: (map.support_hours_from ?? "").trim() || "10:00",
     supportHoursTo: (map.support_hours_to ?? "").trim() || "22:00",
     tgProxyText: (map.tg_proxy_text ?? "").trim() || null,
@@ -702,6 +764,29 @@ async function loadSystemConfigFromDb() {
     giftIntroText: (map.gift_intro_text ?? "").trim() || null,
     botDevicesText: (map.bot_devices_text ?? "").trim() || null,
     botInstructionFallbackText: (map.bot_instruction_fallback_text ?? "").trim() || null,
+    botExtraOptionsText: (map.bot_extra_options_text ?? "").trim() || null,
+    botGiftUrlNote: (map.bot_gift_url_note ?? "").trim() || null,
+    // редактируемые тексты экранов бота (раньше захардкожены в bot/src/index.ts)
+    botBalanceText: (map.bot_balance_text ?? "").trim() || null,
+    botTopupText: (map.bot_topup_text ?? "").trim() || null,
+    botReferralIntroText: (map.bot_referral_intro_text ?? "").trim() || null,
+    botReferralFooterText: (map.bot_referral_footer_text ?? "").trim() || null,
+    botReferralShareText: (map.bot_referral_share_text ?? "").trim() || null,
+    botTrialText: (map.bot_trial_text ?? "").trim() || null,
+    botTrialUsedText: (map.bot_trial_used_text ?? "").trim() || null,
+    botGiftBuyText: (map.bot_gift_buy_text ?? "").trim() || null,
+    botPromocodeText: (map.bot_promocode_text ?? "").trim() || null,
+    // тогглы кнопок на экране «Тарифы»: дефолт true, выключение явное.
+    botTariffsShowExtraDevicesButton: map.bot_tariffs_show_extra_devices_button !== "false" && map.bot_tariffs_show_extra_devices_button !== "0",
+    botTariffsShowBalanceButton: map.bot_tariffs_show_balance_button !== "false" && map.bot_tariffs_show_balance_button !== "0",
+    // меню выбора категорий перед тарифами: дефолт true, выключение явное.
+    botShowTariffCategories: map.bot_show_tariff_categories !== "false" && map.bot_show_tariff_categories !== "0",
+    // дефолт true (фича существовала всегда) — выключение явное.
+    withdrawalsEnabled: map.withdrawals_enabled !== "false" && map.withdrawals_enabled !== "0",
+    withdrawalMinAmount: (() => {
+      const n = Number(map.withdrawal_min_amount);
+      return Number.isFinite(n) && n > 0 ? n : 3000;
+    })(),
     videoInstructionsEnabled: map.video_instructions_enabled === "true" || map.video_instructions_enabled === "1",
     videoInstructions: (() => {
       try { return JSON.parse(map.video_instructions || "[]") as { id: string; title: string; telegramFileId: string; sortOrder: number }[]; } catch { return []; }
@@ -1024,6 +1109,18 @@ function hasLeadingEmoji(label: string): boolean {
 /** Публичный конфиг для сайта/бота (без паролей и секретов). botButtons с подставленными эмодзи.
  * v5.0.0: параметр forCloneBot оставлен как опциональный stub после выпила multi-bot.
  * Раньше тут применялась наценка клона (markupPercent), теперь всегда 0. */
+/**
+ * Единый критерий «SMTP настроен» для решения direct-привязки vs верификации почты.
+ *
+ * фронт (онбординг) читал smtpConfigured из публичного
+ * конфига (host && port && fromEmail), а /link-email-direct считал по-своему —
+ * с дефолтом порта 587. При незаполненном порте фронт шёл в direct, а бэк отвечал
+ * «Требуется верификация» — юзер упирался в тупик. Критерий обязан совпадать.
+ */
+export function isSystemSmtpConfigured(cfg: { smtpHost?: string | null; smtpPort?: number | null; smtpFromEmail?: string | null }): boolean {
+  return Boolean(cfg.smtpHost?.trim() && cfg.smtpPort && cfg.smtpFromEmail?.trim());
+}
+
 export async function getPublicConfig(_forCloneBot?: { markupPercent?: number | null; username?: string | null; token?: string | null } | null) {
   const full = await getSystemConfig();
   const markupPct = 0;
@@ -1172,10 +1269,11 @@ export async function getPublicConfig(_forCloneBot?: { markupPercent?: number | 
     ),
     paymentProviders: full.paymentProviders,
     skipEmailVerification: full.skipEmailVerification ?? false,
+    passwordResetEnabled: full.passwordResetEnabled ?? false,
     // фронту нужен флаг — настроен ли SMTP.
     // Если SMTP не настроен или skipEmailVerification=true → email привязывается
     // мгновенно (без письма) через POST /client/link-email-direct.
-    smtpConfigured: Boolean(full.smtpHost?.trim() && full.smtpPort && full.smtpFromEmail?.trim()),
+    smtpConfigured: isSystemSmtpConfigured(full),
     useRemnaSubscriptionPage: full.useRemnaSubscriptionPage ?? false,
     aiChatEnabled: full.aiChatEnabled ?? true,
     trialEnabled,
@@ -1217,6 +1315,25 @@ export async function getPublicConfig(_forCloneBot?: { markupPercent?: number | 
     giftIntroText: (full as { giftIntroText?: string | null }).giftIntroText ?? null,
     botDevicesText: (full as { botDevicesText?: string | null }).botDevicesText ?? null,
     botInstructionFallbackText: (full as { botInstructionFallbackText?: string | null }).botInstructionFallbackText ?? null,
+    botExtraOptionsText: (full as { botExtraOptionsText?: string | null }).botExtraOptionsText ?? null,
+    botGiftUrlNote: (full as { botGiftUrlNote?: string | null }).botGiftUrlNote ?? null,
+    // редактируемые тексты экранов бота (раньше захардкожены в bot/src/index.ts)
+    botBalanceText: (full as { botBalanceText?: string | null }).botBalanceText ?? null,
+    botTopupText: (full as { botTopupText?: string | null }).botTopupText ?? null,
+    botReferralIntroText: (full as { botReferralIntroText?: string | null }).botReferralIntroText ?? null,
+    botReferralFooterText: (full as { botReferralFooterText?: string | null }).botReferralFooterText ?? null,
+    botReferralShareText: (full as { botReferralShareText?: string | null }).botReferralShareText ?? null,
+    botTrialText: (full as { botTrialText?: string | null }).botTrialText ?? null,
+    botTrialUsedText: (full as { botTrialUsedText?: string | null }).botTrialUsedText ?? null,
+    botGiftBuyText: (full as { botGiftBuyText?: string | null }).botGiftBuyText ?? null,
+    botPromocodeText: (full as { botPromocodeText?: string | null }).botPromocodeText ?? null,
+    // тогглы кнопок на экране «Тарифы» бота (default true)
+    botTariffsShowExtraDevicesButton: (full as { botTariffsShowExtraDevicesButton?: boolean }).botTariffsShowExtraDevicesButton ?? true,
+    botTariffsShowBalanceButton: (full as { botTariffsShowBalanceButton?: boolean }).botTariffsShowBalanceButton ?? true,
+    // меню выбора категорий перед тарифами (default true)
+    botShowTariffCategories: (full as { botShowTariffCategories?: boolean }).botShowTariffCategories ?? true,
+    withdrawalsEnabled: (full as { withdrawalsEnabled?: boolean }).withdrawalsEnabled ?? true,
+    withdrawalMinAmount: (full as { withdrawalMinAmount?: number }).withdrawalMinAmount ?? 3000,
     videoInstructionsEnabled: full.videoInstructionsEnabled ?? false,
     videoInstructions: full.videoInstructionsEnabled ? (full.videoInstructions ?? []) : [],
     ticketsEnabled: (full as { ticketsEnabled?: boolean }).ticketsEnabled ?? false,
